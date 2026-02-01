@@ -1,6 +1,7 @@
 using System;
 using DingoGameObjectsCMS.RuntimeObjects;
 using NaughtyAttributes;
+using Newtonsoft.Json;
 using UnityEngine;
 
 namespace DingoGameObjectsCMS.AssetObjects
@@ -9,11 +10,11 @@ namespace DingoGameObjectsCMS.AssetObjects
     {
         public const string MENU_PREFIX = "Game Assets/";
 
-        [SerializeField] private GameAssetKey _key = new (GameAssetKey.UNDEFINED, GameAssetKey.NONE, GameAssetKey.NONE, GameAssetKey.ZERO_V);
-        [SerializeField, ReadOnly] private Hash128 _guid = IdUtils.NewHash128FromGuid();
+        [SerializeField, JsonProperty("Key")] private GameAssetKey _key = new (GameAssetKey.UNDEFINED, GameAssetKey.NONE, GameAssetKey.NONE, GameAssetKey.ZERO_V);
+        [SerializeField, ReadOnly, JsonProperty("GUID")] private Hash128 _guid = IdUtils.NewHash128FromGuid();
 
-        public Hash128 GUID => _guid;
-        public GameAssetKey Key => _key;
+        [JsonIgnore] public Hash128 GUID => _guid;
+        [JsonIgnore] public GameAssetKey Key => _key;
         
         private void OnValidate()
         {

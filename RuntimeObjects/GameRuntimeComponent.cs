@@ -5,7 +5,7 @@ using UnityEngine.Scripting;
 namespace DingoGameObjectsCMS.RuntimeObjects
 {
     [Serializable, Preserve, HideInTypeMenu]
-    public class GameRuntimeComponent : GameGUIDObject
+    public class GameRuntimeComponent
     {
         public virtual void SetupForEntity(EntityCommandBuffer ecb, GameRuntimeObject g, Entity e) {}
     }

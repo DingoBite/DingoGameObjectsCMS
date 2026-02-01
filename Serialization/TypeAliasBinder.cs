@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using Newtonsoft.Json.Serialization;
 
-namespace DingoGameObjectsCMS
+namespace DingoGameObjectsCMS.Serialization
 {
     public sealed class TypeAliasBinder : ISerializationBinder
     {
