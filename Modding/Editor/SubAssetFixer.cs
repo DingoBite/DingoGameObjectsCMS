@@ -6,7 +6,7 @@ using System.Reflection;
 using UnityEditor;
 using UnityEngine;
 
-namespace DingoGameObjectsCMS.Editor
+namespace DingoGameObjectsCMS.Modding.Editor
 {
     internal static class SubAssetFixer
     {

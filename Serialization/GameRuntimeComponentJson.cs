@@ -16,6 +16,7 @@ namespace DingoGameObjectsCMS.Serialization
             Settings.ReferenceLoopHandling = ReferenceLoopHandling.Ignore;
             Settings.TypeNameHandling = TypeNameHandling.None;
             Settings.MetadataPropertyHandling = MetadataPropertyHandling.ReadAhead;
+            Settings.ObjectCreationHandling = ObjectCreationHandling.Replace;
 
             var known = AppDomain.CurrentDomain.GetAssemblies().SelectMany(a =>
             {

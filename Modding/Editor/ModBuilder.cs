@@ -5,15 +5,24 @@ using System.IO;
 using System.Linq;
 using DingoGameObjectsCMS.AssetObjects;
 using DingoGameObjectsCMS.Serialization;
+using DingoUnityExtensions.Utils;
+using Newtonsoft.Json;
 using UnityEditor;
 using UnityEngine;
 
-namespace DingoGameObjectsCMS.Editor
+namespace DingoGameObjectsCMS.Modding.Editor
 {
     public static class ModBuilder
     {
         private const string GAME_ASSETS_ROOT = "Assets/GameAssets";
         private const bool COPY_NON_GAME_ASSET_DOT_ASSET_FILES = true;
+
+        private sealed class ExportItem
+        {
+            public string UnityPath;
+            public GameAssetScriptableObject Asset;
+            public string RelativeJsonPath;
+        }
 
         [MenuItem("Assets/Game Assets/Build Mod To Folder...", false, 2200)]
         private static void BuildModToFolderMenu()
@@ -26,6 +35,7 @@ namespace DingoGameObjectsCMS.Editor
             }
 
             var modName = Path.GetFileName(modRoot.TrimEnd('/'));
+
             var dst = EditorUtility.SaveFolderPanel("Build Mod To Folder", "", modName);
             if (string.IsNullOrEmpty(dst))
                 return;
@@ -48,13 +58,15 @@ namespace DingoGameObjectsCMS.Editor
             {
                 EditorUtility.DisplayProgressBar("Mod Build", "Preparing...", 0f);
 
-                var gameAssetPaths = FindAllGameAssetPaths(modRoot);
+                var exportItems = FindAllExportableAssets(modRoot);
 
-                CopyAllFilesExceptMetaAndGameAssetAssets(modRoot, dstModRootAbs, gameAssetPaths);
+                var exportAssetPaths = new HashSet<string>(exportItems.Select(x => x.UnityPath), StringComparer.OrdinalIgnoreCase);
 
-                ExportGameAssetsToJson(modRoot, dstModRootAbs, gameAssetPaths);
+                CopyAllFilesExceptMetaAndExportedAssets(modRoot, dstModRootAbs, exportAssetPaths);
 
-                WriteManifest(dstModRootAbs, modName, gameAssetPaths);
+                ExportAssetsToJson(modRoot, dstModRootAbs, exportItems);
+
+                WriteManifest(dstModRootAbs, modName, exportItems);
 
                 Debug.Log($"Mod build complete: {dstModRootAbs}");
             }
@@ -99,21 +111,34 @@ namespace DingoGameObjectsCMS.Editor
             return null;
         }
 
-        private static HashSet<string> FindAllGameAssetPaths(string modRootUnityPath)
+        private static List<ExportItem> FindAllExportableAssets(string modRootUnityPath)
         {
-            var guids = AssetDatabase.FindAssets("t:GameAsset", new[] { modRootUnityPath });
-            var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var guids = AssetDatabase.FindAssets("t:ScriptableObject", new[] { modRootUnityPath });
+
+            var list = new List<ExportItem>(guids.Length);
+
             foreach (var g in guids)
             {
                 var p = Normalize(AssetDatabase.GUIDToAssetPath(g));
-                if (!string.IsNullOrEmpty(p))
-                    set.Add(p);
+                if (string.IsNullOrEmpty(p) || !p.EndsWith(".asset", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                var so = AssetDatabase.LoadAssetAtPath<ScriptableObject>(p);
+                if (so is not GameAssetScriptableObject ga)
+                    continue;
+
+                list.Add(new ExportItem
+                {
+                    UnityPath = p,
+                    Asset = ga
+                });
             }
 
-            return set;
+            list.Sort((a, b) => string.Compare(a.UnityPath, b.UnityPath, StringComparison.OrdinalIgnoreCase));
+            return list;
         }
 
-        private static void CopyAllFilesExceptMetaAndGameAssetAssets(string modRootUnityPath, string dstModRootAbs, HashSet<string> gameAssetUnityPaths)
+        private static void CopyAllFilesExceptMetaAndExportedAssets(string modRootUnityPath, string dstModRootAbs, HashSet<string> exportedAssetUnityPaths)
         {
             var modRootAbs = UnityPathToAbsolute(modRootUnityPath);
 
@@ -121,7 +146,6 @@ namespace DingoGameObjectsCMS.Editor
             foreach (var srcAbs in files)
             {
                 var ext = Path.GetExtension(srcAbs).ToLowerInvariant();
-
                 if (ext == ".meta")
                     continue;
 
@@ -131,10 +155,9 @@ namespace DingoGameObjectsCMS.Editor
                 if (ext == ".asset")
                 {
                     var unityPath = Normalize($"{modRootUnityPath.TrimEnd('/')}/{rel}".Replace('\\', '/'));
-                    if (gameAssetUnityPaths.Contains(unityPath))
-                    {
+
+                    if (exportedAssetUnityPaths.Contains(unityPath))
                         continue;
-                    }
 
                     if (!COPY_NON_GAME_ASSET_DOT_ASSET_FILES)
                         continue;
@@ -145,44 +168,45 @@ namespace DingoGameObjectsCMS.Editor
             }
         }
 
-        private static void ExportGameAssetsToJson(string modRootUnityPath, string dstModRootAbs, HashSet<string> gameAssetUnityPaths)
+        private static void ExportAssetsToJson(string modRootUnityPath, string dstModRootAbs, List<ExportItem> items)
         {
-            var list = gameAssetUnityPaths.OrderBy(s => s, StringComparer.OrdinalIgnoreCase).ToList();
-
-            for (var i = 0; i < list.Count; i++)
+            for (var i = 0; i < items.Count; i++)
             {
-                var unityPath = Normalize(list[i]);
-                var asset = AssetDatabase.LoadAssetAtPath<GameAsset>(unityPath);
-                if (asset == null)
-                    continue;
+                var it = items[i];
+                var unityPath = Normalize(it.UnityPath);
 
-                EditorUtility.DisplayProgressBar("Mod Build", $"Exporting {Path.GetFileNameWithoutExtension(unityPath)}", (float)(i + 1) / Math.Max(1, list.Count));
+                EditorUtility.DisplayProgressBar("Mod Build", $"Exporting {Path.GetFileNameWithoutExtension(unityPath)}", (float)(i + 1) / Math.Max(1, items.Count));
 
                 var relUnity = unityPath[modRootUnityPath.TrimEnd('/').Length..].TrimStart('/');
                 var relJson = Path.ChangeExtension(relUnity, ".json");
 
+                it.RelativeJsonPath = relJson.NormalizePath();
+
                 var dstAbs = Path.Combine(dstModRootAbs, relJson);
                 Directory.CreateDirectory(Path.GetDirectoryName(dstAbs)!);
 
-                var json = asset.ToJson();
+                var json = it.Asset.ToJson();
                 File.WriteAllText(dstAbs, json);
             }
         }
 
-        private static void WriteManifest(string dstModRootAbs, string modName, HashSet<string> gameAssetUnityPaths)
+        private static void WriteManifest(string dstModRootAbs, string modName, List<ExportItem> items)
         {
-            var manifest = new ModManifest
+            var m = new ModManifest
             {
                 Mod = modName,
                 GeneratedUtc = DateTime.UtcNow.ToString("O"),
-                GameAssets = gameAssetUnityPaths.Select(p => new ModManifestEntry
+                ManifestVersion = 1,
+                Assets = items.Select(it => new ModManifestEntry
                 {
-                    UnityPath = p,
-                    RelativeJsonPath = Path.ChangeExtension(p[$"{GAME_ASSETS_ROOT}/{modName}".Length..].TrimStart('/'), ".json")
+                    Key = it.Asset.Key,
+                    GUID = it.Asset.GUID,
+                    RelativeJsonPath = it.RelativeJsonPath,
+                    SoType = it.Asset.GetType().FullName
                 }).OrderBy(e => e.RelativeJsonPath, StringComparer.OrdinalIgnoreCase).ToList()
             };
 
-            var json = Newtonsoft.Json.JsonConvert.SerializeObject(manifest, Newtonsoft.Json.Formatting.Indented);
+            var json = JsonConvert.SerializeObject(m, Formatting.Indented, GameAssetJsonRuntime.Settings);
 
             File.WriteAllText(Path.Combine(dstModRootAbs, "manifest.json"), json);
         }
@@ -191,26 +215,10 @@ namespace DingoGameObjectsCMS.Editor
         {
             unityPath = Normalize(unityPath);
             var projectRoot = Directory.GetParent(Application.dataPath)!.FullName;
-            var abs = Path.Combine(projectRoot, unityPath);
-            return Path.GetFullPath(abs);
+            return Path.GetFullPath(Path.Combine(projectRoot, unityPath));
         }
 
         private static string Normalize(string s) => (s ?? "").Replace('\\', '/');
-    }
-
-    [Serializable]
-    internal sealed class ModManifest
-    {
-        public string Mod;
-        public string GeneratedUtc;
-        public List<ModManifestEntry> GameAssets;
-    }
-
-    [Serializable]
-    internal sealed class ModManifestEntry
-    {
-        public string UnityPath;
-        public string RelativeJsonPath;
     }
 }
 #endif

@@ -13,8 +13,9 @@ namespace DingoGameObjectsCMS.Serialization
         static GameAssetJsonRuntime()
         {
             Settings.ReferenceLoopHandling = ReferenceLoopHandling.Ignore;
-            Settings.TypeNameHandling = TypeNameHandling.None;
+            Settings.TypeNameHandling = TypeNameHandling.Auto;
             Settings.MetadataPropertyHandling = MetadataPropertyHandling.ReadAhead;
+            Settings.ObjectCreationHandling = ObjectCreationHandling.Replace;
             Settings.ContractResolver = new UnitySerializeFieldContractResolver();
 
             var known = AppDomain.CurrentDomain.GetAssemblies().SelectMany(a =>

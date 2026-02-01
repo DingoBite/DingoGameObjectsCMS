@@ -12,7 +12,7 @@ using Newtonsoft.Json.Linq;
 using UnityEditor;
 using UnityEngine;
 
-namespace DingoGameObjectsCMS.Editor
+namespace DingoGameObjectsCMS.Modding.Editor
 {
     public static class ModImporter
     {
