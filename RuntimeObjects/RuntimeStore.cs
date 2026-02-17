@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using Bind;
 using DingoProjectAppStructure.Core.Model;
@@ -7,14 +8,20 @@ using Hash128 = UnityEngine.Hash128;
 
 namespace DingoGameObjectsCMS.RuntimeObjects
 {
+    public enum RemoveMode : byte
+    {
+        Subtree = 0,
+        NodeOnly_DetachChildrenToRoot = 1,
+        NodeOnly_ReparentChildrenToParent = 2,
+    }
+
     public class RuntimeStore : AppModelBase
     {
         public readonly Hash128 Id;
 
         private long _lastId;
 
-        private readonly BindDict<long, GameRuntimeObject> _items = new();
-
+        private readonly BindDict<long, GameRuntimeObject> _parents = new();
         private readonly Dictionary<long, GameRuntimeObject> _all = new();
 
         private readonly Dictionary<long, Entity> _entityById = new();
@@ -25,9 +32,9 @@ namespace DingoGameObjectsCMS.RuntimeObjects
         private readonly HashSet<long> _added = new();
         private readonly HashSet<long> _removed = new();
         private readonly HashSet<long> _changed = new();
-        
+
         private readonly HashSet<long> _cycleVisited = new();
-        
+
         private bool _scheduled;
 
         public RuntimeStore(Hash128 id)
@@ -35,11 +42,11 @@ namespace DingoGameObjectsCMS.RuntimeObjects
             Id = id;
         }
 
-        public IReadonlyBind<IReadOnlyDictionary<long, GameRuntimeObject>> Items => _items;
+        public IReadonlyBind<IReadOnlyDictionary<long, GameRuntimeObject>> Parents => _parents;
 
-        public event System.Action<IReadOnlyCollection<long>> Added;
-        public event System.Action<IReadOnlyCollection<long>> Removed;
-        public event System.Action<IReadOnlyCollection<long>> Changed;
+        public event Action<IReadOnlyCollection<long>> Added;
+        public event Action<IReadOnlyCollection<long>> Removed;
+        public event Action<IReadOnlyCollection<long>> Changed;
 
         public GameRuntimeObject Create()
         {
@@ -47,7 +54,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects
             AddToRoot(obj.InstanceId);
             return obj;
         }
-        
+
         public GameRuntimeObject CreateDetached()
         {
             var id = _lastId++;
@@ -71,6 +78,25 @@ namespace DingoGameObjectsCMS.RuntimeObjects
             return child;
         }
 
+        public GameRuntimeObject CreateNet(long serverId)
+        {
+            if (_all.TryGetValue(serverId, out var net))
+                return net;
+
+            if (serverId >= _lastId)
+                _lastId = serverId + 1;
+
+            var obj = new GameRuntimeObject
+            {
+                InstanceId = serverId,
+                StoreId = Id
+            };
+            _all[serverId] = obj;
+            return obj;
+        }
+        
+        public void PublishRootExisting(long id) => AddToRoot(id);
+
         public bool TryTakeRW(long id, out GameRuntimeObject gameRuntimeObject)
         {
             if (!_all.TryGetValue(id, out gameRuntimeObject))
@@ -83,9 +109,10 @@ namespace DingoGameObjectsCMS.RuntimeObjects
 
         public bool TryTakeRO(long id, out GameRuntimeObject gameRuntimeObject) => _all.TryGetValue(id, out gameRuntimeObject);
 
-        public bool Remove(long id) => Remove(id, out _);
-
-        public bool Remove(long id, out Entity entity)
+        public bool Remove(long id) => Remove(id, RemoveMode.Subtree, out _);
+        public bool Remove(long id, out Entity entity) => Remove(id, RemoveMode.Subtree, out entity);
+        
+        public bool Remove(long id, RemoveMode mode, out Entity entity)
         {
             _entityById.Remove(id, out entity);
 
@@ -96,7 +123,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects
                 return false;
             }
 
-            if (_items.V.ContainsKey(id))
+            if (_parents.V.ContainsKey(id))
             {
                 RemoveFromRoot(id);
             }
@@ -107,22 +134,59 @@ namespace DingoGameObjectsCMS.RuntimeObjects
                 _changed.Remove(id);
             }
 
+            _parentByChild.TryGetValue(id, out var parentId);
             DetachChildInternal(id);
 
             if (_childrenByParent.TryGetValue(id, out var children) && children.Count > 0)
             {
-                var toRemove = new List<long>(children);
-
+                var toProcess = new List<long>(children);
                 _childrenByParent.Remove(id);
 
-                foreach (var t in toRemove)
+                foreach (var child in toProcess)
                 {
-                    _parentByChild.Remove(t);
+                    _parentByChild.Remove(child);
                 }
 
-                foreach (var t in toRemove)
+                switch (mode)
                 {
-                    Remove(t);
+                    case RemoveMode.Subtree:
+                    {
+                        foreach (var child in toProcess)
+                        {
+                            Remove(child, RemoveMode.Subtree, out _);
+                        }
+
+                        break;
+                    }
+                    case RemoveMode.NodeOnly_DetachChildrenToRoot:
+                    {
+                        foreach (var child in toProcess)
+                        {
+                            AddToRoot(child);
+                        }
+
+                        break;
+                    }
+                    case RemoveMode.NodeOnly_ReparentChildrenToParent when parentId != 0 && _all.ContainsKey(parentId):
+                    {
+                        foreach (var child in toProcess)
+                        {
+                            AttachChild(parentId, child, insertIndex: -1);
+                        }
+
+                        break;
+                    }
+                    case RemoveMode.NodeOnly_ReparentChildrenToParent:
+                    {
+                        foreach (var child in toProcess)
+                        {
+                            AddToRoot(child);
+                        }
+
+                        break;
+                    }
+                    default:
+                        throw new ArgumentOutOfRangeException(nameof(mode), mode, null);
                 }
             }
 
@@ -138,7 +202,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects
 
         public bool TryTakeParentRW(long childId, out GameRuntimeObject parent)
         {
-            if (!_parentByChild.TryGetValue(childId, out var parentId) || !_items.V.TryGetValue(parentId, out parent))
+            if (!_parentByChild.TryGetValue(childId, out var parentId) || !_parents.V.TryGetValue(parentId, out parent))
             {
                 parent = null;
                 return false;
@@ -148,14 +212,15 @@ namespace DingoGameObjectsCMS.RuntimeObjects
 
             return true;
         }
-        
+
         public bool TryTakeParentRO(long childId, out GameRuntimeObject parent)
         {
-            if (!_parentByChild.TryGetValue(childId, out var parentId) || !_items.V.TryGetValue(parentId, out parent))
+            if (!_parentByChild.TryGetValue(childId, out var parentId) || !_parents.V.TryGetValue(parentId, out parent))
             {
                 parent = null;
                 return false;
             }
+
             return true;
         }
 
@@ -181,11 +246,11 @@ namespace DingoGameObjectsCMS.RuntimeObjects
 
             if (!_all.ContainsKey(childId))
                 return false;
-            
+
             if (WouldCreateCycle(parentId, childId))
-                return false; 
-            
-            if (_items.V.ContainsKey(childId))
+                return false;
+
+            if (_parents.V.ContainsKey(childId))
                 RemoveFromRoot(childId);
 
             if (_parentByChild.TryGetValue(childId, out var oldParentId))
@@ -318,7 +383,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects
             if (!_all.TryGetValue(id, out var obj))
                 return;
 
-            if (!_items.V.TryAdd(id, obj))
+            if (!_parents.V.TryAdd(id, obj))
                 return;
 
             if (!_removed.Remove(id))
@@ -333,7 +398,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects
 
         private void RemoveFromRoot(long id)
         {
-            if (!_items.V.Remove(id))
+            if (!_parents.V.Remove(id))
                 return;
 
             if (!_added.Remove(id))
@@ -373,7 +438,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects
 
         private void MarkChangedRootOnly(long id)
         {
-            if (!_items.V.ContainsKey(id))
+            if (!_parents.V.ContainsKey(id))
                 return;
 
             if (_removed.Contains(id))
@@ -397,7 +462,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects
 
         private void Flush()
         {
-            _items.V = _items.V;
+            _parents.V = _parents.V;
 
             if (_added.Count > 0)
                 Added?.Invoke(_added);

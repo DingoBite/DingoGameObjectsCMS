@@ -7,6 +7,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects
     [Serializable, Preserve, HideInTypeMenu]
     public class GameRuntimeComponent
     {
-        public virtual void SetupForEntity(EntityCommandBuffer ecb, GameRuntimeObject g, Entity e) {}
+        public virtual void SetupForEntity(RuntimeStore store, EntityCommandBuffer ecb, GameRuntimeObject g, Entity e) {}
     }
 }

@@ -51,7 +51,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects
         [JsonIgnore] public IReadOnlyList<GameRuntimeComponent> Components => _components;
         [JsonIgnore] public RuntimeInstance RuntimeInstance => new() { Id = InstanceId, StoreId = StoreId };
 
-        public Entity CreateEntity(EntityCommandBuffer ecb)
+        public Entity CreateEntity(RuntimeStore runtimeStore, EntityCommandBuffer ecb)
         {
             var entity = ecb.CreateEntity();
 
@@ -66,7 +66,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects
 
             foreach (var c in Components)
             {
-                c?.SetupForEntity(ecb, this, entity);
+                c?.SetupForEntity(runtimeStore, ecb, this, entity);
             }
 
             return entity;
