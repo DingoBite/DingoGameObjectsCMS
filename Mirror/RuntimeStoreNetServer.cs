@@ -1,17 +1,17 @@
 #if MIRROR
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using Mirror;
 using DingoUnityExtensions;
 using DingoGameObjectsCMS.RuntimeObjects;
-using Unity.Entities;
+using UnityEngine;
 
 namespace DingoGameObjectsCMS.Mirror
 {
     public sealed class RuntimeStoreNetServer
     {
-        private readonly RuntimeStore _store;
-        private readonly IRuntimeObjectSerializer _ser;
+        private readonly Func<Hash128, RuntimeStore> _stores;
 
         private readonly Queue<(NetworkConnectionToClient conn, RtMutateMsg msg)> _mutateQueue = new();
         private readonly Dictionary<int, uint> _lastSeqByConn = new();
@@ -19,100 +19,104 @@ namespace DingoGameObjectsCMS.Mirror
         private uint _revision;
         private bool _scheduled;
 
-        public RuntimeStoreNetServer(RuntimeStore store, IRuntimeObjectSerializer serializer)
+        public RuntimeStoreNetServer(Func<Hash128, RuntimeStore> stores)
         {
-            _store = store;
-            _ser = serializer;
+            _stores = stores;
 
             NetworkServer.RegisterHandler<RtMutateMsg>(OnMutate, requireAuthentication: true);
         }
 
-        public void SendFullSnapshot(NetworkConnectionToClient conn)
+        public void SendFullSnapshot(Hash128 storeKey, NetworkConnectionToClient conn)
         {
-            foreach (var kv in _store.Parents.V)
+            var store = _stores(storeKey);
+            foreach (var kv in store.Parents.V)
             {
-                SendSubtree(conn, kv.Key, parentId: -1);
+                SendSubtree(store, conn, kv.Key, parentId: -1);
             }
         }
 
-        private void SendSubtree(NetworkConnectionToClient conn, long id, long parentId)
+        public void BroadcastSpawn(Hash128 storeKey, GameRuntimeObject obj, long parentId = -1, int insertIndex = -1, uint clientSeq = 0)
         {
-            if (!_store.TryTakeRO(id, out var obj))
-                return;
-
-            var data = _ser.Serialize(obj);
-
-            conn.Send(new RtSpawnMsg
-            {
-                StoreId = _store.Id,
-                Id = id,
-                ParentId = parentId,
-                InsertIndex = -1,
-                Data = data,
-                ClientSeq = 0
-            });
-
-            if (_store.TryTakeChildren(id, out var children))
-            {
-                foreach (var c in children)
-                {
-                    SendSubtree(conn, c, parentId: id);
-                }
-            }
-        }
-
-        public void BroadcastSpawn(GameRuntimeObject obj, long parentId = -1, int insertIndex = -1, uint clientSeq = 0)
-        {
-            var data = _ser.Serialize(obj);
-
+            var store = _stores(storeKey);
+            
+            // var data = _ser.Serialize(obj);
+            
             NetworkServer.SendToReady(new RtSpawnMsg
             {
-                StoreId = _store.Id,
+                StoreId = store.Id,
                 Id = obj.InstanceId,
                 ParentId = parentId,
                 InsertIndex = insertIndex,
-                Data = data,
+                Data = null,
                 ClientSeq = clientSeq
             });
         }
 
-        public void BroadcastAttach(long parentId, long childId, int insertIndex = -1)
+        public void BroadcastAttach(Hash128 storeKey, long parentId, long childId, int insertIndex = -1)
         {
+            var store = _stores(storeKey);
+
             NetworkServer.SendToReady(new RtAttachMsg
             {
-                StoreId = _store.Id,
+                StoreId = store.Id,
                 ParentId = parentId,
                 ChildId = childId,
                 InsertIndex = insertIndex
             });
         }
 
-        public void BroadcastMove(long parentId, long childId, int newIndex)
+        public void BroadcastMove(Hash128 storeKey, long parentId, long childId, int newIndex)
         {
+            var store = _stores(storeKey);
+
             NetworkServer.SendToReady(new RtMoveMsg
             {
-                StoreId = _store.Id,
+                StoreId = store.Id,
                 ParentId = parentId,
                 ChildId = childId,
                 NewIndex = newIndex
             });
         }
 
-        public void BroadcastRemove(long id, RemoveMode mode = RemoveMode.Subtree)
+        public void BroadcastRemove(Hash128 storeKey, long id, RemoveMode mode = RemoveMode.Subtree)
         {
+            var store = _stores(storeKey);
+
             NetworkServer.SendToReady(new RtRemoveMsg
             {
-                StoreId = _store.Id,
+                StoreId = store.Id,
                 Id = id,
                 Mode = mode
             });
         }
 
-        private void OnMutate(NetworkConnectionToClient conn, RtMutateMsg msg)
+        private void SendSubtree(RuntimeStore store, NetworkConnectionToClient conn, long id, long parentId)
         {
-            if (msg.StoreId != (Hash128)_store.Id)
+            if (!store.TryTakeRO(id, out var obj))
                 return;
 
+            // var data = _ser.Serialize(obj);
+
+            conn.Send(new RtSpawnMsg
+            {
+                StoreId = store.Id,
+                Id = id,
+                ParentId = parentId,
+                InsertIndex = -1,
+                Data = null,
+                ClientSeq = 0
+            });
+
+            if (!store.TryTakeChildren(id, out var children))
+                return;
+            foreach (var c in children)
+            {
+                SendSubtree(store, conn, c, parentId: id);
+            }
+        }
+
+        private void OnMutate(NetworkConnectionToClient conn, RtMutateMsg msg)
+        {
             _mutateQueue.Enqueue((conn, msg));
             EnsureFlushScheduled();
         }
@@ -134,12 +138,13 @@ namespace DingoGameObjectsCMS.Mirror
             while (_mutateQueue.Count > 0)
             {
                 var (conn, msg) = _mutateQueue.Dequeue();
+                var store = _stores(msg.StoreId);
 
                 if (_lastSeqByConn.TryGetValue(conn.connectionId, out var last) && msg.Seq <= last)
                     continue;
                 _lastSeqByConn[conn.connectionId] = msg.Seq;
 
-                if (!_store.TryTakeRW(msg.TargetId, out var obj))
+                if (!store.TryTakeRW(msg.TargetId, out var obj))
                     continue;
 
                 var mutable = obj.Components.FirstOrDefault(c => c is INetMutableGRC) as INetMutableGRC;
@@ -148,7 +153,7 @@ namespace DingoGameObjectsCMS.Mirror
 
                 var applied = new List<RuntimeMutateApplied>(4);
 
-                var ctx = new RuntimeMutateContext(store: _store, owner: obj, targetId: msg.TargetId, compTypeId: msg.CompTypeId, side: RuntimeMutateSide.ServerAuthoritative, connection: conn, revision: ++_revision);
+                var ctx = new RuntimeMutateContext(store: store, owner: obj, targetId: msg.TargetId, compTypeId: msg.CompTypeId, side: RuntimeMutateSide.ServerAuthoritative, connection: conn, revision: ++_revision);
 
                 mutable.ApplyMutatePayload(in ctx, msg.Payload, applied);
 
@@ -156,7 +161,7 @@ namespace DingoGameObjectsCMS.Mirror
                 {
                     NetworkServer.SendToReady(new RtAppliedMsg
                     {
-                        StoreId = _store.Id,
+                        StoreId = store.Id,
                         Revision = _revision,
                         TargetId = a.TargetId,
                         CompTypeId = a.CompTypeId,

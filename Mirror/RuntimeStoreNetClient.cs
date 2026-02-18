@@ -11,14 +11,12 @@ namespace DingoGameObjectsCMS.Mirror
     public sealed class RuntimeStoreNetClient
     {
         private readonly Func<Hash128, RuntimeStore> _stores;
-        private readonly IRuntimeObjectSerializer _ser;
 
         private readonly List<RtSpawnMsg> _pendingSpawns = new();
 
-        public RuntimeStoreNetClient(Func<Hash128, RuntimeStore> stores, IRuntimeObjectSerializer serializer)
+        public RuntimeStoreNetClient(Func<Hash128, RuntimeStore> stores)
         {
             _stores = stores;
-            _ser = serializer;
 
             NetworkClient.RegisterHandler<RtSpawnMsg>(OnSpawn);
             NetworkClient.RegisterHandler<RtAttachMsg>(OnAttach);
@@ -57,7 +55,7 @@ namespace DingoGameObjectsCMS.Mirror
 
         private void DrainPending(RuntimeStore store, Hash128 storeKey)
         {
-            for (int i = _pendingSpawns.Count - 1; i >= 0; i--)
+            for (var i = _pendingSpawns.Count - 1; i >= 0; i--)
             {
                 var p = _pendingSpawns[i];
                 if ((Hash128)p.StoreId != storeKey)
@@ -74,16 +72,12 @@ namespace DingoGameObjectsCMS.Mirror
         private void ApplySpawn(RuntimeStore store, RtSpawnMsg msg)
         {
             var obj = store.CreateNet(msg.Id);
-            _ser.DeserializeInto(obj, msg.Data);
+            // _ser.DeserializeInto(obj, msg.Data);
 
             if (msg.ParentId < 0)
-            {
                 store.PublishRootExisting(msg.Id);
-            }
             else
-            {
                 store.AttachChild(msg.ParentId, msg.Id, msg.InsertIndex);
-            }
         }
 
         private void OnAttach(RtAttachMsg msg)
@@ -116,14 +110,13 @@ namespace DingoGameObjectsCMS.Mirror
             if (!store.TryTakeRW(msg.TargetId, out var obj))
                 return;
 
-            var mutable = obj.Components.FirstOrDefault(c => c is INetMutableGRC) as INetMutableGRC;
+            var mutable = obj.Components.FirstOrDefault(c => c is INetMutableGRC) as INetMutableGRC; // TODO Get by msg.CompTypeId
             if (mutable == null)
                 return;
 
-            var dummy = new List<RuntimeMutateApplied>(0);
-            var ctx = new RuntimeMutateContext(store: store, owner: obj, targetId: msg.TargetId, compTypeId: msg.CompTypeId, side: RuntimeMutateSide.ClientRemoteApply, connection: null, revision: msg.Revision);
+            var ctx = new RuntimeMutateContext(store, obj, msg.TargetId, msg.CompTypeId, RuntimeMutateSide.ClientRemoteApply, null, msg.Revision);
 
-            mutable.ApplyMutatePayload(in ctx, msg.Payload, dummy);
+            mutable.ApplyMutatePayload(in ctx, msg.Payload, null);
         }
     }
 }

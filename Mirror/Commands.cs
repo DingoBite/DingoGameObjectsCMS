@@ -63,11 +63,5 @@ namespace DingoGameObjectsCMS.Mirror
         public uint CompTypeId;
         public byte[] Payload;
     }
-
-    public interface IRuntimeObjectSerializer
-    {
-        byte[] Serialize(GameRuntimeObject obj);
-        void DeserializeInto(GameRuntimeObject obj, byte[] data);
-    }
 }
 #endif
