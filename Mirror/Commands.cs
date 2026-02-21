@@ -2,6 +2,7 @@
 using System;
 using Mirror;
 using DingoGameObjectsCMS.RuntimeObjects;
+using Unity.Collections;
 using Unity.Entities;
 using UnityEngine.Scripting;
 
@@ -10,7 +11,7 @@ namespace DingoGameObjectsCMS.Mirror
     [Serializable, Preserve]
     public struct RtSpawnMsg : NetworkMessage
     {
-        public Hash128 StoreId;
+        public FixedString32Bytes StoreId;
         public long Id;
         public long ParentId;
         public int InsertIndex;
@@ -21,7 +22,7 @@ namespace DingoGameObjectsCMS.Mirror
     [Serializable, Preserve]
     public struct RtAttachMsg : NetworkMessage
     {
-        public Hash128 StoreId;
+        public FixedString32Bytes StoreId;
         public long ParentId;
         public long ChildId;
         public int InsertIndex;
@@ -30,7 +31,7 @@ namespace DingoGameObjectsCMS.Mirror
     [Serializable, Preserve]
     public struct RtMoveMsg : NetworkMessage
     {
-        public Hash128 StoreId;
+        public FixedString32Bytes StoreId;
         public long ParentId;
         public long ChildId;
         public int NewIndex;
@@ -39,7 +40,7 @@ namespace DingoGameObjectsCMS.Mirror
     [Serializable, Preserve]
     public struct RtRemoveMsg : NetworkMessage
     {
-        public Hash128 StoreId;
+        public FixedString32Bytes StoreId;
         public long Id;
         public RemoveMode Mode;
     }
@@ -47,7 +48,7 @@ namespace DingoGameObjectsCMS.Mirror
     [Serializable, Preserve]
     public struct RtMutateMsg : NetworkMessage
     {
-        public Hash128 StoreId;
+        public FixedString32Bytes StoreId;
         public uint Seq;
         public long TargetId;
         public uint CompTypeId;
@@ -57,7 +58,7 @@ namespace DingoGameObjectsCMS.Mirror
     [Serializable, Preserve]
     public struct RtAppliedMsg : NetworkMessage
     {
-        public Hash128 StoreId;
+        public FixedString32Bytes StoreId;
         public uint Revision;
         public long TargetId;
         public uint CompTypeId;

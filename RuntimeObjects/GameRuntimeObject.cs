@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Runtime.Serialization;
 using Newtonsoft.Json;
+using Unity.Collections;
 using Unity.Entities;
 using UnityEngine;
 using UnityEngine.Scripting;
@@ -10,46 +11,67 @@ using Hash128 = UnityEngine.Hash128;
 namespace DingoGameObjectsCMS.RuntimeObjects
 {
     [Serializable, Preserve]
-    public struct RuntimeInstance : IComponentData
-    {
-        public long Id;
-        public Hash128 StoreId;
-    }
-
-    [Serializable, Preserve]
-    public struct GameAssetKey
-    {
-        public const string MODS = "mods";
-        public const string UNDEFINED = "_undefined";
-        public const string NONE = "_none";
-        public const string ZERO_V = "0.0.0";
-
-        public string Mod;
-        public string Type;
-        public string Key;
-        public string Version;
-        
-        public GameAssetKey(string mod = null, string type = null, string key = null, string version = null)
-        {
-            Mod = string.IsNullOrWhiteSpace(mod) ? UNDEFINED : mod;
-            Type = string.IsNullOrWhiteSpace(type) ? NONE : type;
-            Key = string.IsNullOrWhiteSpace(key) ? NONE : key;
-            Version = string.IsNullOrWhiteSpace(version) ? ZERO_V : version;
-        }
-    }
-
-    [Serializable, Preserve]
     public class GameRuntimeObject : RuntimeGUIDObject, ISerializationCallbackReceiver
     {
         public GameAssetKey Key;
         public Hash128 AssetGUID;
         public Hash128 SourceAssetGUID;
 
-        [SerializeReference, JsonProperty("Components", ItemTypeNameHandling = TypeNameHandling.Auto)] private List<GameRuntimeComponent> _components = new();
-        [NonSerialized, JsonIgnore] private Dictionary<Type, GameRuntimeComponent> _componentsCache;
+        [SerializeReference, JsonProperty("Components", ItemTypeNameHandling = TypeNameHandling.Auto)]
+        private List<GameRuntimeComponent> _components = new();
+
+        [NonSerialized, JsonIgnore] private Dictionary<Type, GameRuntimeComponent> _componentsByType;
+        [NonSerialized, JsonIgnore] private Dictionary<uint, GameRuntimeComponent> _componentsById;
 
         [JsonIgnore] public IReadOnlyList<GameRuntimeComponent> Components => _components;
         [JsonIgnore] public RuntimeInstance RuntimeInstance => new() { Id = InstanceId, StoreId = StoreId };
+        
+        public GameRuntimeComponent GetById(uint typeId)
+        {
+            EnsureCache();
+            return _componentsById.GetValueOrDefault(typeId);
+        }
+
+        public T TakeRO<T>() where T : GameRuntimeComponent
+        {
+            EnsureCache();
+            return _componentsByType.TryGetValue(typeof(T), out var c) ? (T)c : null;
+        }
+
+        public T TakeRW<T>() where T : GameRuntimeComponent
+        {
+            EnsureCache();
+            if (!_componentsByType.TryGetValue(typeof(T), out var c) || c == null)
+                return null;
+            MarkDirty<T>();
+            return (T)c;
+        }
+
+        public T TakeOrForceCreateRO<T>(Func<T> factory) where T : GameRuntimeComponent
+        {
+            EnsureCache();
+            if (!_componentsByType.TryGetValue(typeof(T), out var c) || c == null)
+            {
+                var value = factory();
+                AddOrReplace(value, true);
+                return value;
+            }
+
+            return (T) c;
+        }
+
+        public T TakeOrForceCreateRW<T>(T forceCreateInstance) where T : GameRuntimeComponent
+        {
+            EnsureCache();
+            if (!_componentsByType.TryGetValue(typeof(T), out var c) || c == null)
+            {
+                AddOrReplace(forceCreateInstance, true);
+                return forceCreateInstance;
+            }
+
+            MarkDirty<T>();
+            return (T) c;
+        }
 
         public Entity CreateEntity(RuntimeStore runtimeStore, EntityCommandBuffer ecb)
         {
@@ -60,16 +82,58 @@ namespace DingoGameObjectsCMS.RuntimeObjects
             ecb.AddComponent(entity, new SourceAssetLink { AssetGUID = source });
             if (SourceAssetGUID.isValid)
                 ecb.AddComponent(entity, new AssetPresentationTag());
-            
-            if (Components == null)
-                return entity;
 
+            if (Components == null) return entity;
             foreach (var c in Components)
             {
                 c?.SetupForEntity(runtimeStore, ecb, this, entity);
             }
 
             return entity;
+        }
+
+        public void AddOrReplace<T>(T component, bool handleDirty = false) where T : GameRuntimeComponent
+        {
+            EnsureCache();
+            if (component == null)
+                return;
+
+            var keyType = typeof(T);
+
+            if (_componentsByType.TryGetValue(keyType, out var existing) && existing != null)
+            {
+                var idx = _components.FindIndex(c => ReferenceEquals(c, existing));
+                if (idx >= 0)
+                {
+                    _components[idx] = component;
+                    if (handleDirty)
+                        MarkDirty<T>();
+                }
+                else
+                {
+                    _components.Add(component);
+                    MarkDirtyStructure<T>(CompStructOpKind.Add);
+                    if (handleDirty)
+                        MarkDirty<T>();
+                }
+            }
+            else
+            {
+                _components.Add(component);
+                MarkDirtyStructure<T>(CompStructOpKind.Add);
+                if (handleDirty)
+                    MarkDirty<T>();
+            }
+
+            _componentsByType[keyType] = component;
+            var id = RuntimeComponentTypeRegistry.GetId(keyType);
+            _componentsById[id] = component;
+        }
+
+        public void Remove<T>() where T : GameRuntimeComponent
+        {
+            _componentsByType.Remove(typeof(T));
+            MarkDirtyStructure<T>(CompStructOpKind.Remove);
         }
 
         public void Destroy()
@@ -80,111 +144,44 @@ namespace DingoGameObjectsCMS.RuntimeObjects
                     disposable.Dispose();
             }
         }
-        
-        public void AddOrReplace<T>(T component) where T : GameRuntimeComponent
+
+        private void MarkDirty<T>() where T : GameRuntimeComponent
         {
-            if (component == null)
+            var component = TakeRO<T>();
+            if (component is not IDirtyCollectable dirtyCollectable)
                 return;
-
-            EnsureCache();
-
-            var keyType = typeof(T);
-
-            if (_componentsCache.TryGetValue(keyType, out var existing) && existing != null)
-            {
-                var idx = _components.FindIndex(c => ReferenceEquals(c, existing));
-                if (idx >= 0)
-                    _components[idx] = component;
-                else
-                    _components.Add(component);
-            }
-            else
-            {
-                _components.Add(component);
-            }
-
-            _componentsCache[keyType] = component;
+            dirtyCollectable.PrepareForDelta();
+            var compTypeId = RuntimeComponentTypeRegistry.GetId(typeof(T));
+            DirtyRegistry.MarkDirty(this, compTypeId);
         }
 
-        public T Get<T>() where T : GameRuntimeComponent
+        private void MarkDirtyStructure<T>(CompStructOpKind kind)
         {
-            EnsureCache();
-            return _componentsCache.TryGetValue(typeof(T), out var c) ? (T)c : null;
+            var compTypeId = RuntimeComponentTypeRegistry.GetId(typeof(T));
+            DirtyRegistry.MarkDirtyStructure(this, kind, compTypeId);
         }
         
-        public T GetOrForceCreate<T>(T create) where T : GameRuntimeComponent
-        {
-            EnsureCache();
-            if (_componentsCache.TryGetValue(typeof(T), out var c))
-                return (T)c;
-            AddOrReplace(create);
-            return create;
-        }
-
-        public bool TryGet<T>(out T value) where T : GameRuntimeComponent
-        {
-            value = Get<T>();
-            return value != null;
-        }
-
-        public bool Remove<T>(out T value) where T : GameRuntimeComponent
-        {
-            EnsureCache();
-
-            var keyType = typeof(T);
-
-            if (_componentsCache.TryGetValue(keyType, out var existing) && existing != null)
-            {
-                value = (T)existing;
-                _componentsCache.Remove(keyType);
-
-                var idx = _components.FindIndex(c => ReferenceEquals(c, existing));
-                if (idx >= 0)
-                {
-                    _components.RemoveAt(idx);
-                }
-                else
-                {
-                    for (var i = 0; i < _components.Count; i++)
-                    {
-                        if (_components[i] != null && _components[i].GetType() == keyType)
-                        {
-                            _components.RemoveAt(i);
-                            break;
-                        }
-                    }
-                }
-
-                return true;
-            }
-
-            value = null;
-            return false;
-        }
-
-        public void ClearComponents()
-        {
-            _components.Clear();
-            _componentsCache?.Clear();
-        }
-
         private void EnsureCache()
         {
-            if (_componentsCache == null)
+            if (_componentsById == null)
                 RebuildCache();
         }
 
         private void RebuildCache()
         {
-            _componentsCache = new Dictionary<Type, GameRuntimeComponent>(_components.Count);
+            _componentsByType = new Dictionary<Type, GameRuntimeComponent>(_components.Count);
+            _componentsById = new Dictionary<uint, GameRuntimeComponent>(_components.Count);
 
             for (var i = 0; i < _components.Count; i++)
             {
                 var c = _components[i];
                 if (c == null)
                     continue;
-                
-                _componentsCache[c.GetType()] = c;
+
+                var type = c.GetType();
+                var id = RuntimeComponentTypeRegistry.GetId(type);
+                _componentsByType[type] = c;
+                _componentsById[id] = c;
             }
         }
         

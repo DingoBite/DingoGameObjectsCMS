@@ -5,13 +5,14 @@ using System.Linq;
 using Mirror;
 using DingoUnityExtensions;
 using DingoGameObjectsCMS.RuntimeObjects;
+using Unity.Collections;
 using UnityEngine;
 
 namespace DingoGameObjectsCMS.Mirror
 {
     public sealed class RuntimeStoreNetServer
     {
-        private readonly Func<Hash128, RuntimeStore> _stores;
+        private readonly Func<FixedString32Bytes, RuntimeStore> _stores;
 
         private readonly Queue<(NetworkConnectionToClient conn, RtMutateMsg msg)> _mutateQueue = new();
         private readonly Dictionary<int, uint> _lastSeqByConn = new();
@@ -19,14 +20,14 @@ namespace DingoGameObjectsCMS.Mirror
         private uint _revision;
         private bool _scheduled;
 
-        public RuntimeStoreNetServer(Func<Hash128, RuntimeStore> stores)
+        public RuntimeStoreNetServer(Func<FixedString32Bytes, RuntimeStore> stores)
         {
             _stores = stores;
 
             NetworkServer.RegisterHandler<RtMutateMsg>(OnMutate, requireAuthentication: true);
         }
 
-        public void SendFullSnapshot(Hash128 storeKey, NetworkConnectionToClient conn)
+        public void SendFullSnapshot(FixedString32Bytes storeKey, NetworkConnectionToClient conn)
         {
             var store = _stores(storeKey);
             foreach (var kv in store.Parents.V)
@@ -35,7 +36,7 @@ namespace DingoGameObjectsCMS.Mirror
             }
         }
 
-        public void BroadcastSpawn(Hash128 storeKey, GameRuntimeObject obj, long parentId = -1, int insertIndex = -1, uint clientSeq = 0)
+        public void BroadcastSpawn(FixedString32Bytes storeKey, GameRuntimeObject obj, long parentId = -1, int insertIndex = -1, uint clientSeq = 0)
         {
             var store = _stores(storeKey);
             
@@ -52,7 +53,7 @@ namespace DingoGameObjectsCMS.Mirror
             });
         }
 
-        public void BroadcastAttach(Hash128 storeKey, long parentId, long childId, int insertIndex = -1)
+        public void BroadcastAttach(FixedString32Bytes storeKey, long parentId, long childId, int insertIndex = -1)
         {
             var store = _stores(storeKey);
 
@@ -65,7 +66,7 @@ namespace DingoGameObjectsCMS.Mirror
             });
         }
 
-        public void BroadcastMove(Hash128 storeKey, long parentId, long childId, int newIndex)
+        public void BroadcastMove(FixedString32Bytes storeKey, long parentId, long childId, int newIndex)
         {
             var store = _stores(storeKey);
 
@@ -78,7 +79,7 @@ namespace DingoGameObjectsCMS.Mirror
             });
         }
 
-        public void BroadcastRemove(Hash128 storeKey, long id, RemoveMode mode = RemoveMode.Subtree)
+        public void BroadcastRemove(FixedString32Bytes storeKey, long id, RemoveMode mode = RemoveMode.Subtree)
         {
             var store = _stores(storeKey);
 

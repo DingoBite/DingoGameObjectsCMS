@@ -4,17 +4,17 @@ using System.Collections.Generic;
 using System.Linq;
 using Mirror;
 using DingoGameObjectsCMS.RuntimeObjects;
-using UnityEngine;
+using Unity.Collections;
 
 namespace DingoGameObjectsCMS.Mirror
 {
     public sealed class RuntimeStoreNetClient
     {
-        private readonly Func<Hash128, RuntimeStore> _stores;
+        private readonly Func<FixedString32Bytes, RuntimeStore> _stores;
 
         private readonly List<RtSpawnMsg> _pendingSpawns = new();
 
-        public RuntimeStoreNetClient(Func<Hash128, RuntimeStore> stores)
+        public RuntimeStoreNetClient(Func<FixedString32Bytes, RuntimeStore> stores)
         {
             _stores = stores;
 
@@ -25,7 +25,7 @@ namespace DingoGameObjectsCMS.Mirror
             NetworkClient.RegisterHandler<RtAppliedMsg>(OnApplied);
         }
 
-        public void SendMutate(Hash128 storeKey, uint seq, long targetId, uint compTypeId, byte[] payload)
+        public void SendMutate(FixedString32Bytes storeKey, uint seq, long targetId, uint compTypeId, byte[] payload)
         {
             NetworkClient.Send(new RtMutateMsg
             {
@@ -37,7 +37,7 @@ namespace DingoGameObjectsCMS.Mirror
             });
         }
 
-        private RuntimeStore GetStore(Hash128 storeKey) => _stores(storeKey);
+        private RuntimeStore GetStore(FixedString32Bytes storeKey) => _stores(storeKey);
 
         private void OnSpawn(RtSpawnMsg msg)
         {
@@ -53,12 +53,12 @@ namespace DingoGameObjectsCMS.Mirror
             DrainPending(store, msg.StoreId);
         }
 
-        private void DrainPending(RuntimeStore store, Hash128 storeKey)
+        private void DrainPending(RuntimeStore store, FixedString32Bytes storeKey)
         {
             for (var i = _pendingSpawns.Count - 1; i >= 0; i--)
             {
                 var p = _pendingSpawns[i];
-                if ((Hash128)p.StoreId != storeKey)
+                if ((FixedString32Bytes)p.StoreId != storeKey)
                     continue;
 
                 if (p.ParentId < 0 || store.TryTakeRO(p.ParentId, out _))

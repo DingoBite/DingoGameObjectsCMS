@@ -2,6 +2,7 @@
 using DingoGameObjectsCMS.RuntimeObjects;
 using Mirror;
 using SnakeAndMice.GameComponents.AppGlue;
+using Unity.Collections;
 
 namespace DingoGameObjectsCMS.Mirror.Test
 {
@@ -17,7 +18,7 @@ namespace DingoGameObjectsCMS.Mirror.Test
             NetworkClient.RegisterHandler<RtDebugRequestDumpMsg>(OnReqDump);
         }
 
-        private RuntimeStore Get(string key) => _stores.GetOrAddRuntimeStore(key);
+        private RuntimeStore Get(FixedString32Bytes key) => _stores.GetOrAddRuntimeStore(key);
 
         private void OnReqHash(RtDebugRequestHashMsg msg)
         {
