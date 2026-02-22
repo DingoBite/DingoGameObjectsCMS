@@ -17,12 +17,14 @@ namespace DingoGameObjectsCMS.RuntimeObjects
         public Hash128 AssetGUID;
         public Hash128 SourceAssetGUID;
 
-        [SerializeReference, JsonProperty("Components", ItemTypeNameHandling = TypeNameHandling.Auto)]
-        private List<GameRuntimeComponent> _components = new();
-
+        [SerializeReference, JsonProperty("Components", ItemTypeNameHandling = TypeNameHandling.Auto)] private List<GameRuntimeComponent> _components = new();
         [NonSerialized, JsonIgnore] private Dictionary<Type, GameRuntimeComponent> _componentsByType;
         [NonSerialized, JsonIgnore] private Dictionary<uint, GameRuntimeComponent> _componentsById;
+        [NonSerialized, JsonIgnore] private Dictionary<uint, ComponentDirty> _componentsChanges = new();
+        [NonSerialized, JsonIgnore] private Dictionary<uint, ComponentStructDirty> _structureChanges = new();
 
+        [JsonIgnore] public IReadOnlyDictionary<uint, ComponentDirty> ComponentsChanges => _componentsChanges;
+        [JsonIgnore] public IReadOnlyDictionary<uint, ComponentStructDirty> StructureChanges => _structureChanges;
         [JsonIgnore] public IReadOnlyList<GameRuntimeComponent> Components => _components;
         [JsonIgnore] public RuntimeInstance RuntimeInstance => new() { Id = InstanceId, StoreId = StoreId };
         
@@ -43,7 +45,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects
             EnsureCache();
             if (!_componentsByType.TryGetValue(typeof(T), out var c) || c == null)
                 return null;
-            MarkDirty<T>();
+            MarkComponentDirty<T>();
             return (T)c;
         }
 
@@ -53,7 +55,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects
             if (!_componentsByType.TryGetValue(typeof(T), out var c) || c == null)
             {
                 var value = factory();
-                AddOrReplace(value, true);
+                AddOrReplace(value);
                 return value;
             }
 
@@ -65,11 +67,11 @@ namespace DingoGameObjectsCMS.RuntimeObjects
             EnsureCache();
             if (!_componentsByType.TryGetValue(typeof(T), out var c) || c == null)
             {
-                AddOrReplace(forceCreateInstance, true);
+                AddOrReplace(forceCreateInstance);
                 return forceCreateInstance;
             }
 
-            MarkDirty<T>();
+            MarkComponentDirty<T>();
             return (T) c;
         }
 
@@ -92,48 +94,54 @@ namespace DingoGameObjectsCMS.RuntimeObjects
             return entity;
         }
 
-        public void AddOrReplace<T>(T component, bool handleDirty = false) where T : GameRuntimeComponent
+        public void AddOrReplace<T>(T component) where T : GameRuntimeComponent
         {
             EnsureCache();
             if (component == null)
                 return;
 
             var keyType = typeof(T);
-
+            var typeId = keyType.GetId();
+            
             if (_componentsByType.TryGetValue(keyType, out var existing) && existing != null)
             {
                 var idx = _components.FindIndex(c => ReferenceEquals(c, existing));
                 if (idx >= 0)
                 {
                     _components[idx] = component;
-                    if (handleDirty)
-                        MarkDirty<T>();
+                    MarkComponentDirty<T>();
                 }
                 else
                 {
                     _components.Add(component);
-                    MarkDirtyStructure<T>(CompStructOpKind.Add);
-                    if (handleDirty)
-                        MarkDirty<T>();
+                    MarkComponentStructDirty<T>(CompStructOpKind.Add);
+                    MarkComponentDirty<T>();
                 }
             }
             else
             {
                 _components.Add(component);
-                MarkDirtyStructure<T>(CompStructOpKind.Add);
-                if (handleDirty)
-                    MarkDirty<T>();
+                MarkComponentStructDirty<T>(CompStructOpKind.Add);
+                MarkComponentDirty<T>();
             }
 
             _componentsByType[keyType] = component;
-            var id = RuntimeComponentTypeRegistry.GetId(keyType);
-            _componentsById[id] = component;
+            _componentsById[typeId] = component;
         }
 
         public void Remove<T>() where T : GameRuntimeComponent
         {
-            _componentsByType.Remove(typeof(T));
-            MarkDirtyStructure<T>(CompStructOpKind.Remove);
+            if (_componentsByType.Remove(typeof(T), out var c))
+            {
+                _components.Remove(c);
+                if (c is IDisposable disposable)
+                    disposable.Dispose();
+            }
+
+            var typeId = typeof(T).GetId();
+            _componentsById.Remove(typeId);
+            
+            MarkComponentStructDirty<T>(CompStructOpKind.Remove);
         }
 
         public void Destroy()
@@ -145,20 +153,37 @@ namespace DingoGameObjectsCMS.RuntimeObjects
             }
         }
 
-        private void MarkDirty<T>() where T : GameRuntimeComponent
+        public void ClearDirty()
         {
-            var component = TakeRO<T>();
-            if (component is not IDirtyCollectable dirtyCollectable)
+            _componentsChanges.Clear();
+            _structureChanges.Clear();
+        }
+        
+        private void MarkComponentDirty<T>()
+        {
+            if (!DirtyTraits<T>.Data)
                 return;
-            dirtyCollectable.PrepareForDelta();
-            var compTypeId = RuntimeComponentTypeRegistry.GetId(typeof(T));
-            DirtyRegistry.MarkDirty(this, compTypeId);
+            var compTypeId = typeof(T).GetId();
+            _componentsChanges[compTypeId] = new ComponentDirty(compTypeId);
         }
 
-        private void MarkDirtyStructure<T>(CompStructOpKind kind)
+        private void MarkComponentStructDirty<T>(CompStructOpKind kind)
         {
-            var compTypeId = RuntimeComponentTypeRegistry.GetId(typeof(T));
-            DirtyRegistry.MarkDirtyStructure(this, kind, compTypeId);
+            if (DirtyTraits<T>.NoStruct)
+                return;
+
+            var compTypeId = typeof(T).GetId();
+            if (_structureChanges.TryGetValue(compTypeId, out var prev))
+            {
+                if (prev.Kind == CompStructOpKind.Add && kind == CompStructOpKind.Remove)
+                {
+                    _structureChanges.Remove(compTypeId);
+                    _componentsChanges.Remove(compTypeId);
+                    return;
+                }
+            }
+
+            _structureChanges[compTypeId] = new ComponentStructDirty(compTypeId, kind);
         }
         
         private void EnsureCache()

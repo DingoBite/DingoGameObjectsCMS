@@ -71,7 +71,7 @@ namespace DingoGameObjectsCMS.Mirror
 
         private void ApplySpawn(RuntimeStore store, RtSpawnMsg msg)
         {
-            var obj = store.CreateNet(msg.Id);
+            // var obj = store.CreateNet(msg.Id);
             // _ser.DeserializeInto(obj, msg.Data);
 
             if (msg.ParentId < 0)

@@ -79,7 +79,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects
             return _idByType.TryGetValue(type, out id);
         }
 
-        public static uint GetId(Type type)
+        public static uint GetId(this Type type)
         {
             if (!IsInitialized)
                 throw new InvalidOperationException("RuntimeComponentTypeRegistry is not initialized. Call InitializeFromJson/InitializeFromStreamingAssets first.");
