@@ -3,7 +3,7 @@ using Unity.Collections;
 using Unity.Entities;
 using UnityEngine.Scripting;
 
-namespace DingoGameObjectsCMS.RuntimeObjects.Objects
+namespace DingoGameObjectsCMS.RuntimeObjects
 {
     [Serializable, Preserve]
     public struct RuntimeInstance : IComponentData
@@ -33,5 +33,4 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
             Version = string.IsNullOrWhiteSpace(version) ? ZERO_V : version;
         }
     }
-
 }

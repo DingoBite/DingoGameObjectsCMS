@@ -1,116 +1,128 @@
 using System;
 using System.Collections.Generic;
-using System.Runtime.Serialization;
-using DingoGameObjectsCMS.RuntimeObjects;
-using DingoGameObjectsCMS.RuntimeObjects.Objects;
 using DingoGameObjectsCMS.RuntimeObjects.Stores;
-using Newtonsoft.Json;
-using UnityEngine;
-using UnityEngine.Scripting;
+using DingoProjectAppStructure.Core.Model;
+using DingoUnityExtensions;
 
 namespace DingoGameObjectsCMS.RuntimeObjects.Commands
 {
-    [Serializable, Preserve, HideInTypeMenu]
-    public class GameRuntimeParameter
+    public sealed class RuntimeCommandsBus : AppModelBase
     {
-        
-    }
+        public const int UPDATE_ORDER = RuntimeStore.UPDATE_ORDER - 1;
 
-    [Serializable, Preserve]
-    public class GameRuntimeCommand : RuntimeGUIDObject, ISerializationCallbackReceiver
-    {
-        public GameAssetKey Key;
-        public Hash128 AssetGUID;
-        
-        [SerializeReference, JsonProperty("Parameters", ItemTypeNameHandling = TypeNameHandling.Auto)] private List<GameRuntimeParameter> _parameters = new();
-        [NonSerialized, JsonIgnore] private Dictionary<Type, GameRuntimeParameter> _parametersByType;
-        [NonSerialized, JsonIgnore] private Dictionary<uint, GameRuntimeParameter> _parametersById;
-        
-        public GameRuntimeParameter GetById(uint typeId)
-        {
-            EnsureCache();
-            return _parametersById.GetValueOrDefault(typeId);
-        }
-        
-        public T TakeOrForceCreate<T>(Func<T> factory) where T : GameRuntimeParameter
-        {
-            EnsureCache();
-            if (!_parametersByType.TryGetValue(typeof(T), out var c) || c == null)
-            {
-                var value = factory();
-                AddOrReplace(value);
-                return value;
-            }
+        private readonly List<GameRuntimeCommand> _queue = new(capacity: 64);
+        private readonly List<GameRuntimeCommand> _processing = new(capacity: 64);
 
-            return (T) c;
-        }
-        
-        public void AddOrReplace<T>(T component) where T : GameRuntimeParameter
+        private bool _scheduled;
+        private bool _flushInProgress;
+        private bool _rescheduleRequested;
+
+        public int QueuedCount => _queue.Count;
+
+        public event Action<GameRuntimeCommand> BeforeExecute;
+        public event Action<GameRuntimeCommand> AfterExecute;
+        public event Action<GameRuntimeCommand, Exception> ExecuteFailed;
+
+        public void Enqueue(GameRuntimeCommand command)
         {
-            EnsureCache();
-            if (component == null)
+            if (command == null)
                 return;
 
-            var keyType = typeof(T);
-            var typeId = keyType.GetId();
-            
-            if (_parametersByType.TryGetValue(keyType, out var existing) && existing != null)
-            {
-                var idx = _parameters.FindIndex(c => ReferenceEquals(c, existing));
-                if (idx >= 0)
-                    _parameters[idx] = component;
-                else
-                    _parameters.Add(component);
-            }
-            else
-            {
-                _parameters.Add(component);
-            }
-
-            _parametersByType[keyType] = component;
-            _parametersById[typeId] = component;
+            _queue.Add(command);
+            ScheduleFlush();
         }
 
-        public void Remove<T>() where T : GameRuntimeParameter
+        public void EnqueueRange(IEnumerable<GameRuntimeCommand> commands)
         {
-            if (_parametersByType.Remove(typeof(T), out var c))
-                _parameters.Remove(c);
+            if (commands == null)
+                return;
 
-            var typeId = typeof(T).GetId();
-            _parametersById.Remove(typeId);
-        }
-        
-        private void EnsureCache()
-        {
-            if (_parametersById == null)
-                RebuildCache();
-        }
-
-        private void RebuildCache()
-        {
-            _parametersByType = new Dictionary<Type, GameRuntimeParameter>(_parameters.Count);
-            _parametersById = new Dictionary<uint, GameRuntimeParameter>(_parameters.Count);
-
-            foreach (var c in _parameters)
+            foreach (var c in commands)
             {
-                if (c == null)
-                    continue;
+                if (c != null)
+                    _queue.Add(c);
+            }
 
-                var type = c.GetType();
-                var id = type.GetId();
-                _parametersByType[type] = c;
-                _parametersById[id] = c;
+            ScheduleFlush();
+        }
+
+        public void Clear()
+        {
+            _queue.Clear();
+            _processing.Clear();
+        }
+
+        private void ScheduleFlush()
+        {
+            if (_scheduled)
+            {
+                if (_flushInProgress)
+                    _rescheduleRequested = true;
+                return;
+            }
+
+            _scheduled = true;
+            CoroutineParent.AddLateUpdater(this, Flush, UPDATE_ORDER);
+        }
+
+        private void Flush()
+        {
+            _flushInProgress = true;
+            try
+            {
+                if (_queue.Count == 0)
+                    return;
+
+                _processing.Clear();
+                _processing.AddRange(_queue);
+                _queue.Clear();
+
+                foreach (var cmd in _processing)
+                {
+                    if (cmd == null)
+                        continue;
+
+                    BeforeExecute?.Invoke(cmd);
+
+                    try
+                    {
+                        ExecuteCommand(cmd);
+                    }
+                    catch (Exception e)
+                    {
+                        ExecuteFailed?.Invoke(cmd, e);
+                    }
+
+                    AfterExecute?.Invoke(cmd);
+                }
+
+                _processing.Clear();
+            }
+            finally
+            {
+                _flushInProgress = false;
+                var needReschedule = _rescheduleRequested || _queue.Count > 0;
+                _rescheduleRequested = false;
+
+                _scheduled = false;
+                CoroutineParent.RemoveLateUpdater(this);
+
+                if (needReschedule)
+                    ScheduleFlush();
             }
         }
-        
-        [OnDeserialized]
-        private void OnDeserialized(StreamingContext _) => RebuildCache();
-        void ISerializationCallbackReceiver.OnBeforeSerialize() { }
-        void ISerializationCallbackReceiver.OnAfterDeserialize() => RebuildCache();
-    }
 
-    public class RuntimeCommandsBus
-    {
-        
+        private static void ExecuteCommand(GameRuntimeCommand command)
+        {
+            var components = command.Components;
+            if (components == null || components.Count == 0)
+                return;
+
+            foreach (var c in components)
+            {
+                if (c is ICommandLogic logic)
+                    logic.Execute(command);
+            }
+        }
     }
 }
