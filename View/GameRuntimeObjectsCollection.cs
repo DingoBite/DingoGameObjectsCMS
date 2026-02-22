@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using DingoGameObjectsCMS.RuntimeObjects;
+using DingoGameObjectsCMS.RuntimeObjects.Objects;
 using DingoUnityExtensions.Pools.Core;
 using DingoUnityExtensions.UnityViewProviders.Core;
 using DingoUnityExtensions.UnityViewProviders.Pools;

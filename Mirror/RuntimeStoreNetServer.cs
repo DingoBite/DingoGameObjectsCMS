@@ -5,6 +5,8 @@ using System.Linq;
 using Mirror;
 using DingoUnityExtensions;
 using DingoGameObjectsCMS.RuntimeObjects;
+using DingoGameObjectsCMS.RuntimeObjects.Objects;
+using DingoGameObjectsCMS.RuntimeObjects.Stores;
 using Unity.Collections;
 using UnityEngine;
 

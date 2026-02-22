@@ -2,7 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using DingoGameObjectsCMS.RuntimeObjects;
+using DingoGameObjectsCMS.AssetObjects;
+using DingoGameObjectsCMS.RuntimeObjects.Objects;
+using DingoGameObjectsCMS.RuntimeObjects.Stores;
 using UnityEditor;
 using UnityEditor.Build;
 using UnityEditor.Build.Reporting;
@@ -33,7 +35,7 @@ namespace DingoGameObjectsCMS.Editor
                 {
                     return Array.Empty<Type>();
                 }
-            }).Where(t => t != null && !t.IsAbstract && targetBase.IsAssignableFrom(t));
+            }).Where(t => t != null && !t.IsAbstract && (typeof(GameRuntimeComponent).IsAssignableFrom(t) || typeof(GameAssetParameter).IsAssignableFrom(t)));
 
             var maxOrder = manifest.Types.Count == 0 ? -1 : manifest.Types.Max(e => e.Order);
             foreach (var t in all)

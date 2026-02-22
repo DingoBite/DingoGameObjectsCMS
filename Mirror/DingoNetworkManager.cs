@@ -4,6 +4,8 @@ using System.Collections.Generic;
 using Mirror;
 using UnityEngine;
 using DingoGameObjectsCMS.RuntimeObjects;
+using DingoGameObjectsCMS.RuntimeObjects.Objects;
+using DingoGameObjectsCMS.RuntimeObjects.Stores;
 using Unity.Collections;
 
 namespace DingoGameObjectsCMS.Mirror

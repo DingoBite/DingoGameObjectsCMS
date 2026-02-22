@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using DingoGameObjectsCMS.AssetObjects;
 using DingoGameObjectsCMS.Modding;
 using DingoGameObjectsCMS.RuntimeObjects;
+using DingoGameObjectsCMS.RuntimeObjects.Objects;
 using DingoGameObjectsCMS.Serialization;
 using DingoUnityExtensions.MonoBehaviours.Singletons;
 using NaughtyAttributes;

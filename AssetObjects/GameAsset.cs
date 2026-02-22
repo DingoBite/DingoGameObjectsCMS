@@ -1,5 +1,5 @@
 using System.Collections.Generic;
-using DingoGameObjectsCMS.RuntimeObjects;
+using DingoGameObjectsCMS.RuntimeObjects.Objects;
 using Newtonsoft.Json;
 using UnityEngine;
 
@@ -14,11 +14,7 @@ namespace DingoGameObjectsCMS.AssetObjects
         [SerializeField, Tooltip("If this GameAsset is representation of other GameAsset"), JsonProperty("SourceAssetGUID")] private Hash128 _sourceAssetGUID;
 
         [JsonIgnore] public IReadOnlyList<GameAssetComponent> Components => _components;
-        
-#if UNITY_EDITOR
-        [JsonIgnore] public List<GameAssetComponent> Components_Editor { get => _components; set => _components = value; }
-#endif
-        
+
         public virtual void SetupRuntimeObject(GameRuntimeObject g)
         {
             g.Key = Key;
@@ -27,9 +23,9 @@ namespace DingoGameObjectsCMS.AssetObjects
             if (_components == null)
                 return;
 
-            foreach (var mobAssetComponent in _components)
+            foreach (var component in _components)
             {
-                mobAssetComponent.SetupRuntimeComponent(g);
+                component.SetupRuntimeComponent(g);
             }
         }
     }

@@ -1,5 +1,6 @@
 #if MIRROR
 using DingoGameObjectsCMS.RuntimeObjects;
+using DingoGameObjectsCMS.RuntimeObjects.Stores;
 using Mirror;
 using SnakeAndMice.GameComponents.AppGlue;
 using Unity.Collections;

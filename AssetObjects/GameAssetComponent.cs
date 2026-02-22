@@ -1,6 +1,5 @@
 using System;
-using DingoGameObjectsCMS.RuntimeObjects;
-using Unity.Entities;
+using DingoGameObjectsCMS.RuntimeObjects.Objects;
 using UnityEngine.Scripting;
 
 namespace DingoGameObjectsCMS.AssetObjects

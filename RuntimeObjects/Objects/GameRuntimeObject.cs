@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Runtime.Serialization;
+using DingoGameObjectsCMS.RuntimeObjects.Stores;
 using Newtonsoft.Json;
 using Unity.Collections;
 using Unity.Entities;
@@ -8,7 +9,7 @@ using UnityEngine;
 using UnityEngine.Scripting;
 using Hash128 = UnityEngine.Hash128;
 
-namespace DingoGameObjectsCMS.RuntimeObjects
+namespace DingoGameObjectsCMS.RuntimeObjects.Objects
 {
     [Serializable, Preserve]
     public class GameRuntimeObject : RuntimeGUIDObject, ISerializationCallbackReceiver
@@ -62,13 +63,14 @@ namespace DingoGameObjectsCMS.RuntimeObjects
             return (T) c;
         }
 
-        public T TakeOrForceCreateRW<T>(T forceCreateInstance) where T : GameRuntimeComponent
+        public T TakeOrForceCreateRW<T>(Func<T> factory) where T : GameRuntimeComponent
         {
             EnsureCache();
             if (!_componentsByType.TryGetValue(typeof(T), out var c) || c == null)
             {
-                AddOrReplace(forceCreateInstance);
-                return forceCreateInstance;
+                var value = factory();
+                AddOrReplace(value);
+                return value;
             }
 
             MarkComponentDirty<T>();
@@ -197,14 +199,13 @@ namespace DingoGameObjectsCMS.RuntimeObjects
             _componentsByType = new Dictionary<Type, GameRuntimeComponent>(_components.Count);
             _componentsById = new Dictionary<uint, GameRuntimeComponent>(_components.Count);
 
-            for (var i = 0; i < _components.Count; i++)
+            foreach (var c in _components)
             {
-                var c = _components[i];
                 if (c == null)
                     continue;
 
                 var type = c.GetType();
-                var id = RuntimeComponentTypeRegistry.GetId(type);
+                var id = type.GetId();
                 _componentsByType[type] = c;
                 _componentsById[id] = c;
             }

@@ -7,7 +7,7 @@ using UnityEngine;
 using UnityEngine.Networking;
 using UnityEngine.Scripting;
 
-namespace DingoGameObjectsCMS.RuntimeObjects
+namespace DingoGameObjectsCMS.RuntimeObjects.Stores
 {
     [Serializable, Preserve]
     public class Manifest

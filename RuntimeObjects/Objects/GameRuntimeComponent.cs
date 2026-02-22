@@ -1,8 +1,9 @@
 using System;
+using DingoGameObjectsCMS.RuntimeObjects.Stores;
 using Unity.Entities;
 using UnityEngine.Scripting;
 
-namespace DingoGameObjectsCMS.RuntimeObjects
+namespace DingoGameObjectsCMS.RuntimeObjects.Objects
 {
     [Serializable, Preserve, HideInTypeMenu]
     public class GameRuntimeComponent

@@ -2,6 +2,7 @@
 using System;
 using System.Linq;
 using DingoGameObjectsCMS.RuntimeObjects;
+using DingoGameObjectsCMS.RuntimeObjects.Objects;
 using DingoUnityExtensions.Serialization;
 using Newtonsoft.Json;
 

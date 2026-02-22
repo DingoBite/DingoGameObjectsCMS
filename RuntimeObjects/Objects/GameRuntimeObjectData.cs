@@ -3,7 +3,7 @@ using Unity.Collections;
 using Unity.Entities;
 using UnityEngine.Scripting;
 
-namespace DingoGameObjectsCMS.RuntimeObjects
+namespace DingoGameObjectsCMS.RuntimeObjects.Objects
 {
     [Serializable, Preserve]
     public struct RuntimeInstance : IComponentData

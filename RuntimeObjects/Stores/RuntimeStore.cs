@@ -2,12 +2,13 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Bind;
+using DingoGameObjectsCMS.RuntimeObjects.Objects;
 using DingoProjectAppStructure.Core.Model;
 using DingoUnityExtensions;
 using Unity.Collections;
 using Unity.Entities;
 
-namespace DingoGameObjectsCMS.RuntimeObjects
+namespace DingoGameObjectsCMS.RuntimeObjects.Stores
 {
     public class RuntimeStore : AppModelBase
     {

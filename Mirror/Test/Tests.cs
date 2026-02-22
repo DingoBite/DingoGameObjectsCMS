@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Text;
 using DingoGameObjectsCMS.RuntimeObjects;
+using DingoGameObjectsCMS.RuntimeObjects.Stores;
 
 namespace DingoGameObjectsCMS.Mirror.Test
 {
