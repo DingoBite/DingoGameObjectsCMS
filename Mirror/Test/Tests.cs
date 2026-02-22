@@ -2,6 +2,9 @@ using System.Collections.Generic;
 using System.Text;
 using DingoGameObjectsCMS.RuntimeObjects;
 using DingoGameObjectsCMS.RuntimeObjects.Stores;
+using NUnit.Framework;
+using SnakeAndMice.GameComponents.Map.Components;
+using Unity.Mathematics;
 
 namespace DingoGameObjectsCMS.Mirror.Test
 {
@@ -144,6 +147,242 @@ namespace DingoGameObjectsCMS.Mirror.Test
             visited.Add(id);
             error = null;
             return true;
+        }
+    }
+
+    internal sealed class RuntimeStoreReplicationCodecTests
+    {
+        [Test]
+        public void BuildDeltaPayload_IsDeterministicForSameStates()
+        {
+            EnsureRuntimeComponentRegistry();
+
+            var store = new RuntimeStore("determinism");
+            var obj = CreateObject(store, new int2(1, 2));
+
+            var baseline = RuntimeStoreSnapshotCodec.BuildSnapshot(store);
+
+            SetCell(store, obj.InstanceId, new int2(5, 7));
+            var current = RuntimeStoreSnapshotCodec.BuildSnapshot(store);
+
+            var d1 = RuntimeStoreSnapshotCodec.BuildDeltaPayload(baseline, current);
+            var d2 = RuntimeStoreSnapshotCodec.BuildDeltaPayload(baseline, current);
+
+            Assert.That(DeltaSignature(d1), Is.EqualTo(DeltaSignature(d2)));
+        }
+
+        [Test]
+        public void ApplyDelta_RejectsWhenBaselineIsMissing()
+        {
+            EnsureRuntimeComponentRegistry();
+
+            var serverStore = new RuntimeStore("server");
+            var obj = CreateObject(serverStore, new int2(0, 0));
+
+            var baseline = RuntimeStoreSnapshotCodec.BuildSnapshot(serverStore);
+            SetCell(serverStore, obj.InstanceId, new int2(3, 4));
+            var current = RuntimeStoreSnapshotCodec.BuildSnapshot(serverStore);
+            var delta = RuntimeStoreSnapshotCodec.BuildDeltaPayload(baseline, current);
+
+            var coldClientStore = new RuntimeStore("client");
+            var ok = RuntimeStoreSnapshotCodec.ApplyDelta(coldClientStore, delta);
+
+            Assert.That(ok, Is.False);
+        }
+
+        [Test]
+        public void FullSnapshotThenDelta_ReconnectConvergesToServerState()
+        {
+            EnsureRuntimeComponentRegistry();
+
+            var serverStore = new RuntimeStore("server");
+            var obj = CreateObject(serverStore, new int2(10, 10));
+
+            var snapshot0 = RuntimeStoreSnapshotCodec.BuildSnapshot(serverStore);
+            var fullPayload = RuntimeStoreSnapshotCodec.BuildFullPayload(snapshot0);
+
+            var clientStore = new RuntimeStore("client");
+            Assert.That(RuntimeStoreSnapshotCodec.ApplyFullSnapshot(clientStore, fullPayload), Is.True);
+
+            SetCell(serverStore, obj.InstanceId, new int2(21, 34));
+            var snapshot1 = RuntimeStoreSnapshotCodec.BuildSnapshot(serverStore);
+            var delta = RuntimeStoreSnapshotCodec.BuildDeltaPayload(snapshot0, snapshot1);
+
+            Assert.That(RuntimeStoreSnapshotCodec.ApplyDelta(clientStore, delta), Is.True);
+            Assert.That(StoreSignature(serverStore), Is.EqualTo(StoreSignature(clientStore)));
+        }
+
+        [Test]
+        public void ApplyDelta_Twice_KeepsSameState()
+        {
+            EnsureRuntimeComponentRegistry();
+
+            var serverStore = new RuntimeStore("server");
+            var obj = CreateObject(serverStore, new int2(2, 2));
+
+            var snapshot0 = RuntimeStoreSnapshotCodec.BuildSnapshot(serverStore);
+            SetCell(serverStore, obj.InstanceId, new int2(9, 9));
+            var snapshot1 = RuntimeStoreSnapshotCodec.BuildSnapshot(serverStore);
+            var delta = RuntimeStoreSnapshotCodec.BuildDeltaPayload(snapshot0, snapshot1);
+
+            var clientStore = new RuntimeStore("client");
+            Assert.That(RuntimeStoreSnapshotCodec.ApplyFullSnapshot(clientStore, RuntimeStoreSnapshotCodec.BuildFullPayload(snapshot0)), Is.True);
+
+            Assert.That(RuntimeStoreSnapshotCodec.ApplyDelta(clientStore, delta), Is.True);
+            var afterFirst = StoreSignature(clientStore);
+
+            Assert.That(RuntimeStoreSnapshotCodec.ApplyDelta(clientStore, delta), Is.True);
+            var afterSecond = StoreSignature(clientStore);
+
+            Assert.That(afterSecond, Is.EqualTo(afterFirst));
+        }
+
+        private static void EnsureRuntimeComponentRegistry()
+        {
+            if (RuntimeComponentTypeRegistry.IsInitialized && RuntimeComponentTypeRegistry.TryGetId(typeof(GridTransform_GRC), out _))
+                return;
+
+            var componentType = EscapeJson(typeof(GridTransform_GRC).AssemblyQualifiedName);
+            var json =
+                "{\"Version\":1,\"Types\":[{" +
+                "\"AssemblyQualifiedName\":\"" + componentType + "\"," +
+                "\"CreatedAt\":\"tests\"," +
+                "\"Order\":0" +
+                "}]}";
+
+            RuntimeComponentTypeRegistry.InitializeFromJson(json);
+        }
+
+        private static string EscapeJson(string value)
+        {
+            return value?.Replace("\\", "\\\\").Replace("\"", "\\\"");
+        }
+
+        private static string StoreSignature(RuntimeStore store)
+        {
+            var snapshot = RuntimeStoreSnapshotCodec.BuildSnapshot(store);
+            var ids = new List<long>(snapshot.NodesById.Keys);
+            ids.Sort();
+
+            var sb = new StringBuilder(1024);
+            for (var i = 0; i < ids.Count; i++)
+            {
+                var id = ids[i];
+                var node = snapshot.NodesById[id];
+
+                sb.Append(id)
+                    .Append('|')
+                    .Append(node.ParentId)
+                    .Append('|')
+                    .Append(node.Index)
+                    .Append('|')
+                    .Append(System.Convert.ToBase64String(node.ObjectData ?? System.Array.Empty<byte>()));
+
+                var compIds = new List<uint>(node.ComponentsByType.Keys);
+                compIds.Sort();
+
+                for (var c = 0; c < compIds.Count; c++)
+                {
+                    var compId = compIds[c];
+                    sb.Append('|')
+                        .Append(compId)
+                        .Append(':')
+                        .Append(System.Convert.ToBase64String(node.ComponentsByType[compId] ?? System.Array.Empty<byte>()));
+                }
+
+                sb.Append('\n');
+            }
+
+            return sb.ToString();
+        }
+
+        private static string DeltaSignature(RtStoreDeltaPayload payload)
+        {
+            var sb = new StringBuilder(512);
+
+            if (payload.StructureChanges != null)
+            {
+                for (var i = 0; i < payload.StructureChanges.Count; i++)
+                {
+                    var s = payload.StructureChanges[i];
+                    sb.Append("S:")
+                        .Append((int)s.Kind)
+                        .Append('|')
+                        .Append(s.Id)
+                        .Append('|')
+                        .Append(s.ParentId)
+                        .Append('|')
+                        .Append(s.Index)
+                        .Append('|')
+                        .Append((int)s.RemoveMode)
+                        .Append('|')
+                        .Append(System.Convert.ToBase64String(s.SpawnData ?? System.Array.Empty<byte>()))
+                        .Append('\n');
+                }
+            }
+
+            if (payload.ComponentStructureChanges != null)
+            {
+                for (var i = 0; i < payload.ComponentStructureChanges.Count; i++)
+                {
+                    var s = payload.ComponentStructureChanges[i];
+                    sb.Append("CS:")
+                        .Append(s.ObjectId)
+                        .Append('|')
+                        .Append(s.CompTypeId)
+                        .Append('|')
+                        .Append((int)s.Kind)
+                        .Append('|')
+                        .Append(System.Convert.ToBase64String(s.Payload ?? System.Array.Empty<byte>()))
+                        .Append('\n');
+                }
+            }
+
+            if (payload.ComponentChanges != null)
+            {
+                for (var i = 0; i < payload.ComponentChanges.Count; i++)
+                {
+                    var c = payload.ComponentChanges[i];
+                    sb.Append("C:")
+                        .Append(c.ObjectId)
+                        .Append('|')
+                        .Append(c.CompTypeId)
+                        .Append('|')
+                        .Append(System.Convert.ToBase64String(c.Payload ?? System.Array.Empty<byte>()))
+                        .Append('\n');
+                }
+            }
+
+            return sb.ToString();
+        }
+
+        private static DingoGameObjectsCMS.RuntimeObjects.Objects.GameRuntimeObject CreateObject(RuntimeStore store, int2 cell)
+        {
+            var obj = store.Create();
+            obj.AddOrReplace(new GridTransform_GRC
+            {
+                T = new GridTransform
+                {
+                    Cell = cell,
+                    SubCell = int2.zero,
+                    SubCell01 = float2.zero,
+                    SizeInSubCells = new int2(1, 1),
+                },
+            });
+
+            return obj;
+        }
+
+        private static void SetCell(RuntimeStore store, long id, int2 value)
+        {
+            Assert.That(store.TryTakeRW(id, out var obj), Is.True);
+
+            var tr = obj.TakeRW<GridTransform_GRC>();
+            Assert.That(tr, Is.Not.Null);
+
+            var data = tr.T;
+            data.Cell = value;
+            tr.T = data;
         }
     }
 }

@@ -23,7 +23,6 @@ namespace DingoGameObjectsCMS.Editor
             const string path = "Assets/StreamingAssets/runtime_component_types.json";
             var manifest = File.Exists(path) ? JsonUtility.FromJson<Manifest>(File.ReadAllText(path)) : new Manifest { Version = 1, Types = new List<Entry>() };
 
-            var targetBase = typeof(GameRuntimeComponent);
             var all = AppDomain.CurrentDomain.GetAssemblies().SelectMany(a =>
             {
                 try

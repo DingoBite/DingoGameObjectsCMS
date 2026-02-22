@@ -7,6 +7,7 @@ using DingoProjectAppStructure.Core.Model;
 using DingoUnityExtensions;
 using Unity.Collections;
 using Unity.Entities;
+using UnityEngine;
 
 namespace DingoGameObjectsCMS.RuntimeObjects.Stores
 {
@@ -74,6 +75,26 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
             var child = CreateDetached();
             AttachChild(parentId, child.InstanceId, insertIndex);
             return child;
+        }
+
+        public bool TryUpsertNetObject(GameRuntimeObject value)
+        {
+            if (value == null || value.InstanceId < 0)
+                return false;
+
+            var id = value.InstanceId;
+            value.StoreId = Id;
+
+            if (_all.TryGetValue(id, out var prev) && prev != null && !ReferenceEquals(prev, value))
+                prev.Destroy();
+
+            _all[id] = value;
+            if (_lastId <= id)
+                _lastId = id + 1;
+
+            MarkTouchedUpToRoot(id);
+            ScheduleFlush();
+            return true;
         }
 
         public void PublishRootExisting(long id) => AddToRoot(id);

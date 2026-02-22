@@ -23,7 +23,7 @@ namespace DingoGameObjectsCMS.Mirror.Test
 
         private void OnReqHash(RtDebugRequestHashMsg msg)
         {
-            var store = Get(msg.Store);
+            var store = Get(ToStoreKey(msg.Store));
 
             var ok = RuntimeStoreValidator.Validate(store, out var err);
             var hash = RuntimeStoreStructureHasher.ComputeHash(store);
@@ -39,7 +39,7 @@ namespace DingoGameObjectsCMS.Mirror.Test
 
         private void OnReqDump(RtDebugRequestDumpMsg msg)
         {
-            var store = Get(msg.Store);
+            var store = Get(ToStoreKey(msg.Store));
             var dump = RuntimeStoreStructureHasher.Dump(store, msg.MaxDepth <= 0 ? 64 : msg.MaxDepth);
 
             NetworkClient.Send(new RtDebugDumpMsg
@@ -47,6 +47,14 @@ namespace DingoGameObjectsCMS.Mirror.Test
                 Store = msg.Store,
                 Dump = dump
             }, Channels.Reliable);
+        }
+
+        private static FixedString32Bytes ToStoreKey(string storeId)
+        {
+            if (string.IsNullOrEmpty(storeId))
+                return default;
+
+            return (FixedString32Bytes)storeId;
         }
     }
 }

@@ -31,6 +31,7 @@ namespace DingoGameObjectsCMS.Serialization
             }).Where(t => t != null && !t.IsAbstract && (typeof(GameAssetScriptableObject).IsAssignableFrom(t) || typeof(GameAssetComponent).IsAssignableFrom(t)));
 
             Settings.SerializationBinder = new TypeAliasBinder(knownTypes: known, aliasSelector: t => t.Name);
+            Settings.Converters.Add(new UnityFixedStringJsonConverter());
             GameRuntimeComponentJson.AddUnityConverters(Settings);
         }
 

@@ -25,19 +25,21 @@ namespace DingoGameObjectsCMS.Mirror.Test
 
         public void RequestCompareAllReady(FixedString32Bytes storeKey)
         {
-            NetworkServer.SendToReady(new RtDebugRequestHashMsg { Store = storeKey }, Channels.Reliable);
+            NetworkServer.SendToReady(new RtDebugRequestHashMsg { Store = storeKey.ToString() }, Channels.Reliable);
         }
 
         public void RequestDumpFromAllReady(FixedString32Bytes storeKey, int maxDepth = 64)
         {
-            NetworkServer.SendToReady(new RtDebugRequestDumpMsg { Store = storeKey, MaxDepth = maxDepth }, Channels.Reliable);
+            NetworkServer.SendToReady(new RtDebugRequestDumpMsg { Store = storeKey.ToString(), MaxDepth = maxDepth }, Channels.Reliable);
         }
 
         private void OnHash(NetworkConnectionToClient conn, RtDebugHashMsg msg)
         {
             _lastHashByConn[conn.connectionId] = msg;
 
-            var store = Get(msg.Store);
+            var storeKey = ToStoreKey(msg.Store);
+
+            var store = Get(storeKey);
 
             var okS = RuntimeStoreValidator.Validate(store, out var errS);
             var hashS = RuntimeStoreStructureHasher.ComputeHash(store);
@@ -59,6 +61,14 @@ namespace DingoGameObjectsCMS.Mirror.Test
         private void OnDump(NetworkConnectionToClient conn, RtDebugDumpMsg msg)
         {
             UnityEngine.Debug.Log($"[RT-DEBUG] DUMP store={msg.Store} conn={conn.connectionId}\n{msg.Dump}");
+        }
+
+        private static FixedString32Bytes ToStoreKey(string storeId)
+        {
+            if (string.IsNullOrEmpty(storeId))
+                return default;
+
+            return (FixedString32Bytes)storeId;
         }
     }
 }

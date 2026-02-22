@@ -1,32 +1,31 @@
 #if MIRROR
 using Mirror;
-using Unity.Collections;
 
 namespace DingoGameObjectsCMS.Mirror.Test
 {
     public struct RtDebugRequestHashMsg : NetworkMessage
     {
-        public FixedString32Bytes Store;
+        public string Store;
     }
 
     public struct RtDebugHashMsg : NetworkMessage
     {
-        public FixedString32Bytes Store;
+        public string Store;
         public ulong Hash;
         public bool Valid;
-        public FixedString32Bytes Error;
+        public string Error;
     }
 
     public struct RtDebugRequestDumpMsg : NetworkMessage
     {
-        public FixedString32Bytes Store;
+        public string Store;
         public int MaxDepth;
     }
 
     public struct RtDebugDumpMsg : NetworkMessage
     {
-        public FixedString32Bytes Store;
-        public FixedString32Bytes Dump;
+        public string Store;
+        public string Dump;
     }
 }
 #endif

@@ -95,7 +95,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
 
             return entity;
         }
-
+        
         public void AddOrReplace<T>(T component) where T : GameRuntimeComponent
         {
             EnsureCache();
@@ -131,6 +131,26 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
             _componentsById[typeId] = component;
         }
 
+        public bool RemoveByTypeId(uint typeId)
+        {
+            EnsureCache();
+
+            if (!_componentsById.TryGetValue(typeId, out var c) || c == null)
+                return false;
+
+            var keyType = c.GetType();
+            _componentsByType.Remove(keyType);
+            _componentsById.Remove(typeId);
+
+            _components.Remove(c);
+
+            if (c is IDisposable disposable)
+                disposable.Dispose();
+
+            MarkComponentStructDirty(typeId, keyType, CompStructOpKind.Remove);
+            return true;
+        }
+        
         public void Remove<T>() where T : GameRuntimeComponent
         {
             if (_componentsByType.Remove(typeof(T), out var c))
@@ -175,6 +195,24 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
                 return;
 
             var compTypeId = typeof(T).GetId();
+            if (_structureChanges.TryGetValue(compTypeId, out var prev))
+            {
+                if (prev.Kind == CompStructOpKind.Add && kind == CompStructOpKind.Remove)
+                {
+                    _structureChanges.Remove(compTypeId);
+                    _componentsChanges.Remove(compTypeId);
+                    return;
+                }
+            }
+
+            _structureChanges[compTypeId] = new ComponentStructDirty(compTypeId, kind);
+        }
+        
+        private void MarkComponentStructDirty(uint compTypeId, Type compType, CompStructOpKind kind)
+        {
+            if (typeof(IStoreStructDirtyIgnore).IsAssignableFrom(compType))
+                return;
+
             if (_structureChanges.TryGetValue(compTypeId, out var prev))
             {
                 if (prev.Kind == CompStructOpKind.Add && kind == CompStructOpKind.Remove)
