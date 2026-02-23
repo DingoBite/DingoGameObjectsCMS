@@ -1,12 +1,11 @@
 #if MIRROR
 using System.Collections.Generic;
-using DingoGameObjectsCMS.RuntimeObjects;
 using DingoGameObjectsCMS.RuntimeObjects.Stores;
 using Mirror;
 using SnakeAndMice.GameComponents.AppGlue;
 using Unity.Collections;
 
-namespace DingoGameObjectsCMS.Mirror.Test
+namespace DingoGameObjectsCMS.Mirror.NetDebug
 {
     public sealed class RuntimeStoreNetDebugServer
     {
@@ -37,7 +36,7 @@ namespace DingoGameObjectsCMS.Mirror.Test
         {
             _lastHashByConn[conn.connectionId] = msg;
 
-            var storeKey = ToStoreKey(msg.Store);
+            var storeKey = msg.Store;
 
             var store = Get(storeKey);
 
@@ -61,14 +60,6 @@ namespace DingoGameObjectsCMS.Mirror.Test
         private void OnDump(NetworkConnectionToClient conn, RtDebugDumpMsg msg)
         {
             UnityEngine.Debug.Log($"[RT-DEBUG] DUMP store={msg.Store} conn={conn.connectionId}\n{msg.Dump}");
-        }
-
-        private static FixedString32Bytes ToStoreKey(string storeId)
-        {
-            if (string.IsNullOrEmpty(storeId))
-                return default;
-
-            return (FixedString32Bytes)storeId;
         }
     }
 }

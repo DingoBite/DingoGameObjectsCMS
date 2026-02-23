@@ -256,7 +256,7 @@ namespace DingoGameObjectsCMS.Mirror
                 if (!store.TryTakeRW(msg.TargetId, out var obj))
                     continue;
 
-                var mutable = obj.Components.FirstOrDefault(c => c is INetMutableGRC) as INetMutableGRC;
+                var mutable = obj.GetById(msg.CompTypeId) as INetMutableGRC;
                 if (mutable == null)
                     continue;
 
@@ -274,9 +274,8 @@ namespace DingoGameObjectsCMS.Mirror
 
                 mutable.ApplyMutatePayload(in ctx, msg.Payload, applied);
 
-                for (var i = 0; i < applied.Count; i++)
+                foreach (var a in applied)
                 {
-                    var a = applied[i];
                     NetworkServer.SendToReady(new RtAppliedMsg
                     {
                         StoreId = store.Id,

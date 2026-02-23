@@ -6,9 +6,9 @@ using Mirror;
 using NaughtyAttributes;
 using UnityEngine;
 
-namespace DingoGameObjectsCMS.Mirror.Test
+namespace DingoGameObjectsCMS.Mirror.NetDebug
 {
-    public sealed class RuntimeStoreNetSmokeHarness : AppStateElementBehaviour
+    public sealed class NetPingTest : AppStateElementBehaviour
     {
         private uint _seq;
 
@@ -41,7 +41,7 @@ namespace DingoGameObjectsCMS.Mirror.Test
             if (!NetworkClient.isConnected)
                 return;
 
-            Debug.Log($"[PING] seq={msg.Seq}");
+            UnityEngine.Debug.Log($"[PING] seq={msg.Seq}");
             NetworkClient.Send(new RtPongMsg
             {
                 Seq = msg.Seq,
@@ -52,7 +52,7 @@ namespace DingoGameObjectsCMS.Mirror.Test
         private void OnServerPong(NetworkConnectionToClient conn, RtPongMsg msg)
         {
             var rttMs = (Time.realtimeSinceStartupAsDouble - msg.SentAt) * 1000.0;
-            Debug.Log($"[PING] conn={conn.connectionId} seq={msg.Seq} rtt={rttMs:0.0} ms");
+            UnityEngine.Debug.Log($"[PING] conn={conn.connectionId} seq={msg.Seq} rtt={rttMs:0.0} ms");
         }
     }
 }
