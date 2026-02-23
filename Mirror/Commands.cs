@@ -26,20 +26,15 @@ namespace DingoGameObjectsCMS.Mirror
     }
 
     [Serializable, Preserve]
-    public struct RtStoreFullSnapshotMsg : NetworkMessage
+    public struct RtStoreSyncMsg : NetworkMessage
     {
-        public FixedString32Bytes StoreId;
-        public uint SnapshotId;
         public byte[] Payload;
     }
 
-    [Serializable, Preserve]
-    public struct RtStoreDeltaMsg : NetworkMessage
+    public enum RtStoreSyncMode : byte
     {
-        public FixedString32Bytes StoreId;
-        public uint SnapshotId;
-        public uint BaselineId;
-        public byte[] Payload;
+        FullSnapshot = 1,
+        DeltaTick = 2,
     }
 
     [Serializable, Preserve]
@@ -54,63 +49,6 @@ namespace DingoGameObjectsCMS.Mirror
     {
         public FixedString32Bytes StoreId;
         public uint HaveSnapshotId;
-    }
-
-    [Serializable, Preserve]
-    public struct RtSpawnMsg : NetworkMessage
-    {
-        public FixedString32Bytes StoreId;
-        public long Id;
-        public long ParentId;
-        public int InsertIndex;
-        public byte[] Data;
-        public uint ClientSeq;
-    }
-
-    [Serializable, Preserve]
-    public struct RtAttachMsg : NetworkMessage
-    {
-        public FixedString32Bytes StoreId;
-        public long ParentId;
-        public long ChildId;
-        public int InsertIndex;
-    }
-
-    [Serializable, Preserve]
-    public struct RtMoveMsg : NetworkMessage
-    {
-        public FixedString32Bytes StoreId;
-        public long ParentId;
-        public long ChildId;
-        public int NewIndex;
-    }
-
-    [Serializable, Preserve]
-    public struct RtRemoveMsg : NetworkMessage
-    {
-        public FixedString32Bytes StoreId;
-        public long Id;
-        public RemoveMode Mode;
-    }
-
-    [Serializable, Preserve]
-    public struct RtMutateMsg : NetworkMessage
-    {
-        public FixedString32Bytes StoreId;
-        public uint Seq;
-        public long TargetId;
-        public uint CompTypeId;
-        public byte[] Payload;
-    }
-
-    [Serializable, Preserve]
-    public struct RtAppliedMsg : NetworkMessage
-    {
-        public FixedString32Bytes StoreId;
-        public uint Revision;
-        public long TargetId;
-        public uint CompTypeId;
-        public byte[] Payload;
     }
 
     [Flags]
@@ -128,26 +66,25 @@ namespace DingoGameObjectsCMS.Mirror
     }
 
     public interface ISnapshotComponent { }
-    public interface IDeltaComponent { }
+    public interface IDeltaComponent
+    {
+        byte[] CollectComponentDelta();
+        bool ApplyDelta(byte[] payload);
+    }
+
+    public interface IReplicationProfile
+    {
+        int ReplicationProfileId { get; }
+    }
+
+    public interface IOwnerConnectionIdProvider
+    {
+        int OwnerConnectionId { get; }
+    }
 
     public interface IOwnerOnly { }
     public interface IReliableOnly { }
     public interface IUnreliableOk { }
-
-    [Serializable, Preserve]
-    public struct RtStoreSnapshotObjectData
-    {
-        public long Id;
-        public long ParentId;
-        public int Index;
-        public byte[] Data;
-    }
-
-    [Serializable, Preserve]
-    public sealed class RtStoreFullSnapshotPayload
-    {
-        public List<RtStoreSnapshotObjectData> Objects = new();
-    }
 
     [Serializable, Preserve]
     public struct RtStoreStructureDelta
@@ -174,23 +111,27 @@ namespace DingoGameObjectsCMS.Mirror
     {
         public long ObjectId;
         public uint CompTypeId;
+        public bool IsDelta;
         public byte[] Payload;
     }
 
     [Serializable, Preserve]
-    public sealed class RtStoreDeltaPayload
+    public sealed class RtStoreSyncPayload
     {
+        public uint SnapshotId;
+        public FixedString32Bytes StoreId;
+        public RtStoreSyncMode Mode;
         public List<RtStoreStructureDelta> StructureChanges = new();
-        public List<RtStoreComponentStructDelta> ComponentStructureChanges = new();
-        public List<RtStoreComponentDelta> ComponentChanges = new();
+        public List<RtStoreComponentStructDelta> ObjectStructChanges = new();
+        public List<RtStoreComponentDelta> ComponentDeltas = new();
 
         public bool HasAny =>
             (StructureChanges != null && StructureChanges.Count > 0) ||
-            (ComponentStructureChanges != null && ComponentStructureChanges.Count > 0) ||
-            (ComponentChanges != null && ComponentChanges.Count > 0);
+            (ObjectStructChanges != null && ObjectStructChanges.Count > 0) ||
+            (ComponentDeltas != null && ComponentDeltas.Count > 0);
     }
 
-    internal static class RuntimeNetSerialization
+    public static class RuntimeNetSerialization
     {
         public static byte[] Serialize<T>(T value)
         {
@@ -236,48 +177,67 @@ namespace DingoGameObjectsCMS.Mirror
         }
     }
 
-    internal sealed class RuntimeStoreSnapshot
+    public sealed class RuntimeStoreSnapshot
     {
         public readonly Dictionary<long, RuntimeStoreSnapshotNode> NodesById = new();
     }
 
-    internal sealed class RuntimeStoreSnapshotNode
+    public sealed class RuntimeStoreSnapshotNode
     {
         public long Id;
         public long ParentId;
         public int Index;
         public byte[] ObjectData;
-        public readonly Dictionary<uint, byte[]> ComponentsByType = new();
     }
 
-    internal static class RuntimeReplicationPolicy
+    public static class RuntimeReplicationFilter
     {
-        public static bool ShouldReplicateObject(GameRuntimeObject obj, ReplicationMask mask)
+        public static bool ShouldReplicateObject(GameRuntimeObject obj, ReplicationMask mask, NetworkConnectionToClient connection = null, int replicationProfileId = 0)
         {
             if (obj == null)
                 return false;
 
-            var resolvedMask = ReplicationMask.All;
-            var components = obj.Components;
-            if (components == null)
-                return true;
+            if (!IsMaskAllowed(ResolveObjectMask(obj), mask))
+                return false;
 
-            for (var i = 0; i < components.Count; i++)
-            {
-                if (components[i] is IReplicatedObject replicated)
-                    resolvedMask &= replicated.GetMask();
-            }
+            if (!MatchesProfile(obj, replicationProfileId))
+                return false;
 
-            return (resolvedMask & mask) != 0;
+            if (!IsOwnerVisible(obj, null, connection))
+                return false;
+
+            return true;
         }
 
-        public static bool ShouldReplicateComponent(GameRuntimeComponent component, ReplicationMask mask)
+        public static bool ShouldReplicateComponent(GameRuntimeObject owner, GameRuntimeComponent component, ReplicationMask mask, NetworkConnectionToClient connection = null, int replicationProfileId = 0)
         {
             if (component == null)
                 return false;
 
-            var hasSnapshotTag = component is ISnapshotComponent;
-            var hasDeltaTag = component is IDeltaComponent;
+            if (!ShouldReplicateComponentType(component.GetType(), mask))
+                return false;
+
+            if (!MatchesProfile(component, replicationProfileId))
+                return false;
+
+            if (!IsOwnerVisible(owner, component, connection))
+                return false;
+
+            return true;
+        }
+
+        public static bool ShouldReplicateComponentType(uint compTypeId, ReplicationMask mask)
+        {
+            if (!RuntimeComponentTypeRegistry.TryGetType(compTypeId, out var compType) || compType == null)
+                return true;
+
+            return ShouldReplicateComponentType(compType, mask);
+        }
+
+        private static bool ShouldReplicateComponentType(Type compType, ReplicationMask mask)
+        {
+            var hasSnapshotTag = typeof(ISnapshotComponent).IsAssignableFrom(compType);
+            var hasDeltaTag = typeof(IDeltaComponent).IsAssignableFrom(compType);
 
             if (!hasSnapshotTag && !hasDeltaTag)
                 return true;
@@ -296,11 +256,88 @@ namespace DingoGameObjectsCMS.Mirror
 
             return false;
         }
+
+        private static ReplicationMask ResolveObjectMask(GameRuntimeObject obj)
+        {
+            var resolvedMask = ReplicationMask.All;
+            var components = obj.Components;
+            if (components == null)
+                return resolvedMask;
+
+            for (var i = 0; i < components.Count; i++)
+            {
+                if (components[i] is IReplicatedObject replicated)
+                    resolvedMask &= replicated.GetMask();
+            }
+
+            return resolvedMask;
+        }
+
+        private static bool IsMaskAllowed(ReplicationMask resolvedMask, ReplicationMask requestedMask)
+        {
+            return (resolvedMask & requestedMask) != 0;
+        }
+
+        private static bool MatchesProfile(object value, int profileId)
+        {
+            if (profileId == 0)
+                return true;
+
+            if (value is not IReplicationProfile provider)
+                return true;
+
+            return provider.ReplicationProfileId == 0 || provider.ReplicationProfileId == profileId;
+        }
+
+        private static bool IsOwnerVisible(GameRuntimeObject owner, GameRuntimeComponent component, NetworkConnectionToClient connection)
+        {
+            var ownerOnly = (component is IOwnerOnly) || (owner is IOwnerOnly);
+            if (!ownerOnly)
+                return true;
+
+            if (connection == null)
+                return false;
+
+            var ownerConnectionId = ResolveOwnerConnectionId(owner, component);
+            if (ownerConnectionId < 0)
+                return false;
+
+            return ownerConnectionId == connection.connectionId;
+        }
+
+        private static int ResolveOwnerConnectionId(GameRuntimeObject owner, GameRuntimeComponent component)
+        {
+            if (component is IOwnerConnectionIdProvider componentOwner)
+                return componentOwner.OwnerConnectionId;
+
+            if (owner is IOwnerConnectionIdProvider objectOwner)
+                return objectOwner.OwnerConnectionId;
+
+            return -1;
+        }
     }
 
-    internal static class RuntimeStoreSnapshotCodec
+    public static class RuntimeReplicationPolicy
     {
-        public static RuntimeStoreSnapshot BuildSnapshot(RuntimeStore store)
+        public static bool ShouldReplicateObject(GameRuntimeObject obj, ReplicationMask mask)
+        {
+            return RuntimeReplicationFilter.ShouldReplicateObject(obj, mask);
+        }
+
+        public static bool ShouldReplicateComponent(GameRuntimeObject owner, GameRuntimeComponent component, ReplicationMask mask)
+        {
+            return RuntimeReplicationFilter.ShouldReplicateComponent(owner, component, mask);
+        }
+
+        public static bool ShouldReplicateComponentType(uint compTypeId, ReplicationMask mask)
+        {
+            return RuntimeReplicationFilter.ShouldReplicateComponentType(compTypeId, mask);
+        }
+    }
+
+    public static class RuntimeStoreSnapshotCodec
+    {
+        public static RuntimeStoreSnapshot BuildSnapshot(RuntimeStore store, NetworkConnectionToClient connection = null, int replicationProfileId = 0)
         {
             var snapshot = new RuntimeStoreSnapshot();
             if (store == null)
@@ -311,105 +348,50 @@ namespace DingoGameObjectsCMS.Mirror
 
             for (var i = 0; i < roots.Count; i++)
             {
-                BuildSnapshotRecursive(store, snapshot, roots[i], parentId: -1, index: i);
+                BuildSnapshotRecursive(store, snapshot, roots[i], parentId: -1, index: i, connection, replicationProfileId);
             }
 
             return snapshot;
         }
 
-        public static RtStoreFullSnapshotPayload BuildFullPayload(RuntimeStoreSnapshot snapshot)
+        public static RtStoreSyncPayload BuildFullSyncPayload(RuntimeStoreSnapshot snapshot, FixedString32Bytes storeId, uint snapshotId)
         {
-            var payload = new RtStoreFullSnapshotPayload();
+            var payload = new RtStoreSyncPayload
+            {
+                SnapshotId = snapshotId,
+                StoreId = storeId,
+                Mode = RtStoreSyncMode.FullSnapshot,
+            };
+
             if (snapshot == null || snapshot.NodesById.Count == 0)
                 return payload;
 
             var ordered = TopologicalOrder(snapshot);
+
             for (var i = 0; i < ordered.Count; i++)
             {
-                var node = ordered[i];
-                payload.Objects.Add(new RtStoreSnapshotObjectData
+                var entry = ordered[i];
+                payload.StructureChanges.Add(new RtStoreStructureDelta
                 {
-                    Id = node.Id,
-                    ParentId = node.ParentId,
-                    Index = node.Index,
-                    Data = node.ObjectData,
+                    Kind = RuntimeStoreOpKind.Spawn,
+                    Id = entry.Id,
+                    ParentId = entry.ParentId,
+                    Index = entry.Index,
+                    RemoveMode = default,
+                    SpawnData = entry.ObjectData,
                 });
             }
 
             return payload;
         }
 
-        public static RtStoreDeltaPayload BuildDeltaPayload(RuntimeStoreSnapshot baseline, RuntimeStoreSnapshot current)
-        {
-            var payload = new RtStoreDeltaPayload();
-            if (current == null)
-                return payload;
-
-            baseline ??= new RuntimeStoreSnapshot();
-
-            var removedIds = new HashSet<long>();
-            foreach (var id in baseline.NodesById.Keys)
-            {
-                if (!current.NodesById.ContainsKey(id))
-                    removedIds.Add(id);
-            }
-
-            var spawnedIds = new HashSet<long>();
-            foreach (var id in current.NodesById.Keys)
-            {
-                if (!baseline.NodesById.ContainsKey(id))
-                    spawnedIds.Add(id);
-            }
-
-            AppendRemoved(payload, baseline, removedIds);
-            AppendSpawned(payload, current, spawnedIds);
-            AppendReparentOrMove(payload, baseline, current, removedIds, spawnedIds);
-            AppendComponentChanges(payload, baseline, current, removedIds, spawnedIds);
-
-            return payload;
-        }
-
-        public static bool ApplyFullSnapshot(RuntimeStore store, RtStoreFullSnapshotPayload payload)
-        {
-            if (store == null)
-                return false;
-
-            ClearStore(store);
-
-            if (payload?.Objects == null || payload.Objects.Count == 0)
-                return true;
-
-            var pending = new List<RtStoreSnapshotObjectData>(payload.Objects);
-
-            var maxPasses = pending.Count * 2 + 2;
-            for (var pass = 0; pass < maxPasses && pending.Count > 0; pass++)
-            {
-                var progressed = false;
-
-                for (var i = pending.Count - 1; i >= 0; i--)
-                {
-                    var entry = pending[i];
-                    if (entry.ParentId >= 0 && !store.TryTakeRO(entry.ParentId, out _))
-                        continue;
-
-                    if (ApplySpawn(store, entry.Id, entry.ParentId, entry.Index, entry.Data))
-                    {
-                        pending.RemoveAt(i);
-                        progressed = true;
-                    }
-                }
-
-                if (!progressed)
-                    break;
-            }
-
-            return pending.Count == 0;
-        }
-
-        public static bool ApplyDelta(RuntimeStore store, RtStoreDeltaPayload payload)
+        public static bool ApplySync(RuntimeStore store, RtStoreSyncPayload payload)
         {
             if (store == null || payload == null)
                 return false;
+
+            if (payload.Mode == RtStoreSyncMode.FullSnapshot)
+                ClearStore(store);
 
             if (payload.StructureChanges != null)
             {
@@ -421,21 +403,21 @@ namespace DingoGameObjectsCMS.Mirror
                 }
             }
 
-            if (payload.ComponentStructureChanges != null)
+            if (payload.ObjectStructChanges != null)
             {
-                for (var i = 0; i < payload.ComponentStructureChanges.Count; i++)
+                for (var i = 0; i < payload.ObjectStructChanges.Count; i++)
                 {
-                    var change = payload.ComponentStructureChanges[i];
+                    var change = payload.ObjectStructChanges[i];
                     if (!ApplyComponentStructChange(store, in change))
                         return false;
                 }
             }
 
-            if (payload.ComponentChanges != null)
+            if (payload.ComponentDeltas != null)
             {
-                for (var i = 0; i < payload.ComponentChanges.Count; i++)
+                for (var i = 0; i < payload.ComponentDeltas.Count; i++)
                 {
-                    var change = payload.ComponentChanges[i];
+                    var change = payload.ComponentDeltas[i];
                     if (!ApplyComponentChange(store, in change))
                         return false;
                 }
@@ -444,12 +426,12 @@ namespace DingoGameObjectsCMS.Mirror
             return true;
         }
 
-        private static void BuildSnapshotRecursive(RuntimeStore store, RuntimeStoreSnapshot snapshot, long id, long parentId, int index)
+        private static void BuildSnapshotRecursive(RuntimeStore store, RuntimeStoreSnapshot snapshot, long id, long parentId, int index, NetworkConnectionToClient connection, int replicationProfileId)
         {
             if (!store.TryTakeRO(id, out var obj) || obj == null)
                 return;
 
-            if (!RuntimeReplicationPolicy.ShouldReplicateObject(obj, ReplicationMask.Snapshot | ReplicationMask.Delta))
+            if (!RuntimeReplicationFilter.ShouldReplicateObject(obj, ReplicationMask.Snapshot | ReplicationMask.Delta, connection, replicationProfileId))
                 return;
 
             var node = new RuntimeStoreSnapshotNode
@@ -460,25 +442,6 @@ namespace DingoGameObjectsCMS.Mirror
                 ObjectData = RuntimeNetSerialization.SerializeRuntimeObject(obj),
             };
 
-            var components = obj.Components;
-            if (components != null)
-            {
-                for (var i = 0; i < components.Count; i++)
-                {
-                    var component = components[i];
-                    if (component == null)
-                        continue;
-
-                    if (!RuntimeReplicationPolicy.ShouldReplicateComponent(component, ReplicationMask.Snapshot | ReplicationMask.Delta))
-                        continue;
-
-                    if (!RuntimeComponentTypeRegistry.TryGetId(component.GetType(), out var compTypeId))
-                        continue;
-
-                    node.ComponentsByType[compTypeId] = RuntimeNetSerialization.SerializeRuntimeComponent(component);
-                }
-            }
-
             snapshot.NodesById[id] = node;
 
             if (!store.TryTakeChildren(id, out var children) || children == null)
@@ -486,7 +449,7 @@ namespace DingoGameObjectsCMS.Mirror
 
             for (var i = 0; i < children.Count; i++)
             {
-                BuildSnapshotRecursive(store, snapshot, children[i], id, i);
+                BuildSnapshotRecursive(store, snapshot, children[i], id, i, connection, replicationProfileId);
             }
         }
 
@@ -537,228 +500,6 @@ namespace DingoGameObjectsCMS.Mirror
             for (var i = 0; i < children.Count; i++)
             {
                 AppendSubtree(children[i], byParent, outList);
-            }
-        }
-
-        private static void AppendRemoved(RtStoreDeltaPayload payload, RuntimeStoreSnapshot baseline, HashSet<long> removedIds)
-        {
-            if (removedIds.Count == 0)
-                return;
-
-            var removed = new List<long>(removedIds.Count);
-            foreach (var id in removedIds)
-            {
-                if (!baseline.NodesById.TryGetValue(id, out var node))
-                    continue;
-
-                if (node.ParentId >= 0 && removedIds.Contains(node.ParentId))
-                    continue;
-
-                removed.Add(id);
-            }
-
-            var depthById = BuildDepthMap(baseline);
-            removed.Sort((a, b) =>
-            {
-                depthById.TryGetValue(a, out var da);
-                depthById.TryGetValue(b, out var db);
-                var c = db.CompareTo(da);
-                return c != 0 ? c : a.CompareTo(b);
-            });
-
-            for (var i = 0; i < removed.Count; i++)
-            {
-                payload.StructureChanges.Add(new RtStoreStructureDelta
-                {
-                    Kind = RuntimeStoreOpKind.Remove,
-                    Id = removed[i],
-                    ParentId = 0,
-                    Index = -1,
-                    RemoveMode = RemoveMode.Subtree,
-                    SpawnData = null,
-                });
-            }
-        }
-
-        private static void AppendSpawned(RtStoreDeltaPayload payload, RuntimeStoreSnapshot current, HashSet<long> spawnedIds)
-        {
-            if (spawnedIds.Count == 0)
-                return;
-
-            var spawned = new List<long>(spawnedIds);
-            var depthById = BuildDepthMap(current);
-            spawned.Sort((a, b) =>
-            {
-                depthById.TryGetValue(a, out var da);
-                depthById.TryGetValue(b, out var db);
-                var c = da.CompareTo(db);
-                return c != 0 ? c : a.CompareTo(b);
-            });
-
-            for (var i = 0; i < spawned.Count; i++)
-            {
-                var id = spawned[i];
-                if (!current.NodesById.TryGetValue(id, out var node))
-                    continue;
-
-                payload.StructureChanges.Add(new RtStoreStructureDelta
-                {
-                    Kind = RuntimeStoreOpKind.Spawn,
-                    Id = id,
-                    ParentId = node.ParentId,
-                    Index = node.Index,
-                    RemoveMode = default,
-                    SpawnData = node.ObjectData,
-                });
-            }
-        }
-
-        private static void AppendReparentOrMove(RtStoreDeltaPayload payload, RuntimeStoreSnapshot baseline, RuntimeStoreSnapshot current, HashSet<long> removedIds, HashSet<long> spawnedIds)
-        {
-            var ids = new List<long>();
-            foreach (var id in current.NodesById.Keys)
-            {
-                if (!baseline.NodesById.ContainsKey(id))
-                    continue;
-                if (removedIds.Contains(id) || spawnedIds.Contains(id))
-                    continue;
-                ids.Add(id);
-            }
-
-            ids.Sort();
-
-            for (var i = 0; i < ids.Count; i++)
-            {
-                var id = ids[i];
-                var prev = baseline.NodesById[id];
-                var now = current.NodesById[id];
-
-                if (prev.ParentId != now.ParentId)
-                {
-                    payload.StructureChanges.Add(new RtStoreStructureDelta
-                    {
-                        Kind = RuntimeStoreOpKind.Reparent,
-                        Id = id,
-                        ParentId = now.ParentId,
-                        Index = now.Index,
-                        RemoveMode = default,
-                        SpawnData = null,
-                    });
-                    continue;
-                }
-
-                if (now.ParentId >= 0 && prev.Index != now.Index)
-                {
-                    payload.StructureChanges.Add(new RtStoreStructureDelta
-                    {
-                        Kind = RuntimeStoreOpKind.Move,
-                        Id = id,
-                        ParentId = now.ParentId,
-                        Index = now.Index,
-                        RemoveMode = default,
-                        SpawnData = null,
-                    });
-                }
-            }
-        }
-
-        private static void AppendComponentChanges(RtStoreDeltaPayload payload, RuntimeStoreSnapshot baseline, RuntimeStoreSnapshot current, HashSet<long> removedIds, HashSet<long> spawnedIds)
-        {
-            var ids = new List<long>();
-            foreach (var id in current.NodesById.Keys)
-            {
-                if (!baseline.NodesById.ContainsKey(id))
-                    continue;
-                if (removedIds.Contains(id) || spawnedIds.Contains(id))
-                    continue;
-                ids.Add(id);
-            }
-
-            ids.Sort();
-
-            for (var i = 0; i < ids.Count; i++)
-            {
-                var id = ids[i];
-                var prev = baseline.NodesById[id];
-                var now = current.NodesById[id];
-
-                AppendComponentDiffForObject(payload, id, prev.ComponentsByType, now.ComponentsByType);
-            }
-        }
-
-        private static void AppendComponentDiffForObject(RtStoreDeltaPayload payload, long objectId, Dictionary<uint, byte[]> prev, Dictionary<uint, byte[]> now)
-        {
-            var removedCompIds = new List<uint>();
-            foreach (var compId in prev.Keys)
-            {
-                if (!ShouldReplicateComponentType(compId, ReplicationMask.Delta))
-                    continue;
-
-                if (!now.ContainsKey(compId))
-                    removedCompIds.Add(compId);
-            }
-
-            removedCompIds.Sort();
-            for (var i = 0; i < removedCompIds.Count; i++)
-            {
-                payload.ComponentStructureChanges.Add(new RtStoreComponentStructDelta
-                {
-                    ObjectId = objectId,
-                    CompTypeId = removedCompIds[i],
-                    Kind = CompStructOpKind.Remove,
-                    Payload = null,
-                });
-            }
-
-            var addedCompIds = new List<uint>();
-            foreach (var compId in now.Keys)
-            {
-                if (!ShouldReplicateComponentType(compId, ReplicationMask.Delta))
-                    continue;
-
-                if (!prev.ContainsKey(compId))
-                    addedCompIds.Add(compId);
-            }
-
-            addedCompIds.Sort();
-            for (var i = 0; i < addedCompIds.Count; i++)
-            {
-                var compId = addedCompIds[i];
-                payload.ComponentStructureChanges.Add(new RtStoreComponentStructDelta
-                {
-                    ObjectId = objectId,
-                    CompTypeId = compId,
-                    Kind = CompStructOpKind.Add,
-                    Payload = now[compId],
-                });
-            }
-
-            var commonCompIds = new List<uint>();
-            foreach (var compId in now.Keys)
-            {
-                if (!ShouldReplicateComponentType(compId, ReplicationMask.Delta))
-                    continue;
-
-                if (prev.ContainsKey(compId))
-                    commonCompIds.Add(compId);
-            }
-
-            commonCompIds.Sort();
-            for (var i = 0; i < commonCompIds.Count; i++)
-            {
-                var compId = commonCompIds[i];
-                var prevPayload = prev[compId];
-                var nowPayload = now[compId];
-
-                if (BytesEqual(prevPayload, nowPayload))
-                    continue;
-
-                payload.ComponentChanges.Add(new RtStoreComponentDelta
-                {
-                    ObjectId = objectId,
-                    CompTypeId = compId,
-                    Payload = nowPayload,
-                });
             }
         }
 
@@ -844,6 +585,15 @@ namespace DingoGameObjectsCMS.Mirror
             if (!store.TryTakeRW(change.ObjectId, out var obj) || obj == null)
                 return false;
 
+            if (change.IsDelta)
+            {
+                var existing = obj.GetById(change.CompTypeId);
+                if (existing is not IDeltaComponent delta)
+                    return false;
+
+                return delta.ApplyDelta(change.Payload);
+            }
+
             var component = RuntimeNetSerialization.DeserializeRuntimeComponent(change.CompTypeId, change.Payload);
             if (component == null)
                 return false;
@@ -861,33 +611,6 @@ namespace DingoGameObjectsCMS.Mirror
             }
         }
 
-        private static Dictionary<long, int> BuildDepthMap(RuntimeStoreSnapshot snapshot)
-        {
-            var depthById = new Dictionary<long, int>(snapshot.NodesById.Count);
-            foreach (var id in snapshot.NodesById.Keys)
-            {
-                ResolveDepth(snapshot, id, depthById);
-            }
-
-            return depthById;
-        }
-
-        private static int ResolveDepth(RuntimeStoreSnapshot snapshot, long id, Dictionary<long, int> depthById)
-        {
-            if (depthById.TryGetValue(id, out var depth))
-                return depth;
-
-            if (!snapshot.NodesById.TryGetValue(id, out var node) || node.ParentId < 0 || !snapshot.NodesById.ContainsKey(node.ParentId))
-            {
-                depthById[id] = 0;
-                return 0;
-            }
-
-            depth = ResolveDepth(snapshot, node.ParentId, depthById) + 1;
-            depthById[id] = depth;
-            return depth;
-        }
-
         private static int CompareByIndexThenId(RuntimeStoreSnapshotNode a, RuntimeStoreSnapshotNode b)
         {
             var c = a.Index.CompareTo(b.Index);
@@ -896,48 +619,6 @@ namespace DingoGameObjectsCMS.Mirror
             return a.Id.CompareTo(b.Id);
         }
 
-        private static bool BytesEqual(byte[] a, byte[] b)
-        {
-            if (ReferenceEquals(a, b))
-                return true;
-
-            if (a == null || b == null || a.Length != b.Length)
-                return false;
-
-            for (var i = 0; i < a.Length; i++)
-            {
-                if (a[i] != b[i])
-                    return false;
-            }
-
-            return true;
-        }
-
-        private static bool ShouldReplicateComponentType(uint compTypeId, ReplicationMask mask)
-        {
-            if (!RuntimeComponentTypeRegistry.TryGetType(compTypeId, out var compType) || compType == null)
-                return true;
-
-            var hasSnapshotTag = typeof(ISnapshotComponent).IsAssignableFrom(compType);
-            var hasDeltaTag = typeof(IDeltaComponent).IsAssignableFrom(compType);
-
-            if (!hasSnapshotTag && !hasDeltaTag)
-                return true;
-
-            var needSnapshot = (mask & ReplicationMask.Snapshot) != 0;
-            var needDelta = (mask & ReplicationMask.Delta) != 0;
-
-            if (needSnapshot && needDelta)
-                return hasSnapshotTag || hasDeltaTag;
-
-            if (needSnapshot)
-                return hasSnapshotTag;
-
-            if (needDelta)
-                return hasDeltaTag;
-
-            return false;
-        }
     }
 }
 #endif

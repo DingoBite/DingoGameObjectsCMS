@@ -98,6 +98,8 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
         
         public void AddOrReplace<T>(T component) where T : GameRuntimeComponent
         {
+            if (typeof(T) == typeof(GameRuntimeComponent))
+                return;
             EnsureCache();
             if (component == null)
                 return;

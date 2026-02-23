@@ -20,8 +20,8 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
         private long _lastId;
         private uint _order;
 
+        private readonly BindDict<long, GameRuntimeObject> _all = new();
         private readonly BindDict<long, GameRuntimeObject> _parents = new();
-        private readonly Dictionary<long, GameRuntimeObject> _all = new();
 
         private readonly Dictionary<long, Entity> _entityById = new();
 
@@ -41,6 +41,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
 
         public RuntimeStore(FixedString32Bytes id) => Id = id;
 
+        public IReadonlyBind<IReadOnlyDictionary<long, GameRuntimeObject>> All => _all;
         public IReadonlyBind<IReadOnlyDictionary<long, GameRuntimeObject>> Parents => _parents;
 
         public event Action<NativeArray<RuntimeStructureDirty>> StructureChanges;
@@ -58,7 +59,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
                 StoreId = Id
             };
 
-            _all[id] = obj;
+            _all.V[id] = obj;
             MarkTouchedUpToRoot(id);
             return obj;
         }
@@ -85,10 +86,15 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
             var id = value.InstanceId;
             value.StoreId = Id;
 
-            if (_all.TryGetValue(id, out var prev) && prev != null && !ReferenceEquals(prev, value))
+            if (_all.V.TryGetValue(id, out var prev) && prev != null && !ReferenceEquals(prev, value))
                 prev.Destroy();
 
-            _all[id] = value;
+            _all.V[id] = value;
+
+            // если объект был root — обновим ссылку в roots
+            if (_parents.V.ContainsKey(id))
+                _parents.V[id] = value;
+
             if (_lastId <= id)
                 _lastId = id + 1;
 
@@ -101,14 +107,14 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
 
         public bool TryTakeRW(long id, out GameRuntimeObject gameRuntimeObject)
         {
-            if (!_all.TryGetValue(id, out gameRuntimeObject))
+            if (!_all.V.TryGetValue(id, out gameRuntimeObject))
                 return false;
 
             MarkTouchedUpToRoot(id);
             return true;
         }
 
-        public bool TryTakeRO(long id, out GameRuntimeObject gameRuntimeObject) => _all.TryGetValue(id, out gameRuntimeObject);
+        public bool TryTakeRO(long id, out GameRuntimeObject gameRuntimeObject) => _all.V.TryGetValue(id, out gameRuntimeObject);
 
         public bool Remove(long id) => Remove(id, RemoveMode.Subtree, out _);
         public bool Remove(long id, out Entity entity) => Remove(id, RemoveMode.Subtree, out entity);
@@ -120,18 +126,17 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
             if (recordOp)
                 RecordOp(RuntimeStructureDirty.Remove(id, mode, NextOrder()));
 
+            _parents.V.Remove(id); // root может быть удаляемым
             _entityById.Remove(id, out entity);
 
             MarkTouchedUpToRoot(id);
 
-            if (!_all.TryGetValue(id, out var obj))
+            if (!_all.V.TryGetValue(id, out var obj))
             {
                 DetachChildInternal(id);
                 RemoveChildrenIndexOnly(id);
                 return false;
             }
-
-            _parents.V.Remove(id);
 
             _parentByChild.TryGetValue(id, out var parentId);
             DetachChildInternal(id);
@@ -145,50 +150,37 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
                 _childrenByParent.Remove(id);
 
                 foreach (var child in toProcess)
-                {
                     _parentByChild.Remove(child);
-                }
 
                 switch (mode)
                 {
                     case RemoveMode.Subtree:
                         foreach (var child in toProcess)
-                        {
                             RemoveInternal(child, RemoveMode.Subtree, out _, recordOp: false);
-                        }
-
                         break;
 
                     case RemoveMode.NodeOnly_DetachChildrenToRoot:
                         foreach (var child in toProcess)
-                        {
                             AddToRoot(child);
-                        }
-
                         break;
 
-                    case RemoveMode.NodeOnly_ReparentChildrenToParent when parentId != 0 && _all.ContainsKey(parentId):
+                    case RemoveMode.NodeOnly_ReparentChildrenToParent when parentId != 0 && _all.V.ContainsKey(parentId):
                         foreach (var child in toProcess)
-                        {
                             AttachChild(parentId, child, insertIndex: -1);
-                        }
-
                         break;
 
                     case RemoveMode.NodeOnly_ReparentChildrenToParent:
                         foreach (var child in toProcess)
-                        {
                             AddToRoot(child);
-                        }
-
                         break;
 
-                    default: throw new ArgumentOutOfRangeException(nameof(mode), mode, null);
+                    default:
+                        throw new ArgumentOutOfRangeException(nameof(mode), mode, null);
                 }
             }
 
             obj.Destroy();
-            _all.Remove(id);
+            _all.V.Remove(id);
 
             ScheduleFlush();
             return true;
@@ -199,7 +191,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
 
         public bool TryTakeParentRW(long childId, out GameRuntimeObject parent)
         {
-            if (!_parentByChild.TryGetValue(childId, out var parentId) || !_parents.V.TryGetValue(parentId, out parent))
+            if (!_parentByChild.TryGetValue(childId, out var parentId) || !_all.V.TryGetValue(parentId, out parent))
             {
                 parent = null;
                 return false;
@@ -211,7 +203,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
 
         public bool TryTakeParentRO(long childId, out GameRuntimeObject parent)
         {
-            if (!_parentByChild.TryGetValue(childId, out var parentId) || !_parents.V.TryGetValue(parentId, out parent))
+            if (!_parentByChild.TryGetValue(childId, out var parentId) || !_all.V.TryGetValue(parentId, out parent))
             {
                 parent = null;
                 return false;
@@ -237,7 +229,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
             if (parentId == childId)
                 return false;
 
-            if (!_all.ContainsKey(parentId) || !_all.ContainsKey(childId))
+            if (!_all.V.ContainsKey(parentId) || !_all.V.ContainsKey(childId))
                 return false;
 
             if (WouldCreateCycle(parentId, childId))
@@ -245,6 +237,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
 
             var wasPublished = IsPublished(childId);
 
+            // ребёнок перестаёт быть root
             _parents.V.Remove(childId);
 
             if (_parentByChild.TryGetValue(childId, out var oldParentId))
@@ -275,7 +268,9 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
 
             list.Insert(insertIndex, childId);
 
-            RecordOp(wasPublished ? RuntimeStructureDirty.Reparent(childId, parentId, insertIndex, NextOrder()) : RuntimeStructureDirty.Spawn(childId, parentId, insertIndex, NextOrder()));
+            RecordOp(wasPublished
+                ? RuntimeStructureDirty.Reparent(childId, parentId, insertIndex, NextOrder())
+                : RuntimeStructureDirty.Spawn(childId, parentId, insertIndex, NextOrder()));
 
             MarkTouchedUpToRoot(parentId);
             ScheduleFlush();
@@ -320,7 +315,8 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
             return true;
         }
 
-        private bool IsPublished(long id) => _parents.V.ContainsKey(id) || _parentByChild.ContainsKey(id);
+        private bool IsPublished(long id)
+            => _parents.V.ContainsKey(id) || _parentByChild.ContainsKey(id);
 
         private void RecordOp(in RuntimeStructureDirty op)
         {
@@ -378,22 +374,28 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
                 return;
 
             foreach (var c in list)
-            {
                 _parentByChild.Remove(c);
-            }
         }
 
         private void AddToRoot(long id)
         {
-            if (!_all.TryGetValue(id, out var obj))
+            if (!_all.V.TryGetValue(id, out var obj))
                 return;
+
+            // уже root — просто убедимся, что ссылка актуальна
+            if (_parents.V.ContainsKey(id))
+            {
+                _parents.V[id] = obj;
+                return;
+            }
 
             var wasPublished = IsPublished(id);
 
-            if (!_parents.V.TryAdd(id, obj))
-                return;
+            _parents.V[id] = obj;
 
-            RecordOp(wasPublished ? RuntimeStructureDirty.Reparent(id, -1, -1, NextOrder()) : RuntimeStructureDirty.Spawn(id, -1, -1, NextOrder()));
+            RecordOp(wasPublished
+                ? RuntimeStructureDirty.Reparent(id, -1, -1, NextOrder())
+                : RuntimeStructureDirty.Spawn(id, -1, -1, NextOrder()));
 
             MarkTouchedUpToRoot(id);
             ScheduleFlush();
@@ -445,6 +447,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
             _flushInProgress = true;
             try
             {
+                _all.V = _all.V;
                 _parents.V = _parents.V;
 
                 NativeList<RuntimeStructureDirty> emitStructure = default;
@@ -452,9 +455,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
                 {
                     emitStructure = new NativeList<RuntimeStructureDirty>(_structureChanges.Count, Allocator.Temp);
                     foreach (var c in _structureChanges)
-                    {
                         emitStructure.Add(c);
-                    }
 
                     _structureChanges.Clear();
 
@@ -467,9 +468,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
                 {
                     touchedIds = new NativeList<long>(_touched.Count, Allocator.Temp);
                     foreach (var id in _touched)
-                    {
                         touchedIds.Add(id);
-                    }
 
                     _touched.Clear();
 
@@ -486,7 +485,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
 
                     foreach (var id in touchedIds)
                     {
-                        if (!_all.TryGetValue(id, out var obj))
+                        if (!_all.V.TryGetValue(id, out var obj))
                             continue;
 
                         var structChanges = obj.StructureChanges;
@@ -497,9 +496,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
                         if (structChanges != null && structChanges.Count > 0)
                         {
                             foreach (var kv in structChanges)
-                            {
                                 emitCompStruct.Add(new ObjectStructDirty(id, kv.Value));
-                            }
 
                             hadAny = true;
                         }
@@ -510,7 +507,9 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
                             {
                                 var compTypeId = kv.Key;
 
-                                if (structChanges != null && structChanges.TryGetValue(compTypeId, out var sd) && sd.Kind == CompStructOpKind.Remove)
+                                if (structChanges != null &&
+                                    structChanges.TryGetValue(compTypeId, out var sd) &&
+                                    sd.Kind == CompStructOpKind.Remove)
                                     continue;
 
                                 emitComp.Add(new ObjectComponentDirty(id, kv.Value));

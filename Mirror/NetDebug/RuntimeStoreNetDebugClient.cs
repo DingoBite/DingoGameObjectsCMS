@@ -1,16 +1,16 @@
 #if MIRROR
+using System;
 using DingoGameObjectsCMS.RuntimeObjects.Stores;
 using Mirror;
-using SnakeAndMice.GameComponents.AppGlue;
 using Unity.Collections;
 
 namespace DingoGameObjectsCMS.Mirror.NetDebug
 {
     public sealed class RuntimeStoreNetDebugClient
     {
-        private readonly RuntimeStores _stores;
+        private readonly Func<FixedString32Bytes, RuntimeStore> _stores;
 
-        public RuntimeStoreNetDebugClient(RuntimeStores stores)
+        public RuntimeStoreNetDebugClient(Func<FixedString32Bytes, RuntimeStore> stores)
         {
             _stores = stores;
 
@@ -18,7 +18,7 @@ namespace DingoGameObjectsCMS.Mirror.NetDebug
             NetworkClient.RegisterHandler<RtDebugRequestDumpMsg>(OnReqDump);
         }
 
-        private RuntimeStore Get(FixedString32Bytes key) => _stores.GetOrAddRuntimeStore(key);
+        private RuntimeStore Get(FixedString32Bytes key) => _stores(key);
 
         private void OnReqHash(RtDebugRequestHashMsg msg)
         {

@@ -5,17 +5,27 @@ using Mirror;
 using UnityEngine;
 using DingoGameObjectsCMS.RuntimeObjects;
 using DingoGameObjectsCMS.RuntimeObjects.Commands;
-using DingoGameObjectsCMS.RuntimeObjects.Objects;
 using DingoGameObjectsCMS.RuntimeObjects.Stores;
 using Unity.Collections;
 
 namespace DingoGameObjectsCMS.Mirror
 {
+    public enum RuntimeNetRole : byte
+    {
+        Offline = 0,
+        Server = 1,
+        Client = 2,
+        Host = 3,
+    }
+
     [DisallowMultipleComponent]
     public sealed class DingoNetworkManager : NetworkManager
     {
         public RuntimeStoreNetServer RtServer { get; private set; }
         public RuntimeStoreNetClient RtClient { get; private set; }
+
+        public RuntimeNetRole RuntimeRole => ResolveRuntimeRole();
+        public event Action<RuntimeNetRole> RuntimeRoleChanged;
 
         private Func<FixedString32Bytes, RuntimeStore> _resolver;
         private Func<IEnumerable<FixedString32Bytes>> _replicatedStoreGetter;
@@ -25,6 +35,11 @@ namespace DingoGameObjectsCMS.Mirror
         {
             base.Awake();
             DontDestroyOnLoad(gameObject);
+
+            if (RuntimeNetTrace.LOG_MANAGER)
+                RuntimeNetTrace.Server("MANAGER", $"awake address={networkAddress}");
+
+            NotifyRuntimeRoleChanged();
         }
 
         public void SetStoreResolver(Func<FixedString32Bytes, RuntimeStore> resolver) => _resolver = resolver;
@@ -41,12 +56,22 @@ namespace DingoGameObjectsCMS.Mirror
             TryUnregisterServerHandlers();
             RtServer = new RuntimeStoreNetServer(_resolver, _replicatedStoreGetter, _commandsBusGetter?.Invoke());
             Debug.Log($"Server started: {networkAddress}");
+
+            if (RuntimeNetTrace.LOG_MANAGER)
+                RuntimeNetTrace.Server("MANAGER", $"OnStartServer address={networkAddress}");
+
+            NotifyRuntimeRoleChanged();
         }
 
         public override void OnStopServer()
         {
             RtServer = null;
             base.OnStopServer();
+
+            if (RuntimeNetTrace.LOG_MANAGER)
+                RuntimeNetTrace.Server("MANAGER", "OnStopServer");
+
+            NotifyRuntimeRoleChanged();
         }
 
         public override void OnStartClient()
@@ -60,17 +85,70 @@ namespace DingoGameObjectsCMS.Mirror
 
             RtClient = new RuntimeStoreNetClient(_resolver, _commandsBusGetter?.Invoke());
             Debug.Log($"Client started: {networkAddress}");
+
+            if (RuntimeNetTrace.LOG_MANAGER)
+                RuntimeNetTrace.Client("MANAGER", $"OnStartClient address={networkAddress}");
+
+            NotifyRuntimeRoleChanged();
         }
 
         public override void OnStopClient()
         {
             RtClient = null;
             base.OnStopClient();
+
+            if (RuntimeNetTrace.LOG_MANAGER)
+                RuntimeNetTrace.Client("MANAGER", "OnStopClient");
+
+            NotifyRuntimeRoleChanged();
+        }
+
+        public override void OnStartHost()
+        {
+            base.OnStartHost();
+
+            if (RuntimeNetTrace.LOG_MANAGER)
+                RuntimeNetTrace.Server("MANAGER", "OnStartHost");
+
+            NotifyRuntimeRoleChanged();
+        }
+
+        public override void OnStopHost()
+        {
+            base.OnStopHost();
+
+            if (RuntimeNetTrace.LOG_MANAGER)
+                RuntimeNetTrace.Server("MANAGER", "OnStopHost");
+
+            NotifyRuntimeRoleChanged();
+        }
+
+        public override void OnClientConnect()
+        {
+            base.OnClientConnect();
+
+            if (RuntimeNetTrace.LOG_MANAGER)
+                RuntimeNetTrace.Client("MANAGER", "OnClientConnect");
+
+            NotifyRuntimeRoleChanged();
+        }
+
+        public override void OnClientDisconnect()
+        {
+            base.OnClientDisconnect();
+
+            if (RuntimeNetTrace.LOG_MANAGER)
+                RuntimeNetTrace.Client("MANAGER", "OnClientDisconnect");
+
+            NotifyRuntimeRoleChanged();
         }
 
         public override void OnServerReady(NetworkConnectionToClient conn)
         {
             base.OnServerReady(conn);
+
+            if (RuntimeNetTrace.LOG_MANAGER)
+                RuntimeNetTrace.Server("MANAGER", $"OnServerReady conn={conn.connectionId} auth={conn.isAuthenticated}");
 
             if (RtServer == null)
                 return;
@@ -88,21 +166,32 @@ namespace DingoGameObjectsCMS.Mirror
         public override void OnServerDisconnect(NetworkConnectionToClient conn)
         {
             RtServer?.OnConnectionDisconnected(conn.connectionId);
+
+            if (RuntimeNetTrace.LOG_MANAGER)
+                RuntimeNetTrace.Server("MANAGER", $"OnServerDisconnect conn={conn.connectionId}");
+
             base.OnServerDisconnect(conn);
+            NotifyRuntimeRoleChanged();
         }
         
-        public void ServerBroadcastSpawn(FixedString32Bytes storeId, GameRuntimeObject obj, long parentId = -1, int insertIndex = -1, uint clientSeq = 0) => RtServer?.BroadcastSpawn(storeId, obj, parentId, insertIndex, clientSeq);
-        public void ServerBroadcastAttach(FixedString32Bytes storeId, long parentId, long childId, int insertIndex = -1) => RtServer?.BroadcastAttach(storeId, parentId, childId, insertIndex);
-        public void ServerBroadcastMove(FixedString32Bytes storeId, long parentId, long childId, int newIndex) => RtServer?.BroadcastMove(storeId, parentId, childId, newIndex);
-        public void ServerBroadcastRemove(FixedString32Bytes storeId, long id, RemoveMode m = RemoveMode.Subtree) => RtServer?.BroadcastRemove(storeId, id, m);
-        public void ServerBroadcastCommand(GameRuntimeCommand command, uint tick = 0, int sender = -1) => RtServer?.BroadcastCommand(command, tick, sender);
+        public void ServerBroadcastCommand(GameRuntimeCommand command, uint tick = 0, int sender = -1)
+        {
+            RtServer?.BroadcastCommand(command, tick, sender);
+
+            if (RuntimeNetTrace.LOG_COMMANDS && command != null)
+                RuntimeNetTrace.Server("CMD", $"broadcast wrapper store={command.StoreId} tick={tick} sender={sender}");
+        }
         
-        public void ClientSendMutate(FixedString32Bytes storeId, uint seq, long targetId, uint compTypeId, byte[] payload) => RtClient?.SendMutate(storeId, seq, targetId, compTypeId, payload);
-        public void ClientSendCommand(GameRuntimeCommand command, uint tick = 0) => RtClient?.SendCommand(command, tick);
+        public void ClientSendCommand(GameRuntimeCommand command, uint tick = 0)
+        {
+            RtClient?.SendCommand(command, tick);
+
+            if (RuntimeNetTrace.LOG_COMMANDS && command != null)
+                RuntimeNetTrace.Client("CMD", $"send wrapper command store={command.StoreId} tick={tick}");
+        }
         
         private static void TryUnregisterServerHandlers()
         {
-            NetworkServer.UnregisterHandler<RtMutateMsg>();
             NetworkServer.UnregisterHandler<RtCommandMsg>();
             NetworkServer.UnregisterHandler<RtStoreAckMsg>();
             NetworkServer.UnregisterHandler<RtStoreResyncRequestMsg>();
@@ -110,14 +199,32 @@ namespace DingoGameObjectsCMS.Mirror
 
         private static void TryUnregisterClientHandlers()
         {
-            NetworkClient.UnregisterHandler<RtSpawnMsg>();
-            NetworkClient.UnregisterHandler<RtAttachMsg>();
-            NetworkClient.UnregisterHandler<RtMoveMsg>();
-            NetworkClient.UnregisterHandler<RtRemoveMsg>();
-            NetworkClient.UnregisterHandler<RtAppliedMsg>();
             NetworkClient.UnregisterHandler<RtCommandMsg>();
-            NetworkClient.UnregisterHandler<RtStoreFullSnapshotMsg>();
-            NetworkClient.UnregisterHandler<RtStoreDeltaMsg>();
+            NetworkClient.UnregisterHandler<RtStoreSyncMsg>();
+        }
+
+        private RuntimeNetRole ResolveRuntimeRole()
+        {
+            if (NetworkServer.active && NetworkClient.active)
+                return RuntimeNetRole.Host;
+
+            if (NetworkServer.active)
+                return RuntimeNetRole.Server;
+
+            if (NetworkClient.active)
+                return RuntimeNetRole.Client;
+
+            return RuntimeNetRole.Offline;
+        }
+
+        private void NotifyRuntimeRoleChanged()
+        {
+            var role = ResolveRuntimeRole();
+
+            if (RuntimeNetTrace.LOG_MANAGER)
+                RuntimeNetTrace.Server("MANAGER", $"role changed role={role}");
+
+            RuntimeRoleChanged?.Invoke(role);
         }
     }
 }

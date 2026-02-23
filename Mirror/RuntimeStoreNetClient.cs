@@ -13,7 +13,6 @@ namespace DingoGameObjectsCMS.Mirror
         private readonly Func<FixedString32Bytes, RuntimeStore> _stores;
         private readonly RuntimeCommandsBus _commandsBus;
 
-        private readonly List<RtSpawnMsg> _pendingSpawns = new();
         private readonly Dictionary<FixedString32Bytes, uint> _lastSnapshotByStore = new();
         private readonly HashSet<FixedString32Bytes> _resyncInFlight = new();
 
@@ -25,46 +24,45 @@ namespace DingoGameObjectsCMS.Mirror
             _stores = stores;
             _commandsBus = commandsBus;
 
-            NetworkClient.RegisterHandler<RtSpawnMsg>(OnSpawn);
-            NetworkClient.RegisterHandler<RtAttachMsg>(OnAttach);
-            NetworkClient.RegisterHandler<RtMoveMsg>(OnMove);
-            NetworkClient.RegisterHandler<RtRemoveMsg>(OnRemove);
-            NetworkClient.RegisterHandler<RtAppliedMsg>(OnApplied);
-
             NetworkClient.RegisterHandler<RtCommandMsg>(OnCommand);
-            NetworkClient.RegisterHandler<RtStoreFullSnapshotMsg>(OnFullSnapshot);
-            NetworkClient.RegisterHandler<RtStoreDeltaMsg>(OnDelta);
-        }
+            NetworkClient.RegisterHandler<RtStoreSyncMsg>(OnStoreSync);
 
-        public void SendMutate(FixedString32Bytes storeKey, uint seq, long targetId, uint compTypeId, byte[] payload)
-        {
-            NetworkClient.Send(new RtMutateMsg
-            {
-                StoreId = storeKey,
-                Seq = seq,
-                TargetId = targetId,
-                CompTypeId = compTypeId,
-                Payload = payload,
-            }, Channels.Reliable);
+            if (RuntimeNetTrace.LOG_MANAGER)
+                RuntimeNetTrace.Client("MANAGER", $"RuntimeStoreNetClient initialized commandsBus={(_commandsBus != null)}");
         }
 
         public void SendCommand(GameRuntimeCommand command, uint tick = 0)
         {
             if (!NetworkClient.isConnected || command == null)
+            {
+                if (RuntimeNetTrace.LOG_COMMANDS)
+                    RuntimeNetTrace.Client("CMD", $"skip c2s command reason={(command == null ? "null_command" : "not_connected")}");
+
                 return;
+            }
 
             if (!CanSendCommandsNow())
+            {
+                if (RuntimeNetTrace.LOG_COMMANDS)
+                    RuntimeNetTrace.Client("CMD", "skip c2s command reason=not_authenticated_or_no_connection");
+
                 return;
+            }
 
             var payload = RuntimeNetSerialization.Serialize(command);
+            var seq = ++_nextC2SCommandSeq;
+
             NetworkClient.Send(new RtCommandMsg
             {
                 StoreId = command.StoreId,
                 Tick = tick,
-                Seq = ++_nextC2SCommandSeq,
+                Seq = seq,
                 Sender = -1,
                 Payload = payload,
             }, Channels.Reliable);
+
+            if (RuntimeNetTrace.LOG_COMMANDS)
+                RuntimeNetTrace.Client("CMD", $"send c2s seq={seq} store={command.StoreId} tick={tick} bytes={(payload?.Length ?? 0)}");
         }
 
         private bool CanSendCommandsNow()
@@ -79,99 +77,134 @@ namespace DingoGameObjectsCMS.Mirror
         private void OnCommand(RtCommandMsg msg)
         {
             if (_lastS2CCommandSeq >= msg.Seq)
+            {
+                if (RuntimeNetTrace.LOG_COMMANDS)
+                    RuntimeNetTrace.Client("CMD", $"drop s2c command seq={msg.Seq} reason=duplicate last={_lastS2CCommandSeq}");
+
                 return;
+            }
 
             _lastS2CCommandSeq = msg.Seq;
 
             if (_commandsBus == null)
+            {
+                if (RuntimeNetTrace.LOG_COMMANDS)
+                    RuntimeNetTrace.Client("CMD", $"drop s2c command seq={msg.Seq} reason=no_commands_bus");
+
                 return;
+            }
 
             var command = RuntimeNetSerialization.Deserialize<GameRuntimeCommand>(msg.Payload);
             if (command == null)
-                return;
+            {
+                if (RuntimeNetTrace.LOG_COMMANDS)
+                    RuntimeNetTrace.Client("CMD", $"drop s2c command seq={msg.Seq} reason=deserialize_failed");
 
-            var storeKey = msg.StoreId;
+                return;
+            }
 
             if (command.StoreId.Length == 0)
-                command.StoreId = storeKey;
+                command.StoreId = msg.StoreId;
 
             _commandsBus.Enqueue(command);
+
+            if (RuntimeNetTrace.LOG_COMMANDS)
+            {
+                RuntimeNetTrace.Client(
+                    "CMD",
+                    $"enqueue s2c command seq={msg.Seq} store={command.StoreId} tick={msg.Tick} sender={msg.Sender}");
+            }
         }
 
-        private void OnFullSnapshot(RtStoreFullSnapshotMsg msg)
+        private void OnStoreSync(RtStoreSyncMsg msg)
         {
-            var storeKey = msg.StoreId;
+            var payload = RuntimeNetSerialization.Deserialize<RtStoreSyncPayload>(msg.Payload);
+            if (payload == null)
+                return;
+
+            var storeKey = payload.StoreId;
             var store = GetStore(storeKey);
 
             _lastSnapshotByStore.TryGetValue(storeKey, out var lastAppliedSnapshotId);
-            if (msg.SnapshotId <= lastAppliedSnapshotId)
-                return;
 
-            var payload = RuntimeNetSerialization.Deserialize<RtStoreFullSnapshotPayload>(msg.Payload);
-
-            if (payload == null)
+            if (payload.SnapshotId <= lastAppliedSnapshotId)
             {
+                if (RuntimeNetTrace.LOG_SNAPSHOTS)
+                {
+                    RuntimeNetTrace.Client(
+                        "SNAP",
+                        $"drop store-sync mode={payload.Mode} store={storeKey} snap={payload.SnapshotId} reason=stale last={lastAppliedSnapshotId}");
+                }
+
+                return;
+            }
+
+            if (payload.Mode == RtStoreSyncMode.DeltaTick &&
+                lastAppliedSnapshotId > 0 &&
+                payload.SnapshotId > lastAppliedSnapshotId + 1 &&
+                RuntimeNetTrace.LOG_SNAPSHOTS)
+            {
+                RuntimeNetTrace.Client(
+                    "SNAP",
+                    $"accept non-contiguous delta store={storeKey} have={lastAppliedSnapshotId} got={payload.SnapshotId} reason=global_snapshot_marker");
+            }
+
+            if (RuntimeNetTrace.LOG_SNAPSHOTS)
+            {
+                RuntimeNetTrace.Client(
+                    "SNAP",
+                    $"recv store-sync mode={payload.Mode} store={storeKey} snap={payload.SnapshotId} struct={payload.StructureChanges.Count} compStruct={payload.ObjectStructChanges.Count} compDelta={payload.ComponentDeltas.Count} bytes={(msg.Payload?.Length ?? 0)}");
+            }
+
+            if (!RuntimeStoreSnapshotCodec.ApplySync(store, payload))
+            {
+                if (RuntimeNetTrace.LOG_SNAPSHOTS)
+                {
+                    RuntimeNetTrace.Client(
+                        "SNAP",
+                        $"request resync store={storeKey} reason=apply_failed mode={payload.Mode} snap={payload.SnapshotId}");
+                }
+
                 RequestResync(storeKey);
                 return;
             }
 
-            if (!RuntimeStoreSnapshotCodec.ApplyFullSnapshot(store, payload))
-            {
-                RequestResync(storeKey);
-                return;
-            }
-
-            _lastSnapshotByStore[storeKey] = msg.SnapshotId;
+            _lastSnapshotByStore[storeKey] = payload.SnapshotId;
             _resyncInFlight.Remove(storeKey);
-            SendStoreAck(storeKey, msg.SnapshotId);
-        }
+            SendStoreAck(storeKey, payload.SnapshotId);
 
-        private void OnDelta(RtStoreDeltaMsg msg)
-        {
-            var storeKey = msg.StoreId;
-            var store = GetStore(storeKey);
-
-            _lastSnapshotByStore.TryGetValue(storeKey, out var lastAppliedSnapshotId);
-            if (msg.SnapshotId <= lastAppliedSnapshotId)
-                return;
-
-            if (msg.BaselineId != lastAppliedSnapshotId)
-            {
-                RequestResync(storeKey);
-                return;
-            }
-
-            var payload = RuntimeNetSerialization.Deserialize<RtStoreDeltaPayload>(msg.Payload);
-            if (payload == null)
-            {
-                RequestResync(storeKey);
-                return;
-            }
-
-            if (!RuntimeStoreSnapshotCodec.ApplyDelta(store, payload))
-            {
-                RequestResync(storeKey);
-                return;
-            }
-
-            _lastSnapshotByStore[storeKey] = msg.SnapshotId;
-            SendStoreAck(storeKey, msg.SnapshotId);
+            if (RuntimeNetTrace.LOG_SNAPSHOTS)
+                RuntimeNetTrace.Client("SNAP", $"apply store-sync mode={payload.Mode} store={storeKey} snap={payload.SnapshotId}");
         }
 
         private void RequestResync(FixedString32Bytes storeId)
         {
             if (!NetworkClient.isConnected)
+            {
+                if (RuntimeNetTrace.LOG_SNAPSHOTS)
+                    RuntimeNetTrace.Client("SNAP", $"skip resync store={storeId} reason=not_connected");
+
                 return;
+            }
 
             if (!_resyncInFlight.Add(storeId))
+            {
+                if (RuntimeNetTrace.LOG_SNAPSHOTS)
+                    RuntimeNetTrace.Client("SNAP", $"skip resync store={storeId} reason=already_in_flight");
+
                 return;
+            }
 
             _lastSnapshotByStore.TryGetValue(storeId, out var have);
+
             NetworkClient.Send(new RtStoreResyncRequestMsg
             {
                 StoreId = storeId,
                 HaveSnapshotId = have,
             }, Channels.Reliable);
+
+            if (RuntimeNetTrace.LOG_SNAPSHOTS)
+                RuntimeNetTrace.Client("SNAP", $"send resync request store={storeId} have={have}");
         }
 
         private static void SendStoreAck(FixedString32Bytes storeId, uint snapshotId)
@@ -184,93 +217,9 @@ namespace DingoGameObjectsCMS.Mirror
                 StoreId = storeId,
                 SnapshotId = snapshotId,
             }, Channels.Reliable);
-        }
 
-        private void OnSpawn(RtSpawnMsg msg)
-        {
-            var storeKey = msg.StoreId;
-            var store = GetStore(storeKey);
-
-            if (msg.ParentId >= 0 && !store.TryTakeRO(msg.ParentId, out _))
-            {
-                _pendingSpawns.Add(msg);
-                return;
-            }
-
-            ApplySpawn(store, msg);
-            DrainPending(store, storeKey);
-        }
-
-        private void DrainPending(RuntimeStore store, FixedString32Bytes storeKey)
-        {
-            for (var i = _pendingSpawns.Count - 1; i >= 0; i--)
-            {
-                var p = _pendingSpawns[i];
-                if (p.StoreId != storeKey)
-                    continue;
-
-                if (p.ParentId < 0 || store.TryTakeRO(p.ParentId, out _))
-                {
-                    _pendingSpawns.RemoveAt(i);
-                    ApplySpawn(store, p);
-                }
-            }
-        }
-
-        private static void ApplySpawn(RuntimeStore store, RtSpawnMsg msg)
-        {
-            var obj = RuntimeNetSerialization.DeserializeRuntimeObject(msg.Data);
-            if (obj == null)
-                return;
-
-            obj.InstanceId = msg.Id;
-            obj.StoreId = store.Id;
-
-            store.TryUpsertNetObject(obj);
-
-            if (msg.ParentId < 0)
-                store.PublishRootExisting(msg.Id);
-            else
-                store.AttachChild(msg.ParentId, msg.Id, msg.InsertIndex);
-        }
-
-        private void OnAttach(RtAttachMsg msg)
-        {
-            var store = GetStore(msg.StoreId);
-            if (!store.TryTakeRO(msg.ParentId, out _) || !store.TryTakeRO(msg.ChildId, out _))
-                return;
-
-            store.AttachChild(msg.ParentId, msg.ChildId, msg.InsertIndex);
-        }
-
-        private void OnMove(RtMoveMsg msg)
-        {
-            var store = GetStore(msg.StoreId);
-            if (!store.TryTakeRO(msg.ParentId, out _) || !store.TryTakeRO(msg.ChildId, out _))
-                return;
-
-            store.MoveChild(msg.ParentId, msg.ChildId, msg.NewIndex);
-        }
-
-        private void OnRemove(RtRemoveMsg msg)
-        {
-            var store = GetStore(msg.StoreId);
-            store.Remove(msg.Id, msg.Mode, out _);
-        }
-
-        private void OnApplied(RtAppliedMsg msg)
-        {
-            var store = GetStore(msg.StoreId);
-            if (!store.TryTakeRW(msg.TargetId, out var obj))
-                return;
-
-            var mutable = obj.GetById(msg.CompTypeId) as INetMutableGRC;
-            if (mutable == null)
-                return;
-
-            var ctx = new RuntimeMutateContext(store, obj, msg.TargetId, msg.CompTypeId, RuntimeMutateSide.ClientRemoteApply, null, msg.Revision);
-
-            mutable.ApplyMutatePayload(in ctx, msg.Payload, null);
+            if (RuntimeNetTrace.LOG_SNAPSHOTS)
+                RuntimeNetTrace.Client("SNAP", $"send ack store={storeId} snap={snapshotId}");
         }
     }
 }
