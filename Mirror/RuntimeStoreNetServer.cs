@@ -487,7 +487,13 @@ namespace DingoGameObjectsCMS.Mirror
 
         private void OnStoreStructureChanges(FixedString32Bytes storeId, NativeArray<RuntimeStructureDirty> changes)
         {
-            if (changes.Length == 0 || !TryEnsureStoreState(storeId, out var state))
+            if (!TryEnsureStoreState(storeId, out var state))
+                return;
+
+            if (state.Store.ReplicationSuppressed)
+                return;
+
+            if (changes.Length == 0)
                 return;
 
             var added = 0;
@@ -549,7 +555,13 @@ namespace DingoGameObjectsCMS.Mirror
 
         private void OnStoreComponentStructureChanges(FixedString32Bytes storeId, NativeArray<ObjectStructDirty> changes)
         {
-            if (changes.Length == 0 || !TryEnsureStoreState(storeId, out var state))
+            if (!TryEnsureStoreState(storeId, out var state))
+                return;
+
+            if (state.Store.ReplicationSuppressed)
+                return;
+
+            if (changes.Length == 0)
                 return;
 
             var added = 0;
@@ -614,7 +626,13 @@ namespace DingoGameObjectsCMS.Mirror
 
         private void OnStoreComponentChanges(FixedString32Bytes storeId, NativeArray<ObjectComponentDirty> changes)
         {
-            if (changes.Length == 0 || !TryEnsureStoreState(storeId, out var state))
+            if (!TryEnsureStoreState(storeId, out var state))
+                return;
+
+            if (state.Store.ReplicationSuppressed)
+                return;
+
+            if (changes.Length == 0)
                 return;
 
             var added = 0;

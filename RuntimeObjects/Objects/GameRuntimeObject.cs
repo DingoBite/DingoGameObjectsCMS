@@ -19,8 +19,8 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
         public Hash128 SourceAssetGUID;
 
         [SerializeReference, JsonProperty("Components", ItemTypeNameHandling = TypeNameHandling.Auto)] private List<GameRuntimeComponent> _components = new();
-        [NonSerialized, JsonIgnore] private Dictionary<Type, GameRuntimeComponent> _componentsByType;
-        [NonSerialized, JsonIgnore] private Dictionary<uint, GameRuntimeComponent> _componentsById;
+        [NonSerialized, JsonIgnore] private Dictionary<Type, GameRuntimeComponent> _componentsByType = new();
+        [NonSerialized, JsonIgnore] private Dictionary<uint, GameRuntimeComponent> _componentsById = new();
         [NonSerialized, JsonIgnore] private Dictionary<uint, ComponentDirty> _componentsChanges = new();
         [NonSerialized, JsonIgnore] private Dictionary<uint, ComponentStructDirty> _structureChanges = new();
 
@@ -28,6 +28,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
         [JsonIgnore] public IReadOnlyDictionary<uint, ComponentStructDirty> StructureChanges => _structureChanges;
         [JsonIgnore] public IReadOnlyList<GameRuntimeComponent> Components => _components;
         [JsonIgnore] public RuntimeInstance RuntimeInstance => new() { Id = InstanceId, StoreId = StoreId };
+        [JsonIgnore] public RuntimeRealm RuntimeRealm => new() { Realm = Realm };
         
         public GameRuntimeComponent GetById(uint typeId)
         {
@@ -95,42 +96,47 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
 
             return entity;
         }
-        
-        public void AddOrReplace<T>(T component) where T : GameRuntimeComponent
-        {
-            if (typeof(T) == typeof(GameRuntimeComponent))
-                return;
-            EnsureCache();
-            if (component == null)
-                return;
 
-            var keyType = typeof(T);
-            var typeId = keyType.GetId();
-            
+        public void AddOrReplaceById(uint typeId, GameRuntimeComponent component)
+        {
+            var keyType = typeId.GetRegisteredType();
+            EnsureCache();
             if (_componentsByType.TryGetValue(keyType, out var existing) && existing != null)
             {
                 var idx = _components.FindIndex(c => ReferenceEquals(c, existing));
                 if (idx >= 0)
                 {
                     _components[idx] = component;
-                    MarkComponentDirty<T>();
+                    MarkComponentDirty(typeId);
                 }
                 else
                 {
                     _components.Add(component);
-                    MarkComponentStructDirty<T>(CompStructOpKind.Add);
-                    MarkComponentDirty<T>();
+                    MarkComponentStructDirty(typeId, keyType, CompStructOpKind.Add);
+                    MarkComponentDirty(typeId);
                 }
             }
             else
             {
                 _components.Add(component);
-                MarkComponentStructDirty<T>(CompStructOpKind.Add);
-                MarkComponentDirty<T>();
+                MarkComponentStructDirty(typeId, keyType, CompStructOpKind.Add);
+                MarkComponentDirty(typeId);
             }
 
             _componentsByType[keyType] = component;
             _componentsById[typeId] = component;
+        }
+        
+        public void AddOrReplace<T>(T component) where T : GameRuntimeComponent
+        {
+            if (typeof(T) == typeof(GameRuntimeComponent))
+                return;
+            if (component == null)
+                return;
+
+            var keyType = typeof(T);
+            var typeId = keyType.GetId();
+            AddOrReplaceById(typeId, component);
         }
 
         public bool RemoveByTypeId(uint typeId)
@@ -188,6 +194,11 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
             if (!DirtyTraits<T>.Data)
                 return;
             var compTypeId = typeof(T).GetId();
+            MarkComponentDirty(compTypeId);
+        }
+        
+        private void MarkComponentDirty(uint compTypeId)
+        {
             _componentsChanges[compTypeId] = new ComponentDirty(compTypeId);
         }
 
@@ -236,9 +247,8 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
 
         private void RebuildCache()
         {
-            _componentsByType = new Dictionary<Type, GameRuntimeComponent>(_components.Count);
-            _componentsById = new Dictionary<uint, GameRuntimeComponent>(_components.Count);
-
+            _componentsByType.Clear();
+            _componentsById.Clear();
             foreach (var c in _components)
             {
                 if (c == null)

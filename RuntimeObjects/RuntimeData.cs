@@ -13,6 +13,12 @@ namespace DingoGameObjectsCMS.RuntimeObjects
     }
 
     [Serializable, Preserve]
+    public struct RuntimeRealm : IComponentData
+    {
+        public StoreRealm Realm;
+    }
+
+    [Serializable, Preserve]
     public struct GameAssetKey
     {
         public const string MODS = "mods";

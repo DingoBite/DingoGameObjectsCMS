@@ -101,7 +101,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
             return _typeById.TryGetValue(id, out type);
         }
 
-        public static Type GetType(uint id)
+        public static Type GetRegisteredType(this uint id)
         {
             if (!IsInitialized)
                 throw new InvalidOperationException("RuntimeComponentTypeRegistry is not initialized. Call InitializeFromJson/InitializeFromStreamingAssets first.");

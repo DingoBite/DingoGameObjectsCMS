@@ -3,7 +3,6 @@ using System;
 using System.Collections.Generic;
 using Mirror;
 using UnityEngine;
-using DingoGameObjectsCMS.RuntimeObjects;
 using DingoGameObjectsCMS.RuntimeObjects.Commands;
 using DingoGameObjectsCMS.RuntimeObjects.Stores;
 using Unity.Collections;
@@ -27,7 +26,9 @@ namespace DingoGameObjectsCMS.Mirror
         public RuntimeNetRole RuntimeRole => ResolveRuntimeRole();
         public event Action<RuntimeNetRole> RuntimeRoleChanged;
 
-        private Func<FixedString32Bytes, RuntimeStore> _resolver;
+        private Func<FixedString32Bytes, RuntimeStore> _serverResolver;
+        private Func<FixedString32Bytes, RuntimeStore> _clientResolver;
+
         private Func<IEnumerable<FixedString32Bytes>> _replicatedStoreGetter;
         private Func<RuntimeCommandsBus> _commandsBusGetter;
 
@@ -41,8 +42,10 @@ namespace DingoGameObjectsCMS.Mirror
 
             NotifyRuntimeRoleChanged();
         }
+        
+        public void SetServerStoreResolver(Func<FixedString32Bytes, RuntimeStore> resolver) => _serverResolver = resolver;
+        public void SetClientStoreResolver(Func<FixedString32Bytes, RuntimeStore> resolver) => _clientResolver = resolver;
 
-        public void SetStoreResolver(Func<FixedString32Bytes, RuntimeStore> resolver) => _resolver = resolver;
         public void SetReplicatedStoresGetter(Func<IEnumerable<FixedString32Bytes>> replicatedStoreGetter) => _replicatedStoreGetter = replicatedStoreGetter;
         public void SetRuntimeCommandsBusGetter(Func<RuntimeCommandsBus> commandsBusGetter) => _commandsBusGetter = commandsBusGetter;
 
@@ -50,11 +53,11 @@ namespace DingoGameObjectsCMS.Mirror
         {
             base.OnStartServer();
 
-            if (_resolver == null)
-                throw new InvalidOperationException($"{nameof(DingoNetworkManager)}: store resolver is not configured.");
+            if (_serverResolver == null)
+                throw new InvalidOperationException($"{nameof(DingoNetworkManager)}: server store resolver is not configured.");
 
             TryUnregisterServerHandlers();
-            RtServer = new RuntimeStoreNetServer(_resolver, _replicatedStoreGetter, _commandsBusGetter?.Invoke());
+            RtServer = new RuntimeStoreNetServer(_serverResolver, _replicatedStoreGetter, _commandsBusGetter?.Invoke());
             Debug.Log($"Server started: {networkAddress}");
 
             if (RuntimeNetTrace.LOG_MANAGER)
@@ -78,12 +81,11 @@ namespace DingoGameObjectsCMS.Mirror
         {
             base.OnStartClient();
 
-            if (_resolver == null)
-                throw new InvalidOperationException($"{nameof(DingoNetworkManager)}: store resolver is not configured.");
+            if (_clientResolver == null)
+                throw new InvalidOperationException($"{nameof(DingoNetworkManager)}: client store resolver is not configured.");
 
             TryUnregisterClientHandlers();
-
-            RtClient = new RuntimeStoreNetClient(_resolver, _commandsBusGetter?.Invoke());
+            RtClient = new RuntimeStoreNetClient(_clientResolver, _commandsBusGetter?.Invoke());
             Debug.Log($"Client started: {networkAddress}");
 
             if (RuntimeNetTrace.LOG_MANAGER)
@@ -158,9 +160,7 @@ namespace DingoGameObjectsCMS.Mirror
                 return;
 
             foreach (var storeId in stores)
-            {
                 RtServer.SendFullSnapshot(storeId, conn);
-            }
         }
 
         public override void OnServerDisconnect(NetworkConnectionToClient conn)
@@ -173,7 +173,7 @@ namespace DingoGameObjectsCMS.Mirror
             base.OnServerDisconnect(conn);
             NotifyRuntimeRoleChanged();
         }
-        
+
         public void ServerBroadcastCommand(GameRuntimeCommand command, uint tick = 0, int sender = -1)
         {
             RtServer?.BroadcastCommand(command, tick, sender);
@@ -181,7 +181,7 @@ namespace DingoGameObjectsCMS.Mirror
             if (RuntimeNetTrace.LOG_COMMANDS && command != null)
                 RuntimeNetTrace.Server("CMD", $"broadcast wrapper store={command.StoreId} tick={tick} sender={sender}");
         }
-        
+
         public void ClientSendCommand(GameRuntimeCommand command, uint tick = 0)
         {
             RtClient?.SendCommand(command, tick);
@@ -189,7 +189,7 @@ namespace DingoGameObjectsCMS.Mirror
             if (RuntimeNetTrace.LOG_COMMANDS && command != null)
                 RuntimeNetTrace.Client("CMD", $"send wrapper command store={command.StoreId} tick={tick}");
         }
-        
+
         private static void TryUnregisterServerHandlers()
         {
             NetworkServer.UnregisterHandler<RtCommandMsg>();

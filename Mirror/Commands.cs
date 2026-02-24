@@ -390,6 +390,28 @@ namespace DingoGameObjectsCMS.Mirror
             if (store == null || payload == null)
                 return false;
 
+            store.BeginNetApply();
+            var ok = false;
+            try
+            {
+                ok = ApplySyncInternal(store, payload);
+                return ok;
+            }
+            catch (Exception e)
+            {
+                Debug.LogException(e);
+            }
+            finally
+            {
+                if (!ok)
+                    store.AbortNetApply();
+            }
+
+            return true;
+        }
+
+        private static bool ApplySyncInternal(RuntimeStore store, RtStoreSyncPayload payload)
+        {
             if (payload.Mode == RtStoreSyncMode.FullSnapshot)
                 ClearStore(store);
 
@@ -567,7 +589,7 @@ namespace DingoGameObjectsCMS.Mirror
                     if (component == null)
                         return false;
 
-                    obj.AddOrReplace(component);
+                    obj.AddOrReplaceById(change.CompTypeId, component);
                     return true;
                 }
 
@@ -598,7 +620,7 @@ namespace DingoGameObjectsCMS.Mirror
             if (component == null)
                 return false;
 
-            obj.AddOrReplace(component);
+            obj.AddOrReplaceById(change.CompTypeId, component);
             return true;
         }
 
