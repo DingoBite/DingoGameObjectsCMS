@@ -28,7 +28,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
         [JsonIgnore] public IReadOnlyDictionary<uint, ComponentStructDirty> StructureChanges => _structureChanges;
         [JsonIgnore] public IReadOnlyList<GameRuntimeComponent> Components => _components;
         [JsonIgnore] public RuntimeInstance RuntimeInstance => new() { Id = InstanceId, StoreId = StoreId };
-        [JsonIgnore] public RuntimeRealm RuntimeRealm => new() { Realm = Realm };
         
         public GameRuntimeComponent GetById(uint typeId)
         {
@@ -87,6 +86,8 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
             ecb.AddComponent(entity, new SourceAssetLink { AssetGUID = source });
             if (SourceAssetGUID.isValid)
                 ecb.AddComponent(entity, new AssetPresentationTag());
+            ecb.AddComponent(entity, new RuntimeRealm { Realm = Realm });
+            ecb.AddComponent(entity, RuntimeInstance);
 
             if (Components == null) return entity;
             foreach (var c in Components)
