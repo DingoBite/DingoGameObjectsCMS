@@ -1,6 +1,8 @@
 using System.Collections.Generic;
+using DingoGameObjectsCMS.RuntimeObjects.Commands;
 using DingoGameObjectsCMS.RuntimeObjects.Objects;
 using Newtonsoft.Json;
+using Unity.Collections;
 using UnityEngine;
 
 namespace DingoGameObjectsCMS.AssetObjects
@@ -27,6 +29,23 @@ namespace DingoGameObjectsCMS.AssetObjects
             {
                 component.SetupRuntimeComponent(g);
             }
+        }
+        
+        public GameRuntimeCommand CreateRuntimeCommand(FixedString32Bytes attachToStoreId)
+        {
+            var g = new GameRuntimeCommand();
+            g.Key = Key;
+            g.AssetGUID = GUID;
+            g.ApplyToStoreId = attachToStoreId;
+            if (_components == null)
+                return null;
+
+            foreach (var component in _components)
+            {
+                component.SetupRuntimeCommand(g);
+            }
+
+            return g;
         }
     }
 }

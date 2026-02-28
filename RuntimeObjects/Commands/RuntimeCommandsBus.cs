@@ -121,7 +121,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
             foreach (var c in components)
             {
                 if (c is ICommandLogic logic)
-                    logic.Execute(command);
+                    logic.Execute(command, c);
             }
         }
     }

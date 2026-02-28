@@ -38,5 +38,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects
             Key = string.IsNullOrWhiteSpace(key) ? NONE : key;
             Version = string.IsNullOrWhiteSpace(version) ? ZERO_V : version;
         }
+
+        public override string ToString() => $"{Mod}.{Type}.{Key}.{Version}";
     }
 }

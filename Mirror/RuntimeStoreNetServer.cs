@@ -21,7 +21,6 @@ namespace DingoGameObjectsCMS.Mirror
         private readonly Dictionary<int, Dictionary<FixedString32Bytes, ConnectionStoreState>> _connectionStates = new();
         private readonly Dictionary<int, uint> _lastCommandSeqByConn = new();
 
-        private uint _nextS2CCommandSeq;
         private bool _scheduled;
 
         public Func<NetworkConnectionToClient, GameRuntimeCommand, bool> ValidateCommand;
@@ -79,23 +78,12 @@ namespace DingoGameObjectsCMS.Mirror
 
         public void BroadcastCommand(GameRuntimeCommand command, uint tick = 0, int sender = -1)
         {
-            if (command == null)
-                return;
-
-            var payload = RuntimeNetSerialization.Serialize(command);
-            var seq = ++_nextS2CCommandSeq;
-
-            NetworkServer.SendToReady(new RtCommandMsg
+            if (RuntimeNetTrace.LOG_COMMANDS && command != null)
             {
-                StoreId = command.StoreId,
-                Tick = tick,
-                Seq = seq,
-                Sender = sender,
-                Payload = payload,
-            }, Channels.Reliable);
-
-            if (RuntimeNetTrace.LOG_COMMANDS)
-                RuntimeNetTrace.Server("CMD", $"broadcast s2c seq={seq} store={command.StoreId} tick={tick} sender={sender} bytes={(payload?.Length ?? 0)}");
+                RuntimeNetTrace.Server(
+                    "CMD",
+                    $"skip s2c command store={command.ApplyToStoreId} tick={tick} sender={sender} reason=commands_are_c2s_only");
+            }
         }
 
         private void OnCommand(NetworkConnectionToClient conn, RtCommandMsg msg)
@@ -146,8 +134,8 @@ namespace DingoGameObjectsCMS.Mirror
                 return;
             }
 
-            if (command.StoreId.Length == 0)
-                command.StoreId = msg.StoreId;
+            if (command.ApplyToStoreId.Length == 0)
+                command.ApplyToStoreId = msg.StoreId;
 
             if (ValidateCommand != null && !ValidateCommand(conn, command))
             {
@@ -162,13 +150,13 @@ namespace DingoGameObjectsCMS.Mirror
                 _commandsBus.Enqueue(command);
 
                 if (RuntimeNetTrace.LOG_COMMANDS)
-                    RuntimeNetTrace.Server("CMD", $"enqueue bus seq={msg.Seq} store={command.StoreId} conn={conn.connectionId}");
+                    RuntimeNetTrace.Server("CMD", $"enqueue bus seq={msg.Seq} store={command.ApplyToStoreId} conn={conn.connectionId}");
 
                 return;
             }
 
             if (RuntimeNetTrace.LOG_COMMANDS)
-                RuntimeNetTrace.Server("CMD", $"execute immediate seq={msg.Seq} store={command.StoreId} conn={conn.connectionId}");
+                RuntimeNetTrace.Server("CMD", $"execute immediate seq={msg.Seq} store={command.ApplyToStoreId} conn={conn.connectionId}");
 
             ExecuteCommandImmediate(command);
         }
@@ -729,10 +717,10 @@ namespace DingoGameObjectsCMS.Mirror
             if (components == null || components.Count == 0)
                 return;
 
-            for (var i = 0; i < components.Count; i++)
+            foreach (var c in components)
             {
-                if (components[i] is ICommandLogic logic)
-                    logic.Execute(command);
+                if (c is ICommandLogic logic)
+                    logic.Execute(command, c);
             }
         }
 

@@ -4,16 +4,18 @@ using System.Runtime.Serialization;
 using DingoGameObjectsCMS.RuntimeObjects.Objects;
 using DingoGameObjectsCMS.RuntimeObjects.Stores;
 using Newtonsoft.Json;
+using Unity.Collections;
 using UnityEngine;
 using UnityEngine.Scripting;
 
 namespace DingoGameObjectsCMS.RuntimeObjects.Commands
 {
     [Serializable, Preserve]
-    public class GameRuntimeCommand : RuntimeGUIDObject, ISerializationCallbackReceiver
+    public class GameRuntimeCommand : GameGUIDObject, ISerializationCallbackReceiver
     {
         public GameAssetKey Key;
         public Hash128 AssetGUID;
+        public FixedString32Bytes ApplyToStoreId;
         
         [SerializeReference, JsonProperty("Components", ItemTypeNameHandling = TypeNameHandling.Auto)] private List<GameRuntimeComponent> _components = new();
         [NonSerialized, JsonIgnore] private Dictionary<Type, GameRuntimeComponent> _componentsByType;
@@ -25,6 +27,12 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
         {
             EnsureCache();
             return _componentsById.GetValueOrDefault(typeId);
+        }
+
+        public T Get<T>() where T : GameRuntimeComponent
+        {
+            EnsureCache();
+            return _componentsByType.GetValueOrDefault(typeof(T)) as T;
         }
 
         public void AddOrReplace<T>(T component) where T : GameRuntimeComponent

@@ -3,66 +3,70 @@ using System;
 using System.Collections.Generic;
 using DingoGameObjectsCMS.RuntimeObjects.Commands;
 using DingoGameObjectsCMS.RuntimeObjects.Stores;
+using DingoUnityExtensions;
 using Mirror;
 using Unity.Collections;
 
 namespace DingoGameObjectsCMS.Mirror
 {
-    public sealed class RuntimeStoreNetClient
+    public sealed class RuntimeStoreNetClient : IDisposable
     {
         private readonly Func<FixedString32Bytes, RuntimeStore> _stores;
         private readonly RuntimeCommandsBus _commandsBus;
 
         private readonly Dictionary<FixedString32Bytes, uint> _lastSnapshotByStore = new();
         private readonly HashSet<FixedString32Bytes> _resyncInFlight = new();
+        private readonly List<QueuedCommand> _pendingOutgoingCommands = new(capacity: 32);
 
         private uint _nextC2SCommandSeq;
-        private uint _lastS2CCommandSeq;
+        private bool _outgoingFlushScheduled;
+        private bool _commandsBusSubscribed;
+        private bool _deferredFlushLogged;
 
         public RuntimeStoreNetClient(Func<FixedString32Bytes, RuntimeStore> stores, RuntimeCommandsBus commandsBus = null)
         {
             _stores = stores;
             _commandsBus = commandsBus;
 
-            NetworkClient.RegisterHandler<RtCommandMsg>(OnCommand);
             NetworkClient.RegisterHandler<RtStoreSyncMsg>(OnStoreSync);
 
+            if (_commandsBus != null && !NetworkServer.active)
+            {
+                _commandsBus.BeforeExecute += OnCommandBusInvoked;
+                _commandsBusSubscribed = true;
+            }
+
             if (RuntimeNetTrace.LOG_MANAGER)
-                RuntimeNetTrace.Client("MANAGER", $"RuntimeStoreNetClient initialized commandsBus={(_commandsBus != null)}");
+            {
+                RuntimeNetTrace.Client(
+                    "MANAGER",
+                    $"RuntimeStoreNetClient initialized commandsBus={(_commandsBus != null)} subscribed={_commandsBusSubscribed}");
+            }
+        }
+
+        public void Dispose()
+        {
+            if (_commandsBusSubscribed && _commandsBus != null)
+            {
+                _commandsBus.BeforeExecute -= OnCommandBusInvoked;
+                _commandsBusSubscribed = false;
+            }
+
+            StopOutgoingFlushSchedule();
         }
 
         public void SendCommand(GameRuntimeCommand command, uint tick = 0)
         {
-            if (!NetworkClient.isConnected || command == null)
+            if (command == null)
             {
                 if (RuntimeNetTrace.LOG_COMMANDS)
-                    RuntimeNetTrace.Client("CMD", $"skip c2s command reason={(command == null ? "null_command" : "not_connected")}");
+                    RuntimeNetTrace.Client("CMD", "skip c2s command reason=null_command");
 
                 return;
             }
 
-            if (!CanSendCommandsNow())
-            {
-                if (RuntimeNetTrace.LOG_COMMANDS)
-                    RuntimeNetTrace.Client("CMD", "skip c2s command reason=not_authenticated_or_no_connection");
-
-                return;
-            }
-
-            var payload = RuntimeNetSerialization.Serialize(command);
-            var seq = ++_nextC2SCommandSeq;
-
-            NetworkClient.Send(new RtCommandMsg
-            {
-                StoreId = command.StoreId,
-                Tick = tick,
-                Seq = seq,
-                Sender = -1,
-                Payload = payload,
-            }, Channels.Reliable);
-
-            if (RuntimeNetTrace.LOG_COMMANDS)
-                RuntimeNetTrace.Client("CMD", $"send c2s seq={seq} store={command.StoreId} tick={tick} bytes={(payload?.Length ?? 0)}");
+            QueueOutgoingCommand(command, tick);
+            EnsureOutgoingFlushScheduled();
         }
 
         private bool CanSendCommandsNow()
@@ -72,47 +76,126 @@ namespace DingoGameObjectsCMS.Mirror
                    NetworkClient.connection.isAuthenticated;
         }
 
-        private RuntimeStore GetStore(FixedString32Bytes storeKey) => _stores(storeKey);
-
-        private void OnCommand(RtCommandMsg msg)
+        private void OnCommandBusInvoked(GameRuntimeCommand command)
         {
-            if (_lastS2CCommandSeq >= msg.Seq)
-            {
-                if (RuntimeNetTrace.LOG_COMMANDS)
-                    RuntimeNetTrace.Client("CMD", $"drop s2c command seq={msg.Seq} reason=duplicate last={_lastS2CCommandSeq}");
-
+            if (NetworkServer.active)
                 return;
-            }
 
-            _lastS2CCommandSeq = msg.Seq;
+            QueueOutgoingCommand(command, tick: 0);
+            EnsureOutgoingFlushScheduled();
+        }
 
-            if (_commandsBus == null)
-            {
-                if (RuntimeNetTrace.LOG_COMMANDS)
-                    RuntimeNetTrace.Client("CMD", $"drop s2c command seq={msg.Seq} reason=no_commands_bus");
-
-                return;
-            }
-
-            var command = RuntimeNetSerialization.Deserialize<GameRuntimeCommand>(msg.Payload);
+        private void QueueOutgoingCommand(GameRuntimeCommand command, uint tick)
+        {
             if (command == null)
+                return;
+
+            var payload = RuntimeNetSerialization.Serialize(command);
+            if (payload == null || payload.Length == 0)
             {
                 if (RuntimeNetTrace.LOG_COMMANDS)
-                    RuntimeNetTrace.Client("CMD", $"drop s2c command seq={msg.Seq} reason=deserialize_failed");
+                    RuntimeNetTrace.Client("CMD", $"skip queue c2s reason=empty_payload store={command.ApplyToStoreId}");
 
                 return;
             }
 
-            if (command.StoreId.Length == 0)
-                command.StoreId = msg.StoreId;
-
-            _commandsBus.Enqueue(command);
+            _pendingOutgoingCommands.Add(new QueuedCommand(command.ApplyToStoreId, tick, payload));
 
             if (RuntimeNetTrace.LOG_COMMANDS)
             {
                 RuntimeNetTrace.Client(
                     "CMD",
-                    $"enqueue s2c command seq={msg.Seq} store={command.StoreId} tick={msg.Tick} sender={msg.Sender}");
+                    $"queue c2s store={command.ApplyToStoreId} tick={tick} bytes={payload.Length} pending={_pendingOutgoingCommands.Count}");
+            }
+        }
+
+        private void EnsureOutgoingFlushScheduled()
+        {
+            if (_outgoingFlushScheduled)
+                return;
+
+            _outgoingFlushScheduled = true;
+            CoroutineParent.AddLateUpdater(this, FlushOutgoingCommands, RuntimeCommandsBus.UPDATE_ORDER + 1);
+        }
+
+        private void StopOutgoingFlushSchedule()
+        {
+            if (!_outgoingFlushScheduled)
+                return;
+
+            _outgoingFlushScheduled = false;
+            CoroutineParent.RemoveLateUpdater(this);
+        }
+
+        private void FlushOutgoingCommands()
+        {
+            if (_pendingOutgoingCommands.Count == 0)
+            {
+                StopOutgoingFlushSchedule();
+                return;
+            }
+
+            if (!CanSendCommandsNow())
+            {
+                if (RuntimeNetTrace.LOG_COMMANDS && !_deferredFlushLogged)
+                {
+                    RuntimeNetTrace.Client(
+                        "CMD",
+                        $"defer flush c2s pending={_pendingOutgoingCommands.Count} reason=not_authenticated_or_no_connection");
+                }
+
+                _deferredFlushLogged = true;
+
+                return;
+            }
+
+            _deferredFlushLogged = false;
+
+            var sentCount = 0;
+            for (var i = 0; i < _pendingOutgoingCommands.Count; i++)
+            {
+                var queued = _pendingOutgoingCommands[i];
+                var seq = ++_nextC2SCommandSeq;
+
+                NetworkClient.Send(new RtCommandMsg
+                {
+                    StoreId = queued.StoreId,
+                    Tick = queued.Tick,
+                    Seq = seq,
+                    Sender = -1,
+                    Payload = queued.Payload,
+                }, Channels.Reliable);
+
+                sentCount++;
+
+                if (RuntimeNetTrace.LOG_COMMANDS)
+                {
+                    RuntimeNetTrace.Client(
+                        "CMD",
+                        $"send c2s seq={seq} store={queued.StoreId} tick={queued.Tick} bytes={(queued.Payload?.Length ?? 0)}");
+                }
+            }
+
+            if (sentCount > 0)
+                _pendingOutgoingCommands.RemoveRange(0, sentCount);
+
+            if (_pendingOutgoingCommands.Count == 0)
+                StopOutgoingFlushSchedule();
+        }
+
+        private RuntimeStore GetStore(FixedString32Bytes storeKey) => _stores(storeKey);
+
+        private readonly struct QueuedCommand
+        {
+            public readonly FixedString32Bytes StoreId;
+            public readonly uint Tick;
+            public readonly byte[] Payload;
+
+            public QueuedCommand(FixedString32Bytes storeId, uint tick, byte[] payload)
+            {
+                StoreId = storeId;
+                Tick = tick;
+                Payload = payload;
             }
         }
 
