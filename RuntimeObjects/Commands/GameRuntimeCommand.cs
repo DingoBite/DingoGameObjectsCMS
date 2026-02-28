@@ -26,20 +26,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
             EnsureCache();
             return _componentsById.GetValueOrDefault(typeId);
         }
-        
-        public T TakeOrForceCreate<T>(Func<T> factory) where T : GameRuntimeComponent
-        {
-            EnsureCache();
-            if (!_componentsByType.TryGetValue(typeof(T), out var c) || c == null)
-            {
-                var value = factory();
-                AddOrReplace(value);
-                return value;
-            }
 
-            return (T) c;
-        }
-        
         public void AddOrReplace<T>(T component) where T : GameRuntimeComponent
         {
             EnsureCache();

@@ -49,34 +49,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
             MarkComponentDirty<T>();
             return (T)c;
         }
-
-        public T TakeOrForceCreateRO<T>(Func<T> factory) where T : GameRuntimeComponent
-        {
-            EnsureCache();
-            if (!_componentsByType.TryGetValue(typeof(T), out var c) || c == null)
-            {
-                var value = factory();
-                AddOrReplace(value);
-                return value;
-            }
-
-            return (T) c;
-        }
-
-        public T TakeOrForceCreateRW<T>(Func<T> factory) where T : GameRuntimeComponent
-        {
-            EnsureCache();
-            if (!_componentsByType.TryGetValue(typeof(T), out var c) || c == null)
-            {
-                var value = factory();
-                AddOrReplace(value);
-                return value;
-            }
-
-            MarkComponentDirty<T>();
-            return (T) c;
-        }
-
+        
         public Entity CreateEntity(RuntimeStore runtimeStore, EntityCommandBuffer ecb)
         {
             var entity = ecb.CreateEntity();
