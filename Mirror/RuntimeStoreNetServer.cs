@@ -25,10 +25,7 @@ namespace DingoGameObjectsCMS.Mirror
 
         public Func<NetworkConnectionToClient, GameRuntimeCommand, bool> ValidateCommand;
 
-        public RuntimeStoreNetServer(
-            Func<FixedString32Bytes, RuntimeStore> stores,
-            Func<IEnumerable<FixedString32Bytes>> replicatedStoresGetter = null,
-            RuntimeCommandsBus commandsBus = null)
+        public RuntimeStoreNetServer(Func<FixedString32Bytes, RuntimeStore> stores, Func<IEnumerable<FixedString32Bytes>> replicatedStoresGetter = null, RuntimeCommandsBus commandsBus = null)
         {
             _stores = stores;
             _replicatedStoresGetter = replicatedStoresGetter;
@@ -79,11 +76,7 @@ namespace DingoGameObjectsCMS.Mirror
         public void BroadcastCommand(GameRuntimeCommand command, uint tick = 0, int sender = -1)
         {
             if (RuntimeNetTrace.LOG_COMMANDS && command != null)
-            {
-                RuntimeNetTrace.Server(
-                    "CMD",
-                    $"skip s2c command store={command.ApplyToStoreId} tick={tick} sender={sender} reason=commands_are_c2s_only");
-            }
+                RuntimeNetTrace.Server("CMD", $"skip s2c command tick={tick} sender={sender} reason=commands_are_c2s_only");
         }
 
         private void OnCommand(NetworkConnectionToClient conn, RtCommandMsg msg)
@@ -92,11 +85,7 @@ namespace DingoGameObjectsCMS.Mirror
                 return;
 
             if (RuntimeNetTrace.LOG_COMMANDS)
-            {
-                RuntimeNetTrace.Server(
-                    "CMD",
-                    $"recv c2s seq={msg.Seq} store={msg.StoreId} tick={msg.Tick} sender={msg.Sender} conn={conn.connectionId} bytes={(msg.Payload?.Length ?? 0)} auth={conn.isAuthenticated} ready={conn.isReady}");
-            }
+                RuntimeNetTrace.Server("CMD", $"recv c2s seq={msg.Seq} tick={msg.Tick} sender={msg.Sender} conn={conn.connectionId} bytes={(msg.Payload?.Length ?? 0)} auth={conn.isAuthenticated} ready={conn.isReady}");
 
             ExecuteCommandFromMessage(conn, in msg);
         }
@@ -106,11 +95,7 @@ namespace DingoGameObjectsCMS.Mirror
             if (conn == null || !conn.isAuthenticated)
             {
                 if (RuntimeNetTrace.LOG_COMMANDS)
-                {
-                    RuntimeNetTrace.Server(
-                        "CMD",
-                        $"drop c2s command seq={msg.Seq} reason=not_authenticated conn={(conn == null ? -1 : conn.connectionId)}");
-                }
+                    RuntimeNetTrace.Server("CMD", $"drop c2s command seq={msg.Seq} reason=not_authenticated conn={(conn == null ? -1 : conn.connectionId)}");
 
                 return;
             }
@@ -134,9 +119,6 @@ namespace DingoGameObjectsCMS.Mirror
                 return;
             }
 
-            if (command.ApplyToStoreId.Length == 0)
-                command.ApplyToStoreId = msg.StoreId;
-
             if (ValidateCommand != null && !ValidateCommand(conn, command))
             {
                 if (RuntimeNetTrace.LOG_COMMANDS)
@@ -150,13 +132,13 @@ namespace DingoGameObjectsCMS.Mirror
                 _commandsBus.Enqueue(command);
 
                 if (RuntimeNetTrace.LOG_COMMANDS)
-                    RuntimeNetTrace.Server("CMD", $"enqueue bus seq={msg.Seq} store={command.ApplyToStoreId} conn={conn.connectionId}");
+                    RuntimeNetTrace.Server("CMD", $"enqueue bus seq={msg.Seq} conn={conn.connectionId}");
 
                 return;
             }
 
             if (RuntimeNetTrace.LOG_COMMANDS)
-                RuntimeNetTrace.Server("CMD", $"execute immediate seq={msg.Seq} store={command.ApplyToStoreId} conn={conn.connectionId}");
+                RuntimeNetTrace.Server("CMD", $"execute immediate seq={msg.Seq} conn={conn.connectionId}");
 
             ExecuteCommandImmediate(command);
         }
@@ -251,9 +233,7 @@ namespace DingoGameObjectsCMS.Mirror
 
                         if (RuntimeNetTrace.LOG_SNAPSHOTS)
                         {
-                            RuntimeNetTrace.Server(
-                                "SNAP",
-                                $"send full store={state.StoreId} snap={snapshotId} conn={conn.connectionId} reason=await_initial_ack bytes={(fullEncoded?.Length ?? 0)}");
+                            RuntimeNetTrace.Server("SNAP", $"send full store={state.StoreId} snap={snapshotId} conn={conn.connectionId} reason=await_initial_ack bytes={(fullEncoded?.Length ?? 0)}");
                         }
                     }
 
@@ -271,9 +251,7 @@ namespace DingoGameObjectsCMS.Mirror
 
                 if (RuntimeNetTrace.LOG_SNAPSHOTS)
                 {
-                    RuntimeNetTrace.Server(
-                        "SNAP",
-                        $"send delta store={state.StoreId} snap={snapshotId} conn={conn.connectionId} struct={payload.StructureChanges.Count} compStruct={payload.ObjectStructChanges.Count} compDelta={payload.ComponentDeltas.Count} bytes={(encoded?.Length ?? 0)}");
+                    RuntimeNetTrace.Server("SNAP", $"send delta store={state.StoreId} snap={snapshotId} conn={conn.connectionId} struct={payload.StructureChanges.Count} compStruct={payload.ObjectStructChanges.Count} compDelta={payload.ComponentDeltas.Count} bytes={(encoded?.Length ?? 0)}");
                 }
             }
 
@@ -720,7 +698,7 @@ namespace DingoGameObjectsCMS.Mirror
             foreach (var c in components)
             {
                 if (c is ICommandLogic logic)
-                    logic.Execute(command, c);
+                    logic.Execute(command);
             }
         }
 
@@ -750,6 +728,7 @@ namespace DingoGameObjectsCMS.Mirror
         {
             public readonly FixedString32Bytes StoreId;
             public readonly RuntimeStore Store;
+
             public readonly RtStoreSyncPayload PendingDelta = new RtStoreSyncPayload
             {
                 Mode = RtStoreSyncMode.DeltaTick,

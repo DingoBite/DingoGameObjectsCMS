@@ -10,6 +10,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
 
     public interface ICommandLogic
     {
-        public void Execute(GameRuntimeCommand command, GameRuntimeComponent component);
+        public void Execute(GameRuntimeCommand command);
     }
 }

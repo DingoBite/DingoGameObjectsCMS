@@ -31,12 +31,11 @@ namespace DingoGameObjectsCMS.AssetObjects
             }
         }
         
-        public GameRuntimeCommand CreateRuntimeCommand(FixedString32Bytes attachToStoreId)
+        public GameRuntimeCommand CreateRuntimeCommand()
         {
             var g = new GameRuntimeCommand();
             g.Key = Key;
             g.AssetGUID = GUID;
-            g.ApplyToStoreId = attachToStoreId;
             if (_components == null)
                 return null;
 

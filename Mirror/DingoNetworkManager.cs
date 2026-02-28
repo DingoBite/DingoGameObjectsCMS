@@ -180,7 +180,7 @@ namespace DingoGameObjectsCMS.Mirror
             RtServer?.BroadcastCommand(command, tick, sender);
 
             if (RuntimeNetTrace.LOG_COMMANDS && command != null)
-                RuntimeNetTrace.Server("CMD", $"broadcast wrapper ignored store={command.ApplyToStoreId} tick={tick} sender={sender}");
+                RuntimeNetTrace.Server("CMD", $"broadcast wrapper ignored tick={tick} sender={sender}");
         }
 
         public void ClientSendCommand(GameRuntimeCommand command, uint tick = 0)
@@ -188,7 +188,7 @@ namespace DingoGameObjectsCMS.Mirror
             RtClient?.SendCommand(command, tick);
 
             if (RuntimeNetTrace.LOG_COMMANDS && command != null)
-                RuntimeNetTrace.Client("CMD", $"send wrapper command store={command.ApplyToStoreId} tick={tick}");
+                RuntimeNetTrace.Client("CMD", $"send wrapper command tick={tick}");
         }
 
         private static void TryUnregisterServerHandlers()

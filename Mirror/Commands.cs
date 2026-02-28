@@ -15,7 +15,6 @@ namespace DingoGameObjectsCMS.Mirror
     [Serializable, Preserve]
     public struct RtCommandMsg : NetworkMessage
     {
-        public FixedString32Bytes StoreId;
         public uint Tick;
         public uint Seq;
         public int Sender;

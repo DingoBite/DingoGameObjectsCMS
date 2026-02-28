@@ -15,7 +15,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
     {
         public GameAssetKey Key;
         public Hash128 AssetGUID;
-        public FixedString32Bytes ApplyToStoreId;
         
         [SerializeReference, JsonProperty("Components", ItemTypeNameHandling = TypeNameHandling.Auto)] private List<GameRuntimeComponent> _components = new();
         [NonSerialized, JsonIgnore] private Dictionary<Type, GameRuntimeComponent> _componentsByType;
@@ -29,6 +28,16 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
             return _componentsById.GetValueOrDefault(typeId);
         }
 
+        public bool TryGet<T>(out T component) where T : GameRuntimeComponent
+        {
+            EnsureCache();
+            component = null;
+            if (!_componentsByType.TryGetValue(typeof(T), out var c) || c is not T tc)
+                return false;
+            component = tc;
+            return true;
+        }
+        
         public T Get<T>() where T : GameRuntimeComponent
         {
             EnsureCache();

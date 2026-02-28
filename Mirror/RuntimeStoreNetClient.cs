@@ -37,11 +37,7 @@ namespace DingoGameObjectsCMS.Mirror
             }
 
             if (RuntimeNetTrace.LOG_MANAGER)
-            {
-                RuntimeNetTrace.Client(
-                    "MANAGER",
-                    $"RuntimeStoreNetClient initialized commandsBus={(_commandsBus != null)} subscribed={_commandsBusSubscribed}");
-            }
+                RuntimeNetTrace.Client("MANAGER", $"RuntimeStoreNetClient initialized commandsBus={(_commandsBus != null)} subscribed={_commandsBusSubscribed}");
         }
 
         public void Dispose()
@@ -69,12 +65,7 @@ namespace DingoGameObjectsCMS.Mirror
             EnsureOutgoingFlushScheduled();
         }
 
-        private bool CanSendCommandsNow()
-        {
-            return NetworkClient.isConnected &&
-                   NetworkClient.connection != null &&
-                   NetworkClient.connection.isAuthenticated;
-        }
+        private bool CanSendCommandsNow() => NetworkClient.isConnected && NetworkClient.connection != null && NetworkClient.connection.isAuthenticated;
 
         private void OnCommandBusInvoked(GameRuntimeCommand command)
         {
@@ -94,19 +85,15 @@ namespace DingoGameObjectsCMS.Mirror
             if (payload == null || payload.Length == 0)
             {
                 if (RuntimeNetTrace.LOG_COMMANDS)
-                    RuntimeNetTrace.Client("CMD", $"skip queue c2s reason=empty_payload store={command.ApplyToStoreId}");
+                    RuntimeNetTrace.Client("CMD", $"skip queue c2s reason=empty_payload");
 
                 return;
             }
 
-            _pendingOutgoingCommands.Add(new QueuedCommand(command.ApplyToStoreId, tick, payload));
+            _pendingOutgoingCommands.Add(new QueuedCommand(tick, payload));
 
             if (RuntimeNetTrace.LOG_COMMANDS)
-            {
-                RuntimeNetTrace.Client(
-                    "CMD",
-                    $"queue c2s store={command.ApplyToStoreId} tick={tick} bytes={payload.Length} pending={_pendingOutgoingCommands.Count}");
-            }
+                RuntimeNetTrace.Client("CMD", $"queue c2s tick={tick} bytes={payload.Length} pending={_pendingOutgoingCommands.Count}");
         }
 
         private void EnsureOutgoingFlushScheduled()
@@ -138,11 +125,7 @@ namespace DingoGameObjectsCMS.Mirror
             if (!CanSendCommandsNow())
             {
                 if (RuntimeNetTrace.LOG_COMMANDS && !_deferredFlushLogged)
-                {
-                    RuntimeNetTrace.Client(
-                        "CMD",
-                        $"defer flush c2s pending={_pendingOutgoingCommands.Count} reason=not_authenticated_or_no_connection");
-                }
+                    RuntimeNetTrace.Client("CMD", $"defer flush c2s pending={_pendingOutgoingCommands.Count} reason=not_authenticated_or_no_connection");
 
                 _deferredFlushLogged = true;
 
@@ -152,14 +135,12 @@ namespace DingoGameObjectsCMS.Mirror
             _deferredFlushLogged = false;
 
             var sentCount = 0;
-            for (var i = 0; i < _pendingOutgoingCommands.Count; i++)
+            foreach (var queued in _pendingOutgoingCommands)
             {
-                var queued = _pendingOutgoingCommands[i];
                 var seq = ++_nextC2SCommandSeq;
 
                 NetworkClient.Send(new RtCommandMsg
                 {
-                    StoreId = queued.StoreId,
                     Tick = queued.Tick,
                     Seq = seq,
                     Sender = -1,
@@ -170,9 +151,7 @@ namespace DingoGameObjectsCMS.Mirror
 
                 if (RuntimeNetTrace.LOG_COMMANDS)
                 {
-                    RuntimeNetTrace.Client(
-                        "CMD",
-                        $"send c2s seq={seq} store={queued.StoreId} tick={queued.Tick} bytes={(queued.Payload?.Length ?? 0)}");
+                    RuntimeNetTrace.Client("CMD", $"send c2s seq={seq} tick={queued.Tick} bytes={(queued.Payload?.Length ?? 0)}");
                 }
             }
 
@@ -187,13 +166,11 @@ namespace DingoGameObjectsCMS.Mirror
 
         private readonly struct QueuedCommand
         {
-            public readonly FixedString32Bytes StoreId;
             public readonly uint Tick;
             public readonly byte[] Payload;
 
-            public QueuedCommand(FixedString32Bytes storeId, uint tick, byte[] payload)
+            public QueuedCommand(uint tick, byte[] payload)
             {
-                StoreId = storeId;
                 Tick = tick;
                 Payload = payload;
             }
@@ -213,40 +190,21 @@ namespace DingoGameObjectsCMS.Mirror
             if (payload.SnapshotId <= lastAppliedSnapshotId)
             {
                 if (RuntimeNetTrace.LOG_SNAPSHOTS)
-                {
-                    RuntimeNetTrace.Client(
-                        "SNAP",
-                        $"drop store-sync mode={payload.Mode} store={storeKey} snap={payload.SnapshotId} reason=stale last={lastAppliedSnapshotId}");
-                }
+                    RuntimeNetTrace.Client("SNAP", $"drop store-sync mode={payload.Mode} store={storeKey} snap={payload.SnapshotId} reason=stale last={lastAppliedSnapshotId}");
 
                 return;
             }
 
-            if (payload.Mode == RtStoreSyncMode.DeltaTick &&
-                lastAppliedSnapshotId > 0 &&
-                payload.SnapshotId > lastAppliedSnapshotId + 1 &&
-                RuntimeNetTrace.LOG_SNAPSHOTS)
-            {
-                RuntimeNetTrace.Client(
-                    "SNAP",
-                    $"accept non-contiguous delta store={storeKey} have={lastAppliedSnapshotId} got={payload.SnapshotId} reason=global_snapshot_marker");
-            }
+            if (payload.Mode == RtStoreSyncMode.DeltaTick && lastAppliedSnapshotId > 0 && payload.SnapshotId > lastAppliedSnapshotId + 1 && RuntimeNetTrace.LOG_SNAPSHOTS)
+                RuntimeNetTrace.Client("SNAP", $"accept non-contiguous delta store={storeKey} have={lastAppliedSnapshotId} got={payload.SnapshotId} reason=global_snapshot_marker");
 
             if (RuntimeNetTrace.LOG_SNAPSHOTS)
-            {
-                RuntimeNetTrace.Client(
-                    "SNAP",
-                    $"recv store-sync mode={payload.Mode} store={storeKey} snap={payload.SnapshotId} struct={payload.StructureChanges.Count} compStruct={payload.ObjectStructChanges.Count} compDelta={payload.ComponentDeltas.Count} bytes={(msg.Payload?.Length ?? 0)}");
-            }
+                RuntimeNetTrace.Client("SNAP", $"recv store-sync mode={payload.Mode} store={storeKey} snap={payload.SnapshotId} struct={payload.StructureChanges.Count} compStruct={payload.ObjectStructChanges.Count} compDelta={payload.ComponentDeltas.Count} bytes={(msg.Payload?.Length ?? 0)}");
 
             if (!RuntimeStoreSnapshotCodec.ApplySync(store, payload))
             {
                 if (RuntimeNetTrace.LOG_SNAPSHOTS)
-                {
-                    RuntimeNetTrace.Client(
-                        "SNAP",
-                        $"request resync store={storeKey} reason=apply_failed mode={payload.Mode} snap={payload.SnapshotId}");
-                }
+                    RuntimeNetTrace.Client("SNAP", $"request resync store={storeKey} reason=apply_failed mode={payload.Mode} snap={payload.SnapshotId}");
 
                 RequestResync(storeKey);
                 return;
