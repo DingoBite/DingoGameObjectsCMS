@@ -15,11 +15,11 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
     {
         public GameAssetKey Key;
         public Hash128 AssetGUID;
-        
+
         [SerializeReference, JsonProperty("Components", ItemTypeNameHandling = TypeNameHandling.Auto)] private List<GameRuntimeComponent> _components = new();
         [NonSerialized, JsonIgnore] private Dictionary<Type, GameRuntimeComponent> _componentsByType;
         [NonSerialized, JsonIgnore] private Dictionary<uint, GameRuntimeComponent> _componentsById;
-        
+
         [JsonIgnore] public IReadOnlyList<GameRuntimeComponent> Components => _components;
 
         public GameRuntimeComponent GetById(uint typeId)
@@ -37,7 +37,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
             component = tc;
             return true;
         }
-        
+
         public T Get<T>() where T : GameRuntimeComponent
         {
             EnsureCache();
@@ -52,7 +52,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
 
             var keyType = typeof(T);
             var typeId = keyType.GetId();
-            
+
             if (_componentsByType.TryGetValue(keyType, out var existing) && existing != null)
             {
                 var idx = _components.FindIndex(c => ReferenceEquals(c, existing));
@@ -78,7 +78,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
             var typeId = typeof(T).GetId();
             _componentsById.Remove(typeId);
         }
-        
+
         private void EnsureCache()
         {
             if (_componentsById == null)
@@ -101,10 +101,11 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
                 _componentsById[id] = c;
             }
         }
-        
+
         [OnDeserialized]
         private void OnDeserialized(StreamingContext _) => RebuildCache();
         void ISerializationCallbackReceiver.OnBeforeSerialize() { }
         void ISerializationCallbackReceiver.OnAfterDeserialize() => RebuildCache();
     }
 }
+

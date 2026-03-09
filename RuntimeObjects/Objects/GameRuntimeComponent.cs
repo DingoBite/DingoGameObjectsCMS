@@ -8,6 +8,8 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
     [Serializable, Preserve, HideInTypeMenu]
     public class GameRuntimeComponent
     {
+        public virtual void OnCreate(GameRuntimeObject owner) { }
+        public virtual void OnDestroy(GameRuntimeObject owner) { }
         public virtual void SetupForEntity(RuntimeStore store, EntityCommandBuffer ecb, GameRuntimeObject g, Entity e) {}
     }
 }

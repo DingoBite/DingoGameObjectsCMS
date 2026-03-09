@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Runtime.Serialization;
+using DingoGameObjectsCMS.RuntimeObjects.Events;
 using DingoGameObjectsCMS.RuntimeObjects.Stores;
 using Newtonsoft.Json;
 using Unity.Collections;
@@ -23,12 +24,15 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
         [NonSerialized, JsonIgnore] private Dictionary<uint, GameRuntimeComponent> _componentsById = new();
         [NonSerialized, JsonIgnore] private Dictionary<uint, ComponentDirty> _componentsChanges = new();
         [NonSerialized, JsonIgnore] private Dictionary<uint, ComponentStructDirty> _structureChanges = new();
+        [NonSerialized, JsonIgnore] private Dictionary<uint, List<RuntimeEventBinding>> _runtimeEventHandlers = new();
+        [NonSerialized, JsonIgnore] private bool _runtimeEventHandlersDirty = true;
+        [NonSerialized, JsonIgnore] private bool _isDestroyed;
 
         [JsonIgnore] public IReadOnlyDictionary<uint, ComponentDirty> ComponentsChanges => _componentsChanges;
         [JsonIgnore] public IReadOnlyDictionary<uint, ComponentStructDirty> StructureChanges => _structureChanges;
         [JsonIgnore] public IReadOnlyList<GameRuntimeComponent> Components => _components;
         [JsonIgnore] public RuntimeInstance RuntimeInstance => new() { Id = InstanceId, StoreId = StoreId };
-        
+
         public GameRuntimeComponent GetById(uint typeId)
         {
             EnsureCache();
@@ -49,7 +53,16 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
             MarkComponentDirty<T>();
             return (T)c;
         }
-        
+
+        public void Setup()
+        {
+            _runtimeEventHandlersDirty = true;
+            foreach (var component in _components)
+            {
+                component?.OnCreate(this);
+            }
+        }
+
         public Entity CreateEntity(RuntimeStore runtimeStore, EntityCommandBuffer ecb)
         {
             var entity = ecb.CreateEntity();
@@ -62,7 +75,9 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
             ecb.AddComponent(entity, new RuntimeRealm { Realm = Realm });
             ecb.AddComponent(entity, RuntimeInstance);
 
-            if (Components == null) return entity;
+            if (Components == null)
+                return entity;
+
             foreach (var c in Components)
             {
                 c?.SetupForEntity(runtimeStore, ecb, this, entity);
@@ -73,13 +88,21 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
 
         public void AddOrReplaceById(uint typeId, GameRuntimeComponent component)
         {
+            if (component == null)
+                return;
+
             var keyType = typeId.GetRegisteredType();
             EnsureCache();
-            if (_componentsByType.TryGetValue(keyType, out var existing) && existing != null)
+
+            var hadExisting = _componentsByType.TryGetValue(keyType, out var existing) && existing != null;
+            if (hadExisting)
             {
                 var idx = _components.FindIndex(c => ReferenceEquals(c, existing));
                 if (idx >= 0)
                 {
+                    if (!ReferenceEquals(existing, component))
+                        existing.OnDestroy(this);
+
                     _components[idx] = component;
                     MarkComponentDirty(typeId);
                 }
@@ -99,8 +122,12 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
 
             _componentsByType[keyType] = component;
             _componentsById[typeId] = component;
+            _runtimeEventHandlersDirty = true;
+
+            if ((!hadExisting || !ReferenceEquals(existing, component)))
+                component.OnCreate(this);
         }
-        
+
         public void AddOrReplace<T>(T component) where T : GameRuntimeComponent
         {
             if (typeof(T) == typeof(GameRuntimeComponent))
@@ -123,8 +150,10 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
             var keyType = c.GetType();
             _componentsByType.Remove(keyType);
             _componentsById.Remove(typeId);
-
             _components.Remove(c);
+            _runtimeEventHandlersDirty = true;
+
+            c.OnDestroy(this);
 
             if (c is IDisposable disposable)
                 disposable.Dispose();
@@ -132,28 +161,45 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
             MarkComponentStructDirty(typeId, keyType, CompStructOpKind.Remove);
             return true;
         }
-        
+
         public void Remove<T>() where T : GameRuntimeComponent
         {
-            if (_componentsByType.Remove(typeof(T), out var c))
+            var typeId = typeof(T).GetId();
+            RemoveByTypeId(typeId);
+        }
+
+        public bool TryGetRuntimeEventHandlers(uint eventTypeId, out IReadOnlyList<RuntimeEventBinding> handlers)
+        {
+            EnsureRuntimeEventHandlers();
+            if (_runtimeEventHandlers.TryGetValue(eventTypeId, out var list) && list?.Count > 0)
             {
-                _components.Remove(c);
-                if (c is IDisposable disposable)
-                    disposable.Dispose();
+                handlers = list;
+                return true;
             }
 
-            var typeId = typeof(T).GetId();
-            _componentsById.Remove(typeId);
-            
-            MarkComponentStructDirty<T>(CompStructOpKind.Remove);
+            handlers = null;
+            return false;
         }
 
         public void Destroy()
         {
-            foreach (var component in Components)
+            if (_isDestroyed)
+                return;
+
+            _isDestroyed = true;
+
+            if (_components != null)
             {
-                if (component is IDisposable disposable)
-                    disposable.Dispose();
+                foreach (var component in _components)
+                {
+                    component?.OnDestroy(this);
+                }
+
+                foreach (var component in _components)
+                {
+                    if (component is IDisposable disposable)
+                        disposable.Dispose();
+                }
             }
         }
 
@@ -162,7 +208,28 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
             _componentsChanges.Clear();
             _structureChanges.Clear();
         }
-        
+
+        private void EnsureRuntimeEventHandlers()
+        {
+            if (!_runtimeEventHandlersDirty)
+                return;
+
+            _runtimeEventHandlers.Clear();
+            if (_components != null)
+            {
+                var sink = new RuntimeEventBindingSink(_runtimeEventHandlers);
+                foreach (var component in _components)
+                {
+                    if (component is not IRuntimeEventBindingsProvider provider)
+                        continue;
+
+                    provider.RegisterRuntimeEventHandlers(sink);
+                }
+            }
+
+            _runtimeEventHandlersDirty = false;
+        }
+
         private void MarkComponentDirty<T>()
         {
             if (!DirtyTraits<T>.Data)
@@ -170,7 +237,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
             var compTypeId = typeof(T).GetId();
             MarkComponentDirty(compTypeId);
         }
-        
+
         private void MarkComponentDirty(uint compTypeId)
         {
             _componentsChanges[compTypeId] = new ComponentDirty(compTypeId);
@@ -194,7 +261,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
 
             _structureChanges[compTypeId] = new ComponentStructDirty(compTypeId, kind);
         }
-        
+
         private void MarkComponentStructDirty(uint compTypeId, Type compType, CompStructOpKind kind)
         {
             if (typeof(IStoreStructDirtyIgnore).IsAssignableFrom(compType))
@@ -212,15 +279,21 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
 
             _structureChanges[compTypeId] = new ComponentStructDirty(compTypeId, kind);
         }
-        
+
         private void EnsureCache()
         {
-            if (_componentsById == null)
+            if (_componentsById == null || _componentsByType == null)
                 RebuildCache();
         }
 
         private void RebuildCache()
         {
+            _componentsByType ??= new Dictionary<Type, GameRuntimeComponent>();
+            _componentsById ??= new Dictionary<uint, GameRuntimeComponent>();
+            _componentsChanges ??= new Dictionary<uint, ComponentDirty>();
+            _structureChanges ??= new Dictionary<uint, ComponentStructDirty>();
+            _runtimeEventHandlers ??= new Dictionary<uint, List<RuntimeEventBinding>>();
+
             _componentsByType.Clear();
             _componentsById.Clear();
             foreach (var c in _components)
@@ -233,11 +306,15 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
                 _componentsByType[type] = c;
                 _componentsById[id] = c;
             }
+
+            _runtimeEventHandlersDirty = true;
+            _isDestroyed = false;
         }
-        
+
         [OnDeserialized]
         private void OnDeserialized(StreamingContext _) => RebuildCache();
         void ISerializationCallbackReceiver.OnBeforeSerialize() { }
         void ISerializationCallbackReceiver.OnAfterDeserialize() => RebuildCache();
     }
 }
+
