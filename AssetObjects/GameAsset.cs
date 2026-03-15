@@ -11,7 +11,7 @@ namespace DingoGameObjectsCMS.AssetObjects
     public class GameAsset : GameAssetScriptableObject
     {
         [SerializeReference, SubclassSelector, JsonProperty("Components", ItemTypeNameHandling = TypeNameHandling.Auto)] private List<GameAssetComponent> _components;
-        
+
         [Header("Keep value by default if there is no SourceAsset")]
         [SerializeField, Tooltip("If this GameAsset is representation of other GameAsset"), JsonProperty("SourceAssetGUID")] private Hash128 _sourceAssetGUID;
 
@@ -30,7 +30,7 @@ namespace DingoGameObjectsCMS.AssetObjects
                 component.SetupRuntimeComponent(g);
             }
         }
-        
+
         public GameRuntimeCommand CreateRuntimeCommand()
         {
             var g = new GameRuntimeCommand();

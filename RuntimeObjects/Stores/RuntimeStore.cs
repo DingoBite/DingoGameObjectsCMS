@@ -25,8 +25,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
         private readonly BindDict<long, GameRuntimeObject> _parents = new();
 
         private readonly Dictionary<long, Entity> _entityById = new();
-        private readonly Dictionary<long, GameRuntimeObject> _removedSnapshots = new();
-        private readonly List<GameRuntimeObject> _pendingDestroy = new();
 
         private readonly Dictionary<long, long> _parentByChild = new();
         private readonly Dictionary<long, List<long>> _childrenByParent = new();
@@ -69,7 +67,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
                 StoreId = Id,
                 Realm = Realm
             };
-            obj.Setup();
 
             _all.V[id] = obj;
             MarkTouchedUpToRoot(id);
@@ -98,7 +95,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
             var id = value.InstanceId;
             value.StoreId = Id;
             value.Realm = Realm;
-            value.Setup();
 
             if (_all.V.TryGetValue(id, out var prev) && prev != null && !ReferenceEquals(prev, value))
                 prev.Destroy();
@@ -128,7 +124,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
         }
 
         public bool TryTakeRO(long id, out GameRuntimeObject gameRuntimeObject) => _all.V.TryGetValue(id, out gameRuntimeObject);
-        public bool TryGetRemovedSnapshot(long id, out GameRuntimeObject gameRuntimeObject) => _removedSnapshots.TryGetValue(id, out gameRuntimeObject);
 
         public bool Remove(long id) => Remove(id, RemoveMode.Subtree, out _);
         public bool Remove(long id, out Entity entity) => Remove(id, RemoveMode.Subtree, out entity);
@@ -208,8 +203,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
                 }
             }
 
-            _removedSnapshots[id] = obj;
-            _pendingDestroy.Add(obj);
+            obj.Destroy();
             _all.V.Remove(id);
 
             ScheduleFlush();
@@ -593,14 +587,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
 
                 _suppressReplicationThisFlush = false;
 
-                foreach (var obj in _pendingDestroy)
-                {
-                    obj.Destroy();
-                }
-
-                _pendingDestroy.Clear();
-                _removedSnapshots.Clear();
-
                 var needReschedule = _rescheduleRequested;
                 _rescheduleRequested = false;
 
@@ -613,5 +599,3 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
         }
     }
 }
-
-
