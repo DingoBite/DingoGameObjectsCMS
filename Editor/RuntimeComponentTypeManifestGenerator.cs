@@ -45,7 +45,7 @@ namespace DingoGameObjectsCMS.Editor
                 {
                     return Array.Empty<Type>();
                 }
-            }).Where(t => t != null && !t.IsAbstract && typeof(GameRuntimeComponent).IsAssignableFrom(t));
+            }).Where(t => t != null && !t.IsAbstract && typeof(GameRuntimeComponent).IsAssignableFrom(t) && typeof(GameRuntimeComponent) != t);
 
             var maxOrder = manifest.Types.Count == 0 ? -1 : manifest.Types.Max(e => e.Order);
             foreach (var t in all)
