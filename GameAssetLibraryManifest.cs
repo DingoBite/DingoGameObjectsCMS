@@ -475,13 +475,23 @@ namespace DingoGameObjectsCMS
         private bool TryResolveBuiltIn(GameAssetKey key, out GameAssetScriptableObject asset)
         {
             asset = null;
-            if (_builtInByKey.TryGetValue(key, out var ga) && ga != null)
+
+            if (!IsLatestVersionRequest(key))
             {
-                asset = ga;
-                return true;
+                if (_builtInByKey.TryGetValue(key, out var ga) && ga != null)
+                {
+                    asset = ga;
+                    return true;
+                }
+
+                return false;
             }
 
-            return false;
+            if (!TryGetLatestBuiltIn(key, out var latest))
+                return false;
+
+            asset = latest;
+            return true;
         }
 
         private bool TryResolveBuiltInGuid(Hash128 guid, out GameAssetScriptableObject asset)
@@ -500,16 +510,102 @@ namespace DingoGameObjectsCMS
         {
             asset = null;
 
-            if (!_externalByKey.TryGetValue(key, out var loc))
+            if (!TryGetExternalLocator(key, out var loc))
                 return false;
 
-            if (loc.Package.TryGet(key, out var so) && so != null)
+            if (loc.Package.TryGet(loc.Key, out var so) && so != null)
             {
                 asset = so;
                 return true;
             }
 
             return false;
+        }
+
+        private bool TryGetLatestBuiltIn(GameAssetKey key, out GameAsset asset)
+        {
+            asset = null;
+
+            var found = false;
+            var bestVersion = string.Empty;
+            foreach (var kv in _builtInByKey)
+            {
+                if (kv.Value == null || !MatchesIdentity(kv.Key, key))
+                    continue;
+
+                if (!found || CompareVersions(kv.Key.Version, bestVersion) > 0)
+                {
+                    found = true;
+                    bestVersion = kv.Key.Version;
+                    asset = kv.Value;
+                }
+            }
+
+            return found;
+        }
+
+        private bool TryGetExternalLocator(GameAssetKey key, out ExternalLocator locator)
+        {
+            locator = default;
+
+            if (!IsLatestVersionRequest(key))
+                return _externalByKey.TryGetValue(key, out locator);
+
+            var found = false;
+            var bestVersion = string.Empty;
+            foreach (var kv in _externalByKey)
+            {
+                if (!MatchesIdentity(kv.Key, key))
+                    continue;
+
+                if (!found || CompareVersions(kv.Key.Version, bestVersion) > 0)
+                {
+                    found = true;
+                    bestVersion = kv.Key.Version;
+                    locator = kv.Value;
+                }
+            }
+
+            return found;
+        }
+
+        private static bool IsLatestVersionRequest(GameAssetKey key)
+        {
+            return string.IsNullOrWhiteSpace(key.Version);
+        }
+
+        private static bool MatchesIdentity(GameAssetKey candidate, GameAssetKey requested)
+        {
+            return StringComparer.OrdinalIgnoreCase.Equals(candidate.Mod, requested.Mod)
+                   && StringComparer.OrdinalIgnoreCase.Equals(candidate.Type, requested.Type)
+                   && StringComparer.OrdinalIgnoreCase.Equals(candidate.Key, requested.Key);
+        }
+
+        private static int CompareVersions(string left, string right)
+        {
+            var leftParsed = TryParseVersion(left, out var leftVersion);
+            var rightParsed = TryParseVersion(right, out var rightVersion);
+
+            if (leftParsed && rightParsed)
+                return leftVersion.CompareTo(rightVersion);
+
+            if (leftParsed)
+                return 1;
+
+            if (rightParsed)
+                return -1;
+
+            return StringComparer.OrdinalIgnoreCase.Compare(left ?? string.Empty, right ?? string.Empty);
+        }
+
+        private static bool TryParseVersion(string value, out System.Version version)
+        {
+            version = null;
+
+            if (string.IsNullOrWhiteSpace(value))
+                return false;
+
+            return System.Version.TryParse(value.Trim(), out version);
         }
 
         private bool TryResolveExternal(Hash128 guid, out GameAssetScriptableObject asset)

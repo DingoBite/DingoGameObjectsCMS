@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using UnityEditor;
 using UnityEngine;
 using Object = UnityEngine.Object;
@@ -13,12 +14,14 @@ namespace DingoGameObjectsCMS.Editor
         private const string DEFAULT_ROOT = "Assets/GameAssets";
         private const string DEFAULT_VERSION = "0.0.0";
 
-        private enum LayoutKind
+        private sealed class NormalizationPlan
         {
-            LegacyFlat,
-            KeyFolder,
-            Canonical,
-            Unknown
+            public string SourcePath;
+            public AssetObjects.GameAssetScriptableObject Asset;
+            public string Mod;
+            public string Type;
+            public string Key;
+            public string Version;
         }
 
         [MenuItem("Assets/Game Assets/Rebuild Keys + Normalize Layout", false, 2000)]
@@ -27,37 +30,25 @@ namespace DingoGameObjectsCMS.Editor
             var folders = GetSelectedFolderPaths();
             if (folders.Count == 0)
             {
-                NormalizeUnder(DEFAULT_ROOT, convertLegacyForceZeroVersion: false);
+                NormalizeUnder(DEFAULT_ROOT);
                 return;
             }
 
-            foreach (var f in folders)
+            foreach (var folder in folders)
             {
-                NormalizeUnder(f, convertLegacyForceZeroVersion: false);
+                NormalizeUnder(folder);
             }
         }
 
-        [MenuItem("Assets/Game Assets/Convert Legacy -> <key>/<0.0.0>/<key>.asset", false, 2001)]
-        private static void ConvertLegacySelectedFolders()
+        [MenuItem("Tools/Game Assets/Rebuild Keys + Normalize Layout (All)", false, 2000)]
+        private static void RebuildKeysAndNormalizeAll()
         {
-            var folders = GetSelectedFolderPaths();
-            if (folders.Count == 0)
-            {
-                NormalizeUnder(DEFAULT_ROOT, convertLegacyForceZeroVersion: true);
-                return;
-            }
-
-            foreach (var f in folders)
-            {
-                NormalizeUnder(f, convertLegacyForceZeroVersion: true);
-            }
+            NormalizeUnder(DEFAULT_ROOT);
         }
+
 
         [MenuItem("Assets/Game Assets/Rebuild Keys + Normalize Layout", true)]
-        private static bool ValidateRebuildKeysAndNormalizeSelectedFolders() => HasAnySelectedFolder();
-
-        [MenuItem("Assets/Game Assets/Convert Legacy -> <key>/<0.0.0>/<key>.asset", true)]
-        private static bool ValidateConvertLegacySelectedFolders() => HasAnySelectedFolder();
+        private static bool ValidateRebuildKeysAndNormalizeSelectedFolders() => Selection.assetGUIDs.Length == 0 || HasAnySelectedFolder();
 
         private static bool HasAnySelectedFolder()
         {
@@ -84,7 +75,7 @@ namespace DingoGameObjectsCMS.Editor
             return result;
         }
 
-        private static void NormalizeUnder(string scopeFolder, bool convertLegacyForceZeroVersion)
+        private static void NormalizeUnder(string scopeFolder)
         {
             var scope = NormalizeSlashes(scopeFolder);
             var root = NormalizeSlashes(DEFAULT_ROOT);
@@ -96,9 +87,11 @@ namespace DingoGameObjectsCMS.Editor
             }
 
             var guids = AssetDatabase.FindAssets("t:ScriptableObject", new[] { scope });
-
+            var plans = new List<NormalizationPlan>(guids.Length);
             var foldersToEnsure = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            var folderRenames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+            var scanned = 0;
+            var skipped = 0;
 
             foreach (var guid in guids)
             {
@@ -106,128 +99,86 @@ namespace DingoGameObjectsCMS.Editor
                 if (string.IsNullOrEmpty(path) || !path.EndsWith(".asset", StringComparison.OrdinalIgnoreCase))
                     continue;
 
-                if (!TryParseFromDefaultRoot(path, out var modRaw, out var typeRaw, out var keyRaw, out var versionFromPath, out var layout))
-                    continue;
-
                 var asset = AssetDatabase.LoadAssetAtPath<AssetObjects.GameAssetScriptableObject>(path);
                 if (asset == null)
                     continue;
 
-                var modNorm = NormalizeSegment(modRaw);
-                var typeNorm = NormalizeSegment(typeRaw);
+                scanned++;
 
-                var keyNorm = layout == LayoutKind.LegacyFlat ? NormalizeSegment(Path.GetFileNameWithoutExtension(path)) : NormalizeSegment(keyRaw);
-
-                var version = layout == LayoutKind.Canonical ? NormalizeVersion(versionFromPath) : (convertLegacyForceZeroVersion ? DEFAULT_VERSION : ReadVersionOrDefault(asset));
-
-                if (layout is LayoutKind.Canonical or LayoutKind.KeyFolder)
+                if (!TryParseFromDefaultRoot(path, out var modRaw, out var typeRaw, out var keyRaw, out var versionFromPath))
                 {
-                    var currentKeyFolder = layout == LayoutKind.Canonical
-                        ? NormalizeSlashes(Path.GetDirectoryName(Path.GetDirectoryName(path)!)!)
-                        : NormalizeSlashes(Path.GetDirectoryName(path)!);
-
-                    var desiredKeyFolder = $"{root}/{modNorm}/{typeNorm}/{keyNorm}";
-
-                    if (!string.Equals(currentKeyFolder, desiredKeyFolder, StringComparison.Ordinal))
-                        folderRenames[currentKeyFolder] = desiredKeyFolder;
-                }
-
-                var desiredFolder = $"{root}/{modNorm}/{typeNorm}/{keyNorm}/{version}";
-                foldersToEnsure.Add(desiredFolder);
-            }
-
-            foreach (var kv in folderRenames)
-            {
-                var toParent = NormalizeSlashes(Path.GetDirectoryName(kv.Value)!);
-                EnsureFolderRecursive(toParent);
-            }
-
-            foreach (var kv in folderRenames)
-            {
-                var from = kv.Key;
-                var to = kv.Value;
-
-                if (!AssetDatabase.IsValidFolder(from))
-                    continue;
-
-                if (!string.Equals(from, to, StringComparison.OrdinalIgnoreCase) && AssetDatabase.IsValidFolder(to))
-                {
-                    Debug.LogError($"Target key-folder already exists, skip:\n  from: {from}\n  to:   {to}");
+                    skipped++;
                     continue;
                 }
 
-                var err = MoveAssetCaseSafe(from, to);
-                if (!string.IsNullOrEmpty(err))
-                    Debug.LogError($"Key-folder rename failed: {err}\n  from: {from}\n  to:   {to}");
+                var mod = NormalizeSegment(modRaw);
+                var type = NormalizeSegment(typeRaw);
+                var key = NormalizeSegment(keyRaw);
+                if (string.IsNullOrWhiteSpace(key))
+                {
+                    skipped++;
+                    continue;
+                }
+
+                var version = NormalizeVersion(versionFromPath);
+                if (string.IsNullOrWhiteSpace(version))
+                    version = DEFAULT_VERSION;
+
+                plans.Add(new NormalizationPlan
+                {
+                    SourcePath = path,
+                    Asset = asset,
+                    Mod = mod,
+                    Type = type,
+                    Key = key,
+                    Version = version
+                });
+
+                foldersToEnsure.Add(BuildKeyFolderPath(root, mod, type, key));
             }
 
-            AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
-
-            foreach (var f in foldersToEnsure)
+            foreach (var folder in foldersToEnsure.OrderBy(x => x.Length))
             {
-                EnsureFolderRecursive(f);
+                EnsureFolderRecursive(folder);
             }
 
-            AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
-
-            var scanned = 0;
-            var changedKeys = 0;
             var moved = 0;
-            var skipped = 0;
+            var changedKeys = 0;
 
             AssetDatabase.StartAssetEditing();
             try
             {
-                foreach (var guid in guids)
+                foreach (var plan in plans)
                 {
-                    var path = NormalizeSlashes(AssetDatabase.GUIDToAssetPath(guid));
-                    if (string.IsNullOrEmpty(path) || !path.EndsWith(".asset", StringComparison.OrdinalIgnoreCase))
-                        continue;
+                    var desiredPath = BuildCanonicalAssetPath(root, plan.Mod, plan.Type, plan.Key, plan.Version);
+                    var finalPath = desiredPath;
 
-                    var asset = AssetDatabase.LoadAssetAtPath<AssetObjects.GameAssetScriptableObject>(path);
-                    if (asset == null)
-                        continue;
-
-                    scanned++;
-
-                    if (!TryParseFromDefaultRoot(path, out var modRaw, out var typeRaw, out var keyRaw, out var versionFromPath, out var layout))
+                    if (!string.Equals(plan.SourcePath, desiredPath, StringComparison.Ordinal))
                     {
-                        skipped++;
-                        continue;
-                    }
-
-                    var mod = NormalizeSegment(modRaw);
-                    var type = NormalizeSegment(typeRaw);
-
-                    var key = layout == LayoutKind.LegacyFlat ? NormalizeSegment(Path.GetFileNameWithoutExtension(path)) : NormalizeSegment(keyRaw);
-
-                    var version = layout == LayoutKind.Canonical ? NormalizeVersion(versionFromPath) : (convertLegacyForceZeroVersion ? DEFAULT_VERSION : ReadVersionOrDefault(asset));
-
-                    var desiredFolder = $"{root}/{mod}/{type}/{key}/{version}";
-                    var desiredPath = $"{desiredFolder}/{key}.asset";
-
-                    if (!string.Equals(path, desiredPath, StringComparison.Ordinal))
-                    {
-                        if (!string.Equals(path, desiredPath, StringComparison.OrdinalIgnoreCase) && AssetDatabase.LoadAssetAtPath<Object>(desiredPath) != null)
+                        if (!string.Equals(plan.SourcePath, desiredPath, StringComparison.OrdinalIgnoreCase) && AssetDatabase.LoadAssetAtPath<Object>(desiredPath) != null)
                         {
-                            Debug.LogError($"Destination already exists, skip:\n  src: {path}\n  dst: {desiredPath}");
+                            Debug.LogError($"Destination already exists, skip:\n  src: {plan.SourcePath}\n  dst: {desiredPath}");
                             skipped++;
                             continue;
                         }
 
-                        var err = MoveAssetCaseSafe(path, desiredPath);
+                        var err = MoveAssetCaseSafe(plan.SourcePath, desiredPath);
                         if (!string.IsNullOrEmpty(err))
                         {
-                            Debug.LogError($"MoveAsset failed: {err}\n  src: {path}\n  dst: {desiredPath}");
+                            Debug.LogError($"MoveAsset failed: {err}\n  src: {plan.SourcePath}\n  dst: {desiredPath}");
                             skipped++;
                             continue;
                         }
 
                         moved++;
-                        path = desiredPath;
+                    }
+                    else
+                    {
+                        finalPath = plan.SourcePath;
                     }
 
-                    if (ApplyKey(asset, mod, type, key, version))
+                    var movedAsset = AssetDatabase.LoadAssetAtPath<AssetObjects.GameAssetScriptableObject>(finalPath) ?? plan.Asset;
+                    if (ApplyKey(movedAsset, plan.Mod, plan.Type, plan.Key, plan.Version))
                         changedKeys++;
                 }
             }
@@ -237,13 +188,16 @@ namespace DingoGameObjectsCMS.Editor
                 AssetDatabase.SaveAssets();
             }
 
+            AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
+            DeleteEmptyFoldersUnder(scope);
+            AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
+
             Debug.Log($"Normalize done. Scanned: {scanned}, Moved: {moved}, KeysChanged: {changedKeys}, Skipped: {skipped}\nScope: {scope}");
         }
 
-        private static bool TryParseFromDefaultRoot(string assetPath, out string mod, out string type, out string key, out string version, out LayoutKind layout)
+        private static bool TryParseFromDefaultRoot(string assetPath, out string mod, out string type, out string key, out string version)
         {
             mod = type = key = version = null;
-            layout = LayoutKind.Unknown;
 
             var path = NormalizeSlashes(assetPath);
             var root = NormalizeSlashes(DEFAULT_ROOT);
@@ -254,44 +208,17 @@ namespace DingoGameObjectsCMS.Editor
             var rel = path[root.Length..].TrimStart('/');
             var parts = rel.Split(new[] { '/' }, StringSplitOptions.RemoveEmptyEntries);
 
-            if (parts.Length < 3 || !parts[^1].EndsWith(".asset", StringComparison.OrdinalIgnoreCase))
+            if (parts.Length != 4 || !parts[^1].EndsWith(".asset", StringComparison.OrdinalIgnoreCase))
                 return false;
 
             mod = parts[0];
             type = parts[1];
+            key = parts[2];
+            var fileName = Path.GetFileNameWithoutExtension(parts[3]);
+            if (!TryParseVersionedAssetFileName(fileName, key, out version))
+                return false;
 
-            if (parts.Length == 3)
-            {
-                key = Path.GetFileNameWithoutExtension(parts[2]);
-                layout = LayoutKind.LegacyFlat;
-                return true;
-            }
-
-            if (parts.Length == 4)
-            {
-                key = parts[2];
-                layout = LayoutKind.KeyFolder;
-                return true;
-            }
-
-            if (parts.Length == 5)
-            {
-                key = parts[2];
-                version = parts[3];
-                layout = LayoutKind.Canonical;
-                return true;
-            }
-
-            return false;
-        }
-
-        private static string ReadVersionOrDefault(Object asset)
-        {
-            var so = new SerializedObject(asset);
-            var keyProp = so.FindProperty("_key");
-            var vProp = keyProp?.FindPropertyRelative("Version");
-            var v = vProp?.stringValue;
-            return NormalizeVersion(string.IsNullOrWhiteSpace(v) ? DEFAULT_VERSION : v);
+            return true;
         }
 
         private static bool ApplyKey(Object asset, string mod, string type, string key, string version)
@@ -304,24 +231,53 @@ namespace DingoGameObjectsCMS.Editor
             var modProp = keyProp.FindPropertyRelative("Mod");
             var typeProp = keyProp.FindPropertyRelative("Type");
             var keyProp2 = keyProp.FindPropertyRelative("Key");
-            var verProp = keyProp.FindPropertyRelative("Version");
+            var versionProp = keyProp.FindPropertyRelative("Version");
 
-            if (modProp == null || typeProp == null || keyProp2 == null || verProp == null)
+            if (modProp == null || typeProp == null || keyProp2 == null || versionProp == null)
                 return false;
 
-            var already = modProp.stringValue == mod && typeProp.stringValue == type && keyProp2.stringValue == key && verProp.stringValue == version;
+            var alreadyMatches =
+                modProp.stringValue == mod &&
+                typeProp.stringValue == type &&
+                keyProp2.stringValue == key &&
+                versionProp.stringValue == version;
 
-            if (already)
+            if (alreadyMatches)
                 return false;
 
             modProp.stringValue = mod;
             typeProp.stringValue = type;
             keyProp2.stringValue = key;
-            verProp.stringValue = version;
+            versionProp.stringValue = version;
 
             so.ApplyModifiedPropertiesWithoutUndo();
             EditorUtility.SetDirty(asset);
             return true;
+        }
+
+        private static string BuildKeyFolderPath(string root, string mod, string type, string key)
+        {
+            return $"{root}/{mod}/{type}/{key}";
+        }
+
+        private static string BuildCanonicalAssetPath(string root, string mod, string type, string key, string version)
+        {
+            var fileName = $"{key}@{NormalizeVersion(version)}.asset";
+            return $"{BuildKeyFolderPath(root, mod, type, key)}/{fileName}";
+        }
+
+        private static bool TryParseVersionedAssetFileName(string fileNameWithoutExtension, string key, out string version)
+        {
+            version = null;
+            if (string.IsNullOrWhiteSpace(fileNameWithoutExtension) || string.IsNullOrWhiteSpace(key))
+                return false;
+
+            var prefix = key + "@";
+            if (!fileNameWithoutExtension.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            version = NormalizeVersion(fileNameWithoutExtension[prefix.Length..]);
+            return !string.IsNullOrWhiteSpace(version);
         }
 
         private static string MoveAssetCaseSafe(string from, string to)
@@ -330,7 +286,7 @@ namespace DingoGameObjectsCMS.Editor
             to = NormalizeSlashes(to);
 
             if (string.Equals(from, to, StringComparison.Ordinal))
-                return "";
+                return string.Empty;
 
             if (string.Equals(from, to, StringComparison.OrdinalIgnoreCase))
             {
@@ -340,28 +296,69 @@ namespace DingoGameObjectsCMS.Editor
                     return err1;
 
                 var err2 = AssetDatabase.MoveAsset(tmp, to);
-                return err2 ?? "";
+                return err2 ?? string.Empty;
             }
 
             return AssetDatabase.MoveAsset(from, to);
         }
 
-        private static void EnsureFolderRecursive(string folderPath)
+        private static void DeleteEmptyFoldersUnder(string scopeFolder)
         {
-            var p = NormalizeSlashes(folderPath).TrimEnd('/');
-            if (p == "Assets" || AssetDatabase.IsValidFolder(p))
+            var scopeAbs = UnityPathToAbsolute(scopeFolder);
+            if (!Directory.Exists(scopeAbs))
                 return;
 
-            var parent = NormalizeSlashes(Path.GetDirectoryName(p) ?? "Assets").TrimEnd('/');
-            var name = Path.GetFileName(p);
+            var dirs = Directory.GetDirectories(scopeAbs, "*", SearchOption.AllDirectories)
+                .OrderByDescending(x => x.Length)
+                .ToArray();
+
+            foreach (var dirAbs in dirs)
+            {
+                if (Directory.EnumerateFileSystemEntries(dirAbs).Any())
+                    continue;
+
+                var unityPath = AbsolutePathToUnityPath(dirAbs);
+                if (string.IsNullOrWhiteSpace(unityPath) || !AssetDatabase.IsValidFolder(unityPath))
+                    continue;
+
+                AssetDatabase.DeleteAsset(unityPath);
+            }
+        }
+
+        private static string UnityPathToAbsolute(string unityPath)
+        {
+            unityPath = NormalizeSlashes(unityPath);
+            var projectRoot = Directory.GetParent(Application.dataPath)!.FullName;
+            return Path.GetFullPath(Path.Combine(projectRoot, unityPath));
+        }
+
+        private static string AbsolutePathToUnityPath(string absPath)
+        {
+            var projectRoot = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
+            var normalizedRoot = NormalizeSlashes(projectRoot).TrimEnd('/');
+            var normalizedAbs = NormalizeSlashes(Path.GetFullPath(absPath));
+            if (!normalizedAbs.StartsWith(normalizedRoot + "/", StringComparison.OrdinalIgnoreCase))
+                return null;
+
+            return normalizedAbs[(normalizedRoot.Length + 1)..];
+        }
+
+        private static void EnsureFolderRecursive(string folderPath)
+        {
+            var path = NormalizeSlashes(folderPath).TrimEnd('/');
+            if (path == "Assets" || AssetDatabase.IsValidFolder(path))
+                return;
+
+            var parent = NormalizeSlashes(Path.GetDirectoryName(path) ?? "Assets").TrimEnd('/');
+            var name = Path.GetFileName(path);
 
             EnsureFolderRecursive(parent);
 
-            if (!AssetDatabase.IsValidFolder(p))
+            if (!AssetDatabase.IsValidFolder(path))
                 AssetDatabase.CreateFolder(parent, name);
         }
 
-        private static string NormalizeSlashes(string s) => (s ?? "").Replace('\\', '/');
+        private static string NormalizeSlashes(string s) => (s ?? string.Empty).Replace('\\', '/');
 
         private static bool IsUnder(string parent, string path)
         {
@@ -373,13 +370,12 @@ namespace DingoGameObjectsCMS.Editor
         private static string NormalizeSegment(string s)
         {
             if (string.IsNullOrWhiteSpace(s))
-                return "";
+                return string.Empty;
 
             s = s.Trim().ToLowerInvariant();
-
             foreach (var c in Path.GetInvalidFileNameChars())
             {
-                s = s.Replace(c.ToString(), "");
+                s = s.Replace(c.ToString(), string.Empty);
             }
 
             s = s.Replace(' ', '_');

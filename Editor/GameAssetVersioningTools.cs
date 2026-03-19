@@ -11,6 +11,25 @@ namespace DingoGameObjectsCMS.Editor
     public static class GameAssetVersioningTools
     {
         private const string DefaultRoot = "Assets/GameAssets";
+        private const string CanonicalAssetHint = "Assets/GameAssets/<mod>/<type>/<key>/<key>@<version>.asset";
+
+        private readonly struct VersionAssetSelection
+        {
+            public readonly string AssetPath;
+            public readonly string Mod;
+            public readonly string Type;
+            public readonly string Key;
+            public readonly string Version;
+
+            public VersionAssetSelection(string assetPath, string mod, string type, string key, string version)
+            {
+                AssetPath = assetPath;
+                Mod = mod;
+                Type = type;
+                Key = key;
+                Version = version;
+            }
+        }
 
         private enum BumpKind
         {
@@ -19,162 +38,149 @@ namespace DingoGameObjectsCMS.Editor
             Major
         }
 
-        [MenuItem("Assets/Game Assets/Versioning/Duplicate Version Folder (Patch)", false, 2000)]
-        private static void DuplicateSelectedFoldersPatch() => DuplicateSelectedVersionFolders(BumpKind.Patch);
+        [MenuItem("Assets/Game Assets/Versioning/Duplicate Asset Version (Patch)", false, 2000)]
+        private static void DuplicateSelectedAssetsPatch() => DuplicateSelectedVersionAssets(BumpKind.Patch);
 
-        [MenuItem("Assets/Game Assets/Versioning/Duplicate Version Folder (Patch)", true)]
-        private static bool ValidateDuplicateSelectedFoldersPatch() => HasAnySelectedCanonicalVersionFolder();
+        [MenuItem("Assets/Game Assets/Versioning/Duplicate Asset Version (Patch)", true)]
+        private static bool ValidateDuplicateSelectedAssetsPatch() => HasAnySelectedVersionAsset();
 
-        [MenuItem("Assets/Game Assets/Versioning/Duplicate Version Folder (Minor)", false, 2001)]
-        private static void DuplicateSelectedFoldersMinor() => DuplicateSelectedVersionFolders(BumpKind.Minor);
+        [MenuItem("Assets/Game Assets/Versioning/Duplicate Asset Version (Minor)", false, 2001)]
+        private static void DuplicateSelectedAssetsMinor() => DuplicateSelectedVersionAssets(BumpKind.Minor);
 
-        [MenuItem("Assets/Game Assets/Versioning/Duplicate Version Folder (Minor)", true)]
-        private static bool ValidateDuplicateSelectedFoldersMinor() => HasAnySelectedCanonicalVersionFolder();
+        [MenuItem("Assets/Game Assets/Versioning/Duplicate Asset Version (Minor)", true)]
+        private static bool ValidateDuplicateSelectedAssetsMinor() => HasAnySelectedVersionAsset();
 
-        [MenuItem("Assets/Game Assets/Versioning/Duplicate Version Folder (Major)", false, 2002)]
-        private static void DuplicateSelectedFoldersMajor() => DuplicateSelectedVersionFolders(BumpKind.Major);
+        [MenuItem("Assets/Game Assets/Versioning/Duplicate Asset Version (Major)", false, 2002)]
+        private static void DuplicateSelectedAssetsMajor() => DuplicateSelectedVersionAssets(BumpKind.Major);
 
-        [MenuItem("Assets/Game Assets/Versioning/Duplicate Version Folder (Major)", true)]
-        private static bool ValidateDuplicateSelectedFoldersMajor() => HasAnySelectedCanonicalVersionFolder();
+        [MenuItem("Assets/Game Assets/Versioning/Duplicate Asset Version (Major)", true)]
+        private static bool ValidateDuplicateSelectedAssetsMajor() => HasAnySelectedVersionAsset();
 
-        private static bool HasAnySelectedCanonicalVersionFolder()
+        private static bool HasAnySelectedVersionAsset()
         {
-            foreach (var guid in Selection.assetGUIDs)
-            {
-                var path = NormalizeSlashes(AssetDatabase.GUIDToAssetPath(guid));
-                if (!string.IsNullOrEmpty(path) && AssetDatabase.IsValidFolder(path) && TryParseCanonicalFolder(path, out _, out _, out _, out _))
-                    return true;
-            }
-
-            return false;
+            return GetSelectedVersionAssets().Count > 0;
         }
 
-        private static List<string> GetSelectedCanonicalVersionFolders()
+        private static List<VersionAssetSelection> GetSelectedVersionAssets()
         {
-            var result = new List<string>();
+            var result = new List<VersionAssetSelection>();
+            var seenPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
             foreach (var guid in Selection.assetGUIDs)
             {
                 var path = NormalizeSlashes(AssetDatabase.GUIDToAssetPath(guid));
-                if (string.IsNullOrEmpty(path) || !AssetDatabase.IsValidFolder(path))
+                if (string.IsNullOrEmpty(path))
                     continue;
 
-                if (TryParseCanonicalFolder(path, out _, out _, out _, out _))
-                    result.Add(path);
+                if (!TryBuildSelection(path, out var selection))
+                    continue;
+
+                if (seenPaths.Add(selection.AssetPath))
+                    result.Add(selection);
             }
 
             return result;
         }
 
-        private static void DuplicateSelectedVersionFolders(BumpKind bump)
+        private static bool TryBuildSelection(string path, out VersionAssetSelection selection)
         {
-            var srcDirs = GetSelectedCanonicalVersionFolders();
-            if (srcDirs.Count == 0)
+            selection = default;
+
+            if (!path.EndsWith(".asset", StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            if (TryParseCanonicalAssetPath(path, out var canonicalMod, out var canonicalType, out var canonicalKey, out var canonicalVersion))
             {
-                Debug.LogError("Select a canonical version folder: Assets/GameAssets/<mod>/<type>/<key>/<version>");
+                if (AssetDatabase.LoadAssetAtPath<AssetObjects.GameAssetScriptableObject>(path) == null)
+                    return false;
+
+                selection = new VersionAssetSelection(path, canonicalMod, canonicalType, canonicalKey, canonicalVersion);
+                return true;
+            }
+
+            return false;
+        }
+
+        private static void DuplicateSelectedVersionAssets(BumpKind bump)
+        {
+            var sources = GetSelectedVersionAssets();
+            if (sources.Count == 0)
+            {
+                Debug.LogError($"Select a versioned asset: {CanonicalAssetHint}.");
                 return;
             }
 
-            foreach (var srcDir in srcDirs)
+            foreach (var source in sources)
             {
-                if (!TryParseCanonicalFolder(srcDir, out var mod, out var type, out var key, out var oldVersion))
-                {
-                    Debug.LogError($"Not in canonical folder: {srcDir}");
-                    continue;
-                }
-
-                var newVersion = BumpSemver(oldVersion, bump);
+                var newVersion = BumpSemver(source.Version, bump);
                 if (string.IsNullOrWhiteSpace(newVersion))
                 {
-                    Debug.LogError($"Cannot bump version '{oldVersion}' in {srcDir}");
+                    Debug.LogError($"Cannot bump version '{source.Version}' for {source.AssetPath}");
                     continue;
                 }
 
-                DuplicateFolderAsVersion(srcDir, mod, type, key, oldVersion, newVersion);
+                DuplicateAssetAsVersion(source, newVersion);
             }
         }
 
-        private static void DuplicateFolderAsVersion(string srcDir, string mod, string type, string key, string oldVersion, string newVersion)
+        private static void DuplicateAssetAsVersion(VersionAssetSelection source, string newVersion)
         {
-            var dstDir = $"{DefaultRoot}/{mod}/{type}/{key}/{newVersion}".Replace('\\', '/');
+            var dstDir = $"{DefaultRoot}/{source.Mod}/{source.Type}/{source.Key}".Replace('\\', '/');
+            var dstPath = $"{dstDir}/{source.Key}@{newVersion}.asset".Replace('\\', '/');
 
-            if (AssetDatabase.IsValidFolder(dstDir))
+            if (AssetDatabase.LoadAssetAtPath<Object>(dstPath) != null)
             {
-                Debug.LogError($"Destination folder already exists: {dstDir}");
+                Debug.LogError($"Destination asset already exists: {dstPath}");
                 return;
             }
 
             EnsureFolderRecursive(dstDir);
 
-            AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
-
-            var guids = AssetDatabase.FindAssets("", new[] { srcDir });
-            foreach (var g in guids)
+            if (!AssetDatabase.CopyAsset(source.AssetPath, dstPath))
             {
-                var p = NormalizeSlashes(AssetDatabase.GUIDToAssetPath(g));
-                if (AssetDatabase.IsValidFolder(p))
-                    continue;
-
-                var rel = p[srcDir.Length..].TrimStart('/');
-                var dstPath = NormalizeSlashes($"{dstDir}/{rel}");
-
-                EnsureFolderRecursive(NormalizeSlashes(Path.GetDirectoryName(dstPath)!));
-
-                if (AssetDatabase.LoadAssetAtPath<Object>(dstPath) != null)
-                {
-                    Debug.LogError($"Destination already exists: {dstPath}");
-                    continue;
-                }
-
-                if (!AssetDatabase.CopyAsset(p, dstPath))
-                    Debug.LogError($"CopyAsset failed:\n  {p}\n  -> {dstPath}");
+                Debug.LogError($"CopyAsset failed:\n  {source.AssetPath}\n  -> {dstPath}");
+                return;
             }
 
-            AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
+            AssetDatabase.ImportAsset(dstPath, ImportAssetOptions.ForceSynchronousImport);
 
-            var newGuids = AssetDatabase.FindAssets("t:ScriptableObject", new[] { dstDir });
-            foreach (var g in newGuids)
+            var soObj = AssetDatabase.LoadAssetAtPath<AssetObjects.GameAssetScriptableObject>(dstPath);
+            if (soObj == null)
             {
-                var p = NormalizeSlashes(AssetDatabase.GUIDToAssetPath(g));
-                var soObj = AssetDatabase.LoadAssetAtPath<AssetObjects.GameAssetScriptableObject>(p);
-                if (soObj == null)
-                    continue;
-
-                ApplyVersionAndRegenerateGuid(soObj, newVersion);
-
-                if (soObj is AssetObjects.GameAsset ga)
-                {
-                    var srcRootPath = $"{srcDir}/{key}.asset".Replace('\\', '/');
-                    var srcRoot = AssetDatabase.LoadAssetAtPath<AssetObjects.GameAsset>(srcRootPath);
-                    if (srcRoot != null)
-                        ApplySourceGuid(ga, srcRoot.GUID);
-                }
+                Debug.LogError($"Duplicated asset cannot be loaded: {dstPath}");
+                return;
             }
 
+            ApplyVersionAndRegenerateGuid(soObj, newVersion);
             AssetDatabase.SaveAssets();
-            Debug.Log($"Duplicated {mod}:{type}:{key} {oldVersion} -> {newVersion}");
+            Debug.Log($"Duplicated {source.Mod}:{source.Type}:{source.Key} {source.Version} -> {newVersion}");
         }
 
-        private static bool TryParseCanonicalFolder(string dir, out string mod, out string type, out string key, out string version)
+        private static bool TryParseCanonicalAssetPath(string assetPath, out string mod, out string type, out string key, out string version)
         {
             mod = type = key = version = null;
 
-            dir = NormalizeSlashes(dir);
+            assetPath = NormalizeSlashes(assetPath);
             var root = NormalizeSlashes(DefaultRoot).TrimEnd('/');
-
-            if (!dir.StartsWith(root + "/", StringComparison.OrdinalIgnoreCase))
+            if (!assetPath.StartsWith(root + "/", StringComparison.OrdinalIgnoreCase))
                 return false;
 
-            var rel = dir.Substring(root.Length).TrimStart('/');
+            var rel = assetPath[root.Length..].TrimStart('/');
             var parts = rel.Split(new[] { '/' }, StringSplitOptions.RemoveEmptyEntries);
-
-            if (parts.Length != 4)
+            if (parts.Length != 4 || !parts[^1].EndsWith(".asset", StringComparison.OrdinalIgnoreCase))
                 return false;
 
             mod = parts[0];
             type = parts[1];
             key = parts[2];
-            version = parts[3];
-            return true;
+
+            var fileName = Path.GetFileNameWithoutExtension(parts[3]);
+            var prefix = key + "@";
+            if (!fileName.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            version = fileName[prefix.Length..].Trim();
+            return !string.IsNullOrWhiteSpace(version);
         }
 
         private static void ApplyVersionAndRegenerateGuid(Object asset, string version)
@@ -182,24 +188,13 @@ namespace DingoGameObjectsCMS.Editor
             var so = new SerializedObject(asset);
 
             var keyProp = so.FindProperty("_key");
-            var verProp = keyProp?.FindPropertyRelative("Version");
-            if (verProp != null)
-                verProp.stringValue = version;
+            var versionProp = keyProp?.FindPropertyRelative("Version");
+            if (versionProp != null)
+                versionProp.stringValue = version;
 
             var guidProp = so.FindProperty("_guid");
             if (guidProp != null)
                 guidProp.hash128Value = IdUtils.NewHash128FromGuid();
-
-            so.ApplyModifiedPropertiesWithoutUndo();
-            EditorUtility.SetDirty(asset);
-        }
-
-        private static void ApplySourceGuid(Object asset, Hash128 sourceGuid)
-        {
-            var so = new SerializedObject(asset);
-            var srcProp = so.FindProperty("_sourceAssetGUID");
-            if (srcProp != null)
-                srcProp.hash128Value = sourceGuid;
 
             so.ApplyModifiedPropertiesWithoutUndo();
             EditorUtility.SetDirty(asset);
@@ -211,7 +206,7 @@ namespace DingoGameObjectsCMS.Editor
             if (folderPath == "Assets" || AssetDatabase.IsValidFolder(folderPath))
                 return;
 
-            var parent = NormalizeSlashes(Path.GetDirectoryName(folderPath)!);
+            var parent = NormalizeSlashes(Path.GetDirectoryName(folderPath) ?? "Assets").TrimEnd('/');
             var name = Path.GetFileName(folderPath);
 
             EnsureFolderRecursive(parent);
@@ -220,7 +215,7 @@ namespace DingoGameObjectsCMS.Editor
                 AssetDatabase.CreateFolder(parent, name);
         }
 
-        private static string NormalizeSlashes(string s) => (s ?? "").Replace('\\', '/');
+        private static string NormalizeSlashes(string s) => (s ?? string.Empty).Replace('\\', '/');
 
         private static string BumpSemver(string version, BumpKind bump)
         {
