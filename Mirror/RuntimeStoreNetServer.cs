@@ -5,6 +5,7 @@ using DingoGameObjectsCMS.RuntimeObjects;
 using DingoGameObjectsCMS.RuntimeObjects.Commands;
 using DingoGameObjectsCMS.RuntimeObjects.Objects;
 using DingoGameObjectsCMS.RuntimeObjects.Stores;
+using DingoGameObjectsCMS.Serialization;
 using DingoUnityExtensions;
 using Mirror;
 using Unity.Collections;
@@ -16,6 +17,7 @@ namespace DingoGameObjectsCMS.Mirror
         private readonly Func<FixedString32Bytes, RuntimeStore> _stores;
         private readonly Func<IEnumerable<FixedString32Bytes>> _replicatedStoresGetter;
         private readonly RuntimeCommandsBus _commandsBus;
+        private readonly IRuntimePayloadSerializer _serializer;
 
         private readonly Dictionary<FixedString32Bytes, StoreReplicationState> _replicationByStore = new();
         private readonly Dictionary<int, Dictionary<FixedString32Bytes, ConnectionStoreState>> _connectionStates = new();
@@ -25,11 +27,16 @@ namespace DingoGameObjectsCMS.Mirror
 
         public Func<NetworkConnectionToClient, GameRuntimeCommand, bool> ValidateCommand;
 
-        public RuntimeStoreNetServer(Func<FixedString32Bytes, RuntimeStore> stores, Func<IEnumerable<FixedString32Bytes>> replicatedStoresGetter = null, RuntimeCommandsBus commandsBus = null)
+        public RuntimeStoreNetServer(
+            Func<FixedString32Bytes, RuntimeStore> stores,
+            Func<IEnumerable<FixedString32Bytes>> replicatedStoresGetter = null,
+            RuntimeCommandsBus commandsBus = null,
+            IRuntimePayloadSerializer serializer = null)
         {
             _stores = stores;
             _replicatedStoresGetter = replicatedStoresGetter;
             _commandsBus = commandsBus;
+            _serializer = serializer ?? RuntimePayloadSerialization.Current;
 
             NetworkServer.RegisterHandler<RtCommandMsg>(OnCommand, requireAuthentication: true);
             NetworkServer.RegisterHandler<RtStoreAckMsg>(OnStoreAck, requireAuthentication: true);
@@ -60,7 +67,7 @@ namespace DingoGameObjectsCMS.Mirror
 
             var snapshotId = state.LastSnapshotId + 1;
             var payload = BuildFullSyncPayload(state, snapshotId, conn);
-            var encoded = RuntimeNetSerialization.Serialize(payload);
+            var encoded = _serializer.Serialize(payload);
 
             conn.Send(new RtStoreSyncMsg { Payload = encoded }, Channels.Reliable);
 
@@ -110,7 +117,7 @@ namespace DingoGameObjectsCMS.Mirror
 
             _lastCommandSeqByConn[conn.connectionId] = msg.Seq;
 
-            var command = RuntimeNetSerialization.Deserialize<GameRuntimeCommand>(msg.Payload);
+            var command = _serializer.Deserialize<GameRuntimeCommand>(msg.Payload);
             if (command == null)
             {
                 if (RuntimeNetTrace.LOG_COMMANDS)
@@ -226,7 +233,7 @@ namespace DingoGameObjectsCMS.Mirror
                 {
                     if (connState.LastSentSnapshotId == 0)
                     {
-                        var fullEncoded = RuntimeNetSerialization.Serialize(BuildFullSyncPayload(state, snapshotId, conn));
+                        var fullEncoded = _serializer.Serialize(BuildFullSyncPayload(state, snapshotId, conn));
                         conn.Send(new RtStoreSyncMsg { Payload = fullEncoded }, Channels.Reliable);
                         connState.LastSentSnapshotId = snapshotId;
                         sentAny = true;
@@ -244,7 +251,7 @@ namespace DingoGameObjectsCMS.Mirror
                 if (!payload.HasAny)
                     continue;
 
-                var encoded = RuntimeNetSerialization.Serialize(payload);
+                var encoded = _serializer.Serialize(payload);
                 conn.Send(new RtStoreSyncMsg { Payload = encoded }, Channels.Reliable);
                 connState.LastSentSnapshotId = snapshotId;
                 sentAny = true;
@@ -259,13 +266,13 @@ namespace DingoGameObjectsCMS.Mirror
                 state.LastSnapshotId = snapshotId;
         }
 
-        private static RtStoreSyncPayload BuildFullSyncPayload(StoreReplicationState state, uint snapshotId, NetworkConnectionToClient conn)
+        private RtStoreSyncPayload BuildFullSyncPayload(StoreReplicationState state, uint snapshotId, NetworkConnectionToClient conn)
         {
-            var snapshot = RuntimeStoreSnapshotCodec.BuildSnapshot(state.Store, conn);
-            return RuntimeStoreSnapshotCodec.BuildFullSyncPayload(snapshot, state.StoreId, snapshotId);
+            var snapshot = RuntimeStoreSnapshotCodec.BuildSnapshot(state.Store, conn, serializer: _serializer);
+            return RuntimeStoreSnapshotCodec.BuildFullSyncPayload(snapshot, state.StoreId, snapshotId, _serializer);
         }
 
-        private static RtStoreSyncPayload BuildDeltaSyncPayload(StoreReplicationState state, uint snapshotId, NetworkConnectionToClient conn)
+        private RtStoreSyncPayload BuildDeltaSyncPayload(StoreReplicationState state, uint snapshotId, NetworkConnectionToClient conn)
         {
             var payload = new RtStoreSyncPayload
             {
@@ -485,7 +492,7 @@ namespace DingoGameObjectsCMS.Mirror
                             ParentId = change.ParentId,
                             Index = change.Index,
                             RemoveMode = default,
-                            SpawnData = RuntimeNetSerialization.SerializeRuntimeObject(obj),
+                            SpawnData = _serializer.SerializeRuntimeObject(obj),
                         });
                         added++;
                         break;
@@ -575,7 +582,7 @@ namespace DingoGameObjectsCMS.Mirror
                     ObjectId = objectId,
                     CompTypeId = compTypeId,
                     Kind = CompStructOpKind.Add,
-                    Payload = RuntimeNetSerialization.SerializeRuntimeComponent(component),
+                    Payload = _serializer.SerializeRuntimeComponent(component),
                 });
 
                 added++;
@@ -659,7 +666,7 @@ namespace DingoGameObjectsCMS.Mirror
             return false;
         }
 
-        private static bool TryCollectComponentDelta(GameRuntimeComponent component, out byte[] payload, out bool isDelta)
+        private bool TryCollectComponentDelta(GameRuntimeComponent component, out byte[] payload, out bool isDelta)
         {
             if (component is IDeltaComponent deltaComponent)
             {
@@ -672,7 +679,7 @@ namespace DingoGameObjectsCMS.Mirror
                 }
             }
 
-            payload = RuntimeNetSerialization.SerializeRuntimeComponent(component);
+            payload = _serializer.SerializeRuntimeComponent(component);
             isDelta = false;
             return payload != null;
         }

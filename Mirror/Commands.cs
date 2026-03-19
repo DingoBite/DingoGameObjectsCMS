@@ -5,6 +5,7 @@ using Mirror;
 using DingoGameObjectsCMS.RuntimeObjects;
 using DingoGameObjectsCMS.RuntimeObjects.Objects;
 using DingoGameObjectsCMS.RuntimeObjects.Stores;
+using DingoGameObjectsCMS.Serialization;
 using Unity.Collections;
 using Unity.Entities;
 using UnityEngine;
@@ -285,8 +286,14 @@ namespace DingoGameObjectsCMS.Mirror
 
     public static class RuntimeStoreSnapshotCodec
     {
-        public static RuntimeStoreSnapshot BuildSnapshot(RuntimeStore store, NetworkConnectionToClient connection = null, int replicationProfileId = 0)
+        public static RuntimeStoreSnapshot BuildSnapshot(
+            RuntimeStore store,
+            NetworkConnectionToClient connection = null,
+            int replicationProfileId = 0,
+            IRuntimePayloadSerializer serializer = null)
         {
+            serializer ??= RuntimePayloadSerialization.Current;
+
             var snapshot = new RuntimeStoreSnapshot();
             if (store == null)
                 return snapshot;
@@ -296,14 +303,20 @@ namespace DingoGameObjectsCMS.Mirror
 
             for (var i = 0; i < roots.Count; i++)
             {
-                BuildSnapshotRecursive(store, snapshot, roots[i], parentId: -1, index: i, connection, replicationProfileId);
+                BuildSnapshotRecursive(store, snapshot, roots[i], parentId: -1, index: i, connection, replicationProfileId, serializer);
             }
 
             return snapshot;
         }
 
-        public static RtStoreSyncPayload BuildFullSyncPayload(RuntimeStoreSnapshot snapshot, FixedString32Bytes storeId, uint snapshotId)
+        public static RtStoreSyncPayload BuildFullSyncPayload(
+            RuntimeStoreSnapshot snapshot,
+            FixedString32Bytes storeId,
+            uint snapshotId,
+            IRuntimePayloadSerializer serializer = null)
         {
+            serializer ??= RuntimePayloadSerialization.Current;
+
             var payload = new RtStoreSyncPayload
             {
                 SnapshotId = snapshotId,
@@ -333,16 +346,17 @@ namespace DingoGameObjectsCMS.Mirror
             return payload;
         }
 
-        public static bool ApplySync(RuntimeStore store, RtStoreSyncPayload payload)
+        public static bool ApplySync(RuntimeStore store, RtStoreSyncPayload payload, IRuntimePayloadSerializer serializer = null)
         {
             if (store == null || payload == null)
                 return false;
 
+            serializer ??= RuntimePayloadSerialization.Current;
             store.BeginNetApply();
             var ok = false;
             try
             {
-                ok = ApplySyncInternal(store, payload);
+                ok = ApplySyncInternal(store, payload, serializer);
                 return ok;
             }
             catch (Exception e)
@@ -358,7 +372,7 @@ namespace DingoGameObjectsCMS.Mirror
             return true;
         }
 
-        private static bool ApplySyncInternal(RuntimeStore store, RtStoreSyncPayload payload)
+        private static bool ApplySyncInternal(RuntimeStore store, RtStoreSyncPayload payload, IRuntimePayloadSerializer serializer)
         {
             if (payload.Mode == RtStoreSyncMode.FullSnapshot)
                 ClearStore(store);
@@ -368,7 +382,7 @@ namespace DingoGameObjectsCMS.Mirror
                 for (var i = 0; i < payload.StructureChanges.Count; i++)
                 {
                     var change = payload.StructureChanges[i];
-                    if (!ApplyStructureChange(store, in change))
+                    if (!ApplyStructureChange(store, in change, serializer))
                         return false;
                 }
             }
@@ -378,7 +392,7 @@ namespace DingoGameObjectsCMS.Mirror
                 for (var i = 0; i < payload.ObjectStructChanges.Count; i++)
                 {
                     var change = payload.ObjectStructChanges[i];
-                    if (!ApplyComponentStructChange(store, in change))
+                    if (!ApplyComponentStructChange(store, in change, serializer))
                         return false;
                 }
             }
@@ -388,7 +402,7 @@ namespace DingoGameObjectsCMS.Mirror
                 for (var i = 0; i < payload.ComponentDeltas.Count; i++)
                 {
                     var change = payload.ComponentDeltas[i];
-                    if (!ApplyComponentChange(store, in change))
+                    if (!ApplyComponentChange(store, in change, serializer))
                         return false;
                 }
             }
@@ -396,7 +410,15 @@ namespace DingoGameObjectsCMS.Mirror
             return true;
         }
 
-        private static void BuildSnapshotRecursive(RuntimeStore store, RuntimeStoreSnapshot snapshot, long id, long parentId, int index, NetworkConnectionToClient connection, int replicationProfileId)
+        private static void BuildSnapshotRecursive(
+            RuntimeStore store,
+            RuntimeStoreSnapshot snapshot,
+            long id,
+            long parentId,
+            int index,
+            NetworkConnectionToClient connection,
+            int replicationProfileId,
+            IRuntimePayloadSerializer serializer)
         {
             if (!store.TryTakeRO(id, out var obj) || obj == null)
                 return;
@@ -409,7 +431,7 @@ namespace DingoGameObjectsCMS.Mirror
                 Id = id,
                 ParentId = parentId,
                 Index = index,
-                ObjectData = RuntimeNetSerialization.SerializeRuntimeObject(obj),
+                ObjectData = serializer.SerializeRuntimeObject(obj),
             };
 
             snapshot.NodesById[id] = node;
@@ -419,7 +441,7 @@ namespace DingoGameObjectsCMS.Mirror
 
             for (var i = 0; i < children.Count; i++)
             {
-                BuildSnapshotRecursive(store, snapshot, children[i], id, i, connection, replicationProfileId);
+                BuildSnapshotRecursive(store, snapshot, children[i], id, i, connection, replicationProfileId, serializer);
             }
         }
 
@@ -473,12 +495,12 @@ namespace DingoGameObjectsCMS.Mirror
             }
         }
 
-        private static bool ApplyStructureChange(RuntimeStore store, in RtStoreStructureDelta change)
+        private static bool ApplyStructureChange(RuntimeStore store, in RtStoreStructureDelta change, IRuntimePayloadSerializer serializer)
         {
             switch (change.Kind)
             {
                 case RuntimeStoreOpKind.Spawn:
-                    return ApplySpawn(store, change.Id, change.ParentId, change.Index, change.SpawnData);
+                    return ApplySpawn(store, change.Id, change.ParentId, change.Index, change.SpawnData, serializer);
 
                 case RuntimeStoreOpKind.Reparent:
                     if (change.ParentId < 0)
@@ -504,9 +526,9 @@ namespace DingoGameObjectsCMS.Mirror
             }
         }
 
-        private static bool ApplySpawn(RuntimeStore store, long id, long parentId, int index, byte[] data)
+        private static bool ApplySpawn(RuntimeStore store, long id, long parentId, int index, byte[] data, IRuntimePayloadSerializer serializer)
         {
-            var obj = RuntimeNetSerialization.DeserializeRuntimeObject(data);
+            var obj = serializer.DeserializeRuntimeObject(data);
             if (obj == null)
                 return false;
 
@@ -524,7 +546,7 @@ namespace DingoGameObjectsCMS.Mirror
             return store.AttachChild(parentId, id, index);
         }
 
-        private static bool ApplyComponentStructChange(RuntimeStore store, in RtStoreComponentStructDelta change)
+        private static bool ApplyComponentStructChange(RuntimeStore store, in RtStoreComponentStructDelta change, IRuntimePayloadSerializer serializer)
         {
             if (!store.TryTakeRW(change.ObjectId, out var obj) || obj == null)
                 return false;
@@ -533,7 +555,7 @@ namespace DingoGameObjectsCMS.Mirror
             {
                 case CompStructOpKind.Add:
                 {
-                    var component = RuntimeNetSerialization.DeserializeRuntimeComponent(change.CompTypeId, change.Payload);
+                    var component = serializer.DeserializeRuntimeComponent(change.CompTypeId, change.Payload);
                     if (component == null)
                         return false;
 
@@ -550,7 +572,7 @@ namespace DingoGameObjectsCMS.Mirror
             }
         }
 
-        private static bool ApplyComponentChange(RuntimeStore store, in RtStoreComponentDelta change)
+        private static bool ApplyComponentChange(RuntimeStore store, in RtStoreComponentDelta change, IRuntimePayloadSerializer serializer)
         {
             if (!store.TryTakeRW(change.ObjectId, out var obj) || obj == null)
                 return false;
@@ -564,7 +586,7 @@ namespace DingoGameObjectsCMS.Mirror
                 return delta.ApplyDelta(change.Payload);
             }
 
-            var component = RuntimeNetSerialization.DeserializeRuntimeComponent(change.CompTypeId, change.Payload);
+            var component = serializer.DeserializeRuntimeComponent(change.CompTypeId, change.Payload);
             if (component == null)
                 return false;
 

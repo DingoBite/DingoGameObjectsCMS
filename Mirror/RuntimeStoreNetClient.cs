@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using DingoGameObjectsCMS.RuntimeObjects.Commands;
 using DingoGameObjectsCMS.RuntimeObjects.Stores;
+using DingoGameObjectsCMS.Serialization;
 using DingoUnityExtensions;
 using Mirror;
 using Unity.Collections;
@@ -13,6 +14,7 @@ namespace DingoGameObjectsCMS.Mirror
     {
         private readonly Func<FixedString32Bytes, RuntimeStore> _stores;
         private readonly RuntimeCommandsBus _commandsBus;
+        private readonly IRuntimePayloadSerializer _serializer;
 
         private readonly Dictionary<FixedString32Bytes, uint> _lastSnapshotByStore = new();
         private readonly HashSet<FixedString32Bytes> _resyncInFlight = new();
@@ -23,10 +25,14 @@ namespace DingoGameObjectsCMS.Mirror
         private bool _commandsBusSubscribed;
         private bool _deferredFlushLogged;
 
-        public RuntimeStoreNetClient(Func<FixedString32Bytes, RuntimeStore> stores, RuntimeCommandsBus commandsBus = null)
+        public RuntimeStoreNetClient(
+            Func<FixedString32Bytes, RuntimeStore> stores,
+            RuntimeCommandsBus commandsBus = null,
+            IRuntimePayloadSerializer serializer = null)
         {
             _stores = stores;
             _commandsBus = commandsBus;
+            _serializer = serializer ?? RuntimePayloadSerialization.Current;
 
             NetworkClient.RegisterHandler<RtStoreSyncMsg>(OnStoreSync);
 
@@ -81,7 +87,7 @@ namespace DingoGameObjectsCMS.Mirror
             if (command == null)
                 return;
 
-            var payload = RuntimeNetSerialization.Serialize(command);
+            var payload = _serializer.Serialize(command);
             if (payload == null || payload.Length == 0)
             {
                 if (RuntimeNetTrace.LOG_COMMANDS)
@@ -178,7 +184,7 @@ namespace DingoGameObjectsCMS.Mirror
 
         private void OnStoreSync(RtStoreSyncMsg msg)
         {
-            var payload = RuntimeNetSerialization.Deserialize<RtStoreSyncPayload>(msg.Payload);
+            var payload = _serializer.Deserialize<RtStoreSyncPayload>(msg.Payload);
             if (payload == null)
                 return;
 
@@ -201,7 +207,7 @@ namespace DingoGameObjectsCMS.Mirror
             if (RuntimeNetTrace.LOG_SNAPSHOTS)
                 RuntimeNetTrace.Client("SNAP", $"recv store-sync mode={payload.Mode} store={storeKey} snap={payload.SnapshotId} struct={payload.StructureChanges.Count} compStruct={payload.ObjectStructChanges.Count} compDelta={payload.ComponentDeltas.Count} bytes={(msg.Payload?.Length ?? 0)}");
 
-            if (!RuntimeStoreSnapshotCodec.ApplySync(store, payload))
+            if (!RuntimeStoreSnapshotCodec.ApplySync(store, payload, _serializer))
             {
                 if (RuntimeNetTrace.LOG_SNAPSHOTS)
                     RuntimeNetTrace.Client("SNAP", $"request resync store={storeKey} reason=apply_failed mode={payload.Mode} snap={payload.SnapshotId}");
