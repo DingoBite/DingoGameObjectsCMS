@@ -1,0 +1,31 @@
+using DingoGameObjectsCMS.RuntimeObjects;
+using Unity.Collections;
+using Unity.Entities;
+
+namespace DingoGameObjectsCMS.Systems
+{
+    public struct DestroyRuntimeInstanceRequest : IComponentData
+    {
+        public RuntimeInstance Instance;
+        public StoreRealm Realm;
+    }
+    
+    [UpdateInGroup(typeof(FixedStepSimulationSystemGroup), OrderLast = true)]
+    public partial class DestroyRuntimeInstanceSystem : SystemBase
+    {
+        protected override void OnUpdate()
+        {
+            using var ecb = new EntityCommandBuffer(Allocator.Temp);
+            
+            foreach (var (r, e) in SystemAPI.Query<RefRO<DestroyRuntimeInstanceRequest>>().WithEntityAccess())
+            {
+                var store = r.ValueRO.Instance.StoreId.ResolveStore(r.ValueRO.Realm);
+                if (store != null && store.Remove(r.ValueRO.Instance.Id, out var instanceE))
+                    ecb.DestroyEntity(instanceE);
+                ecb.DestroyEntity(e);
+            }
+            
+            ecb.Playback(EntityManager);
+        }
+    }
+}
