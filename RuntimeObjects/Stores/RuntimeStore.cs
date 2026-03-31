@@ -25,6 +25,8 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
         private readonly BindDict<long, GameRuntimeObject> _parents = new();
 
         private readonly Dictionary<long, Entity> _entityById = new();
+        private readonly Dictionary<Entity, long> _idByEntity = new();
+        private readonly HashSet<long> _seenEntityLinks = new();
 
         private readonly Dictionary<long, long> _parentByChild = new();
         private readonly Dictionary<long, List<long>> _childrenByParent = new();
@@ -34,7 +36,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
         private bool _flushInProgress;
         private bool _rescheduleRequested;
         private bool _suppressReplicationThisFlush;
-
+        private bool _entityLinkPassActive;
 
         private readonly HashSet<long> _cycleVisited = new();
 
@@ -138,7 +140,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
                 RecordOp(RuntimeStructureDirty.Remove(id, mode, NextOrder()));
 
             _parents.V.Remove(id);
-            _entityById.Remove(id, out entity);
+            TryUnlinkEntity(id, out entity);
 
             MarkTouchedUpToRoot(id);
 
@@ -149,11 +151,8 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
                 return false;
             }
 
-            _parentByChild.TryGetValue(id, out var parentId);
+            var hadParent = _parentByChild.TryGetValue(id, out var parentId);
             DetachChildInternal(id);
-
-            if (parentId != 0)
-                MarkTouchedUpToRoot(parentId);
 
             if (_childrenByParent.TryGetValue(id, out var children) && children.Count > 0)
             {
@@ -183,7 +182,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
 
                         break;
 
-                    case RemoveMode.NodeOnly_ReparentChildrenToParent when parentId != 0 && _all.V.ContainsKey(parentId):
+                    case RemoveMode.NodeOnly_ReparentChildrenToParent when hadParent && _all.V.ContainsKey(parentId):
                         foreach (var child in toProcess)
                         {
                             AttachChild(parentId, child, insertIndex: -1);
@@ -210,7 +209,62 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
             return true;
         }
 
-        public void LinkEntity(long id, Entity entity) => _entityById[id] = entity;
+        public void BeginEntityLinkPass()
+        {
+            _entityLinkPassActive = true;
+            _seenEntityLinks.Clear();
+        }
+
+        public void EndEntityLinkPass()
+        {
+            if (!_entityLinkPassActive)
+                return;
+
+            _entityLinkPassActive = false;
+
+            if (_entityById.Count == 0)
+            {
+                _seenEntityLinks.Clear();
+                return;
+            }
+
+            List<long> staleIds = null;
+            foreach (var id in _entityById.Keys)
+            {
+                if (_seenEntityLinks.Contains(id))
+                    continue;
+
+                staleIds ??= new List<long>();
+                staleIds.Add(id);
+            }
+
+            _seenEntityLinks.Clear();
+
+            if (staleIds == null)
+                return;
+
+            foreach (var id in staleIds)
+                UnlinkEntity(id);
+        }
+
+        public void LinkEntity(long id, Entity entity)
+        {
+            if (id < 0 || entity == Entity.Null)
+                return;
+
+            if (_entityById.TryGetValue(id, out var existingEntity) && existingEntity != entity)
+                _idByEntity.Remove(existingEntity);
+
+            if (_idByEntity.TryGetValue(entity, out var existingId) && existingId != id)
+                _entityById.Remove(existingId);
+
+            _entityById[id] = entity;
+            _idByEntity[entity] = id;
+
+            if (_entityLinkPassActive)
+                _seenEntityLinks.Add(id);
+        }
+
         public bool TryGetEntity(long id, out Entity e) => _entityById.TryGetValue(id, out e);
 
         public bool TryTakeParentRW(long childId, out GameRuntimeObject parent)
@@ -274,8 +328,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
                 }
 
                 DetachChildInternal(childId);
-                if (oldParentId != 0)
-                    MarkTouchedUpToRoot(oldParentId);
             }
 
             _parentByChild[childId] = parentId;
@@ -393,8 +445,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
                     _childrenByParent.Remove(parentId);
             }
 
-            if (parentId != 0)
-                MarkTouchedUpToRoot(parentId);
+            MarkTouchedUpToRoot(parentId);
             MarkTouchedUpToRoot(childId);
             return true;
         }
@@ -470,6 +521,42 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
 
             _scheduled = true;
             CoroutineParent.AddLateUpdater(this, Flush, UPDATE_ORDER);
+        }
+
+        private bool UnlinkEntity(long id)
+        {
+            if (!TryUnlinkEntity(id, out _))
+                return false;
+
+            return true;
+        }
+
+        private bool TryUnlinkEntity(long id, out Entity entity)
+        {
+            if (!_entityById.Remove(id, out entity))
+                return false;
+
+            _idByEntity.Remove(entity);
+            _seenEntityLinks.Remove(id);
+            return true;
+        }
+
+        private static void InvokeSafe<T>(Action<NativeArray<T>> handlers, NativeArray<T> payload) where T : struct
+        {
+            if (handlers == null || payload.Length == 0)
+                return;
+
+            foreach (var d in handlers.GetInvocationList())
+            {
+                try
+                {
+                    ((Action<NativeArray<T>>)d).Invoke(payload);
+                }
+                catch (Exception e)
+                {
+                    Debug.LogException(e);
+                }
+            }
         }
 
         private void Flush()
@@ -564,13 +651,13 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
                 }
 
                 if (emitStructure.IsCreated && emitStructure.Length > 0)
-                    StructureChanges?.Invoke(emitStructure.AsArray());
+                    InvokeSafe(StructureChanges, emitStructure.AsArray());
 
                 if (emitCompStruct.IsCreated && emitCompStruct.Length > 0)
-                    ComponentStructureChanges?.Invoke(emitCompStruct.AsArray());
+                    InvokeSafe(ComponentStructureChanges, emitCompStruct.AsArray());
 
                 if (emitComp.IsCreated && emitComp.Length > 0)
-                    ComponentChanges?.Invoke(emitComp.AsArray());
+                    InvokeSafe(ComponentChanges, emitComp.AsArray());
 
                 if (emitStructure.IsCreated)
                     emitStructure.Dispose();

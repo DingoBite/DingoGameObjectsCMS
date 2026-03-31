@@ -1,3 +1,4 @@
+using DingoGameObjectsCMS;
 using DingoGameObjectsCMS.RuntimeObjects;
 using DingoGameObjectsCMS.Stores;
 using Unity.Entities;
@@ -9,14 +10,36 @@ namespace DingoGameObjectsCMS.Systems
     {
         protected override void OnUpdate()
         {
-            foreach (var (instance, realm, entity) in SystemAPI
-                         .Query<RefRO<RuntimeInstance>, RefRO<RuntimeRealm>>()
-                         .WithEntityAccess()
-                         .WithChangeFilter<RuntimeInstance>())
+            BeginLinkPass(StoreRealm.Server);
+            BeginLinkPass(StoreRealm.Client);
+
+            try
             {
-                var store = instance.ValueRO.StoreId.ResolveStore(realm.ValueRO.Realm);
-                store?.LinkEntity(instance.ValueRO.Id, entity);
+                foreach (var (instance, realm, entity) in SystemAPI
+                             .Query<RefRO<RuntimeInstance>, RefRO<RuntimeRealm>>()
+                             .WithEntityAccess())
+                {
+                    var store = instance.ValueRO.StoreId.ResolveStore(realm.ValueRO.Realm);
+                    store?.LinkEntity(instance.ValueRO.Id, entity);
+                }
             }
+            finally
+            {
+                EndLinkPass(StoreRealm.Server);
+                EndLinkPass(StoreRealm.Client);
+            }
+        }
+
+        private static void BeginLinkPass(StoreRealm realm)
+        {
+            foreach (var store in RuntimeStores.EnumerateStores(realm))
+                store.BeginEntityLinkPass();
+        }
+
+        private static void EndLinkPass(StoreRealm realm)
+        {
+            foreach (var store in RuntimeStores.EnumerateStores(realm))
+                store.EndEntityLinkPass();
         }
     }
 }

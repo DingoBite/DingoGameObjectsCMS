@@ -12,7 +12,7 @@ using Unity.Collections;
 
 namespace DingoGameObjectsCMS.Mirror
 {
-    public sealed class RuntimeStoreNetServer
+    public sealed class RuntimeStoreNetServer : IDisposable
     {
         private readonly Func<FixedString32Bytes, RuntimeStore> _stores;
         private readonly Func<IEnumerable<FixedString32Bytes>> _replicatedStoresGetter;
@@ -46,6 +46,19 @@ namespace DingoGameObjectsCMS.Mirror
 
             if (RuntimeNetTrace.LOG_MANAGER)
                 RuntimeNetTrace.Server("MANAGER", $"RuntimeStoreNetServer initialized commandsBus={(_commandsBus != null)}");
+        }
+
+        public void Dispose()
+        {
+            _scheduled = false;
+            CoroutineParent.RemoveLateUpdater(this);
+
+            foreach (var state in _replicationByStore.Values)
+                DetachStoreState(state);
+
+            _replicationByStore.Clear();
+            _connectionStates.Clear();
+            _lastCommandSeqByConn.Clear();
         }
 
         public void OnConnectionDisconnected(int connectionId)
@@ -209,11 +222,16 @@ namespace DingoGameObjectsCMS.Mirror
                 if (!state.Dirty)
                     continue;
 
-                if (state.PendingDelta.HasAny)
-                    BroadcastStoreDelta(state);
+                var hasReadyAwaitingSnapshot = HasReadyConnectionsAwaitingSnapshot(state.StoreId);
+                if (!state.PendingDelta.HasAny && !hasReadyAwaitingSnapshot)
+                {
+                    state.Dirty = false;
+                    continue;
+                }
 
+                BroadcastStoreDelta(state);
                 ClearPendingDelta(state);
-                state.Dirty = false;
+                state.Dirty = HasReadyConnectionsAwaitingSnapshot(state.StoreId);
             }
         }
 
@@ -224,8 +242,14 @@ namespace DingoGameObjectsCMS.Mirror
 
             foreach (var conn in NetworkServer.connections.Values)
             {
-                if (conn == null || !conn.isReady)
+                if (conn == null)
                     continue;
+
+                if (!conn.isReady)
+                {
+                    InvalidateConnectionStoreState(conn.connectionId, state.StoreId);
+                    continue;
+                }
 
                 var connState = GetConnectionStoreState(conn.connectionId, state.StoreId, createIfMissing: true);
 
@@ -441,21 +465,84 @@ namespace DingoGameObjectsCMS.Mirror
 
         private bool TryEnsureStoreState(FixedString32Bytes storeId, out StoreReplicationState state)
         {
-            if (_replicationByStore.TryGetValue(storeId, out state))
-                return true;
-
             var store = _stores(storeId);
+
+            if (_replicationByStore.TryGetValue(storeId, out state))
+            {
+                if (store == null)
+                {
+                    DetachStoreState(state);
+                    _replicationByStore.Remove(storeId);
+                    InvalidateStoreForAllConnections(storeId);
+                    state = null;
+                    return false;
+                }
+
+                if (!ReferenceEquals(state.Store, store))
+                    RebindStoreState(state, store);
+
+                return true;
+            }
+
             if (store == null)
                 return false;
 
             state = new StoreReplicationState(storeId, store);
             _replicationByStore[storeId] = state;
+            AttachStoreState(state, store);
+            InvalidateStoreForAllConnections(storeId);
+            state.Dirty = HasReadyConnectionsAwaitingSnapshot(storeId);
 
-            store.StructureChanges += changes => OnStoreStructureChanges(storeId, changes);
-            store.ComponentStructureChanges += changes => OnStoreComponentStructureChanges(storeId, changes);
-            store.ComponentChanges += changes => OnStoreComponentChanges(storeId, changes);
+            if (state.Dirty)
+                EnsureFlushScheduled();
 
             return true;
+        }
+
+        private void AttachStoreState(StoreReplicationState state, RuntimeStore store)
+        {
+            state.Store = store;
+            state.StructureChangesHandler ??= changes => OnStoreStructureChanges(state.StoreId, changes);
+            state.ComponentStructureChangesHandler ??= changes => OnStoreComponentStructureChanges(state.StoreId, changes);
+            state.ComponentChangesHandler ??= changes => OnStoreComponentChanges(state.StoreId, changes);
+
+            store.StructureChanges += state.StructureChangesHandler;
+            store.ComponentStructureChanges += state.ComponentStructureChangesHandler;
+            store.ComponentChanges += state.ComponentChangesHandler;
+        }
+
+        private static void DetachStoreState(StoreReplicationState state)
+        {
+            if (state?.Store == null)
+                return;
+
+            if (state.StructureChangesHandler != null)
+                state.Store.StructureChanges -= state.StructureChangesHandler;
+
+            if (state.ComponentStructureChangesHandler != null)
+                state.Store.ComponentStructureChanges -= state.ComponentStructureChangesHandler;
+
+            if (state.ComponentChangesHandler != null)
+                state.Store.ComponentChanges -= state.ComponentChangesHandler;
+
+            state.Store = null;
+        }
+
+        private void RebindStoreState(StoreReplicationState state, RuntimeStore store)
+        {
+            DetachStoreState(state);
+            AttachStoreState(state, store);
+
+            ClearPendingDelta(state);
+            state.LastSnapshotId = 0;
+            InvalidateStoreForAllConnections(state.StoreId);
+            state.Dirty = HasReadyConnectionsAwaitingSnapshot(state.StoreId);
+
+            if (state.Dirty)
+                EnsureFlushScheduled();
+
+            if (RuntimeNetTrace.LOG_MANAGER)
+                RuntimeNetTrace.Server("MANAGER", $"rebind replicated store={state.StoreId}");
         }
 
         private void OnStoreStructureChanges(FixedString32Bytes storeId, NativeArray<RuntimeStructureDirty> changes)
@@ -731,16 +818,47 @@ namespace DingoGameObjectsCMS.Mirror
             return state;
         }
 
+        private void InvalidateConnectionStoreState(int connectionId, FixedString32Bytes storeId)
+        {
+            var state = GetConnectionStoreState(connectionId, storeId, createIfMissing: true);
+            state.LastAckSnapshotId = 0;
+            state.LastSentSnapshotId = 0;
+        }
+
+        private void InvalidateStoreForAllConnections(FixedString32Bytes storeId)
+        {
+            foreach (var pair in _connectionStates)
+                InvalidateConnectionStoreState(pair.Key, storeId);
+        }
+
+        private bool HasReadyConnectionsAwaitingSnapshot(FixedString32Bytes storeId)
+        {
+            foreach (var conn in NetworkServer.connections.Values)
+            {
+                if (conn == null || !conn.isReady)
+                    continue;
+
+                var state = GetConnectionStoreState(conn.connectionId, storeId, createIfMissing: false);
+                if (state == null || (state.LastAckSnapshotId == 0 && state.LastSentSnapshotId == 0))
+                    return true;
+            }
+
+            return false;
+        }
+
         private sealed class StoreReplicationState
         {
             public readonly FixedString32Bytes StoreId;
-            public readonly RuntimeStore Store;
+            public RuntimeStore Store;
 
             public readonly RtStoreSyncPayload PendingDelta = new RtStoreSyncPayload
             {
                 Mode = RtStoreSyncMode.DeltaTick,
             };
 
+            public Action<NativeArray<RuntimeStructureDirty>> StructureChangesHandler;
+            public Action<NativeArray<ObjectStructDirty>> ComponentStructureChangesHandler;
+            public Action<NativeArray<ObjectComponentDirty>> ComponentChangesHandler;
             public bool Dirty;
             public uint LastSnapshotId;
 

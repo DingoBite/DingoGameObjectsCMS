@@ -98,6 +98,7 @@ namespace DingoGameObjectsCMS.Stores
         public static bool TryGetRuntimeStore(FixedString32Bytes id, StoreRealm realm, out RuntimeStore runtimeStore) => GetDict(realm).TryGetValue(id, out runtimeStore);
 
         public static RuntimeStore GetRuntimeStore(FixedString32Bytes id, StoreRealm realm) => GetDict(realm).GetValueOrDefault(id);
+        public static IEnumerable<RuntimeStore> EnumerateStores(StoreRealm realm) => GetDict(realm).Values;
 
         public static bool TryGetNetDir(FixedString32Bytes storeId, out StoreNetDir dir) => _netDirById.TryGetValue(storeId, out dir);
         public static StoreNetDir GetNetDir(FixedString32Bytes storeId) => _netDirById.GetValueOrDefault(storeId, StoreNetDir.None);

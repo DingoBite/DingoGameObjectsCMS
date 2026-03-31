@@ -369,7 +369,7 @@ namespace DingoGameObjectsCMS.Mirror
                     store.AbortNetApply();
             }
 
-            return true;
+            return false;
         }
 
         private static bool ApplySyncInternal(RuntimeStore store, RtStoreSyncPayload payload, IRuntimePayloadSerializer serializer)

@@ -68,6 +68,7 @@ namespace DingoGameObjectsCMS.Mirror
 
         public override void OnStopServer()
         {
+            RtServer?.Dispose();
             RtServer = null;
             base.OnStopServer();
 

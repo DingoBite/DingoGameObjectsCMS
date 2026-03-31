@@ -193,7 +193,9 @@ namespace DingoGameObjectsCMS.Mirror
 
             _lastSnapshotByStore.TryGetValue(storeKey, out var lastAppliedSnapshotId);
 
-            if (payload.SnapshotId <= lastAppliedSnapshotId)
+            var allowFullSnapshotReset = payload.Mode == RtStoreSyncMode.FullSnapshot && payload.SnapshotId <= lastAppliedSnapshotId;
+
+            if (!allowFullSnapshotReset && payload.SnapshotId <= lastAppliedSnapshotId)
             {
                 if (RuntimeNetTrace.LOG_SNAPSHOTS)
                     RuntimeNetTrace.Client("SNAP", $"drop store-sync mode={payload.Mode} store={storeKey} snap={payload.SnapshotId} reason=stale last={lastAppliedSnapshotId}");
@@ -201,8 +203,17 @@ namespace DingoGameObjectsCMS.Mirror
                 return;
             }
 
-            if (payload.Mode == RtStoreSyncMode.DeltaTick && lastAppliedSnapshotId > 0 && payload.SnapshotId > lastAppliedSnapshotId + 1 && RuntimeNetTrace.LOG_SNAPSHOTS)
-                RuntimeNetTrace.Client("SNAP", $"accept non-contiguous delta store={storeKey} have={lastAppliedSnapshotId} got={payload.SnapshotId} reason=global_snapshot_marker");
+            if (allowFullSnapshotReset && RuntimeNetTrace.LOG_SNAPSHOTS)
+                RuntimeNetTrace.Client("SNAP", $"accept authoritative full snapshot store={storeKey} snap={payload.SnapshotId} replacing_last={lastAppliedSnapshotId}");
+
+            if (payload.Mode == RtStoreSyncMode.DeltaTick && lastAppliedSnapshotId > 0 && payload.SnapshotId > lastAppliedSnapshotId + 1)
+            {
+                if (RuntimeNetTrace.LOG_SNAPSHOTS)
+                    RuntimeNetTrace.Client("SNAP", $"request resync store={storeKey} reason=non_contiguous_delta have={lastAppliedSnapshotId} got={payload.SnapshotId}");
+
+                RequestResync(storeKey);
+                return;
+            }
 
             if (RuntimeNetTrace.LOG_SNAPSHOTS)
                 RuntimeNetTrace.Client("SNAP", $"recv store-sync mode={payload.Mode} store={storeKey} snap={payload.SnapshotId} struct={payload.StructureChanges.Count} compStruct={payload.ObjectStructChanges.Count} compDelta={payload.ComponentDeltas.Count} bytes={(msg.Payload?.Length ?? 0)}");
