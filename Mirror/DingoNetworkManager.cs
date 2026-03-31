@@ -1,22 +1,15 @@
 #if MIRROR
 using System;
 using System.Collections.Generic;
-using Mirror;
-using UnityEngine;
 using DingoGameObjectsCMS.RuntimeObjects.Commands;
 using DingoGameObjectsCMS.RuntimeObjects.Stores;
+using DingoGameObjectsCMS.Stores;
+using Mirror;
 using Unity.Collections;
+using UnityEngine;
 
 namespace DingoGameObjectsCMS.Mirror
 {
-    public enum RuntimeNetRole : byte
-    {
-        Offline = 0,
-        Server = 1,
-        Client = 2,
-        Host = 3,
-    }
-
     [DisallowMultipleComponent]
     public sealed class DingoNetworkManager : NetworkManager
     {
@@ -42,7 +35,7 @@ namespace DingoGameObjectsCMS.Mirror
 
             NotifyRuntimeRoleChanged();
         }
-        
+
         public void SetServerStoreResolver(Func<FixedString32Bytes, RuntimeStore> resolver) => _serverResolver = resolver;
         public void SetClientStoreResolver(Func<FixedString32Bytes, RuntimeStore> resolver) => _clientResolver = resolver;
 
@@ -85,8 +78,15 @@ namespace DingoGameObjectsCMS.Mirror
             if (_clientResolver == null)
                 throw new InvalidOperationException($"{nameof(DingoNetworkManager)}: client store resolver is not configured.");
 
+            RuntimeExecutionContext.SetReplicaReady(false);
+            RuntimeExecutionContext.SetNetworkRole(ResolveRuntimeRole());
+
             TryUnregisterClientHandlers();
-            RtClient = new RuntimeStoreNetClient(_clientResolver, _commandsBusGetter?.Invoke());
+            RtClient = new RuntimeStoreNetClient(
+                _clientResolver,
+                _commandsBusGetter?.Invoke(),
+                _replicatedStoreGetter,
+                RuntimeExecutionContext.SetReplicaReady);
             Debug.Log($"Client started: {networkAddress}");
 
             if (RuntimeNetTrace.LOG_MANAGER)
@@ -99,6 +99,7 @@ namespace DingoGameObjectsCMS.Mirror
         {
             RtClient?.Dispose();
             RtClient = null;
+            RuntimeExecutionContext.SetReplicaReady(false);
             base.OnStopClient();
 
             if (RuntimeNetTrace.LOG_MANAGER)
@@ -139,6 +140,7 @@ namespace DingoGameObjectsCMS.Mirror
 
         public override void OnClientDisconnect()
         {
+            RuntimeExecutionContext.SetReplicaReady(false);
             base.OnClientDisconnect();
 
             if (RuntimeNetTrace.LOG_MANAGER)
@@ -222,6 +224,7 @@ namespace DingoGameObjectsCMS.Mirror
         private void NotifyRuntimeRoleChanged()
         {
             var role = ResolveRuntimeRole();
+            RuntimeExecutionContext.SetNetworkRole(role);
 
             if (RuntimeNetTrace.LOG_MANAGER)
                 RuntimeNetTrace.Server("MANAGER", $"role changed role={role}");

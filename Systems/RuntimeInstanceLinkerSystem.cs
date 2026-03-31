@@ -33,13 +33,17 @@ namespace DingoGameObjectsCMS.Systems
         private static void BeginLinkPass(StoreRealm realm)
         {
             foreach (var store in RuntimeStores.EnumerateStores(realm))
+            {
                 store.BeginEntityLinkPass();
+            }
         }
 
         private static void EndLinkPass(StoreRealm realm)
         {
             foreach (var store in RuntimeStores.EnumerateStores(realm))
+            {
                 store.EndEntityLinkPass();
+            }
         }
     }
 }
