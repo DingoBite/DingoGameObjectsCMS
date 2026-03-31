@@ -60,7 +60,6 @@ namespace DingoGameObjectsCMS.Stores
                 bind.V = null;
             }
 
-            _bindByKey.Clear();
         }
 
         private static void OnActiveStoresChanged(IReadOnlyDictionary<FixedString32Bytes, RuntimeStore> _)
