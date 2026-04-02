@@ -42,6 +42,12 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
             return _componentsById.TryGetValue(typeId, out component);
         }
 
+        public bool Has<T>() where T : GameRuntimeComponent
+        {
+            EnsureCache();
+            return _componentsByType.ContainsKey(typeof(T));
+        }
+        
         public T TakeRO<T>() where T : GameRuntimeComponent
         {
             EnsureCache();

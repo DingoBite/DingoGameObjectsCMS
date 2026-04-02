@@ -47,7 +47,7 @@ namespace DingoGameObjectsCMS.Stores
             if (_bindByKey.TryGetValue(key, out var bind))
                 return bind;
 
-            bind = new Bind<RuntimeStore>();
+            bind = new Bind<RuntimeStore>(true);
             _bindByKey[key] = bind;
             bind.V = ResolveStore(key);
             return bind;
@@ -59,7 +59,6 @@ namespace DingoGameObjectsCMS.Stores
             {
                 bind.V = null;
             }
-
         }
 
         private static void OnActiveStoresChanged(IReadOnlyDictionary<FixedString32Bytes, RuntimeStore> _)

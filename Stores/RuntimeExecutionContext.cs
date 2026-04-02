@@ -28,13 +28,7 @@ namespace DingoGameObjectsCMS.Stores
         public readonly bool CanMutateStores;
         public readonly bool IsReplicaReady;
 
-        public RuntimeExecutionState(
-            RuntimeExecutionPhase phase,
-            RuntimeExecutionRole stableRole,
-            StoreRealm readRealm,
-            StoreRealm writeRealm,
-            bool canMutateStores,
-            bool isReplicaReady)
+        public RuntimeExecutionState(RuntimeExecutionPhase phase, RuntimeExecutionRole stableRole, StoreRealm readRealm, StoreRealm writeRealm, bool canMutateStores, bool isReplicaReady)
         {
             Phase = phase;
             StableRole = stableRole;
