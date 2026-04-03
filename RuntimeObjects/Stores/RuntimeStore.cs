@@ -50,8 +50,28 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
         {
             Id = id;
             Realm = realm;
+            LinkWorld(world);
+        }
+
+        public void LinkWorld(World world)
+        {
+            if (world == null || !world.IsCreated)
+                throw new InvalidOperationException($"RuntimeStore '{Id}' requires a valid ECS World.");
+
+            if (_world != null && _world != world && _all.V.Count > 0)
+                throw new InvalidOperationException($"RuntimeStore '{Id}' cannot change ECS World after runtime objects have been created.");
+
             _world = world;
         }
+
+        private World RequireWorld()
+        {
+            if (_world == null || !_world.IsCreated)
+                throw new InvalidOperationException($"RuntimeStore '{Id}' requires a valid ECS World.");
+
+            return _world;
+        }
+
 
         public IReadonlyBind<IReadOnlyDictionary<long, GameRuntimeObject>> All => _all;
         public IReadonlyBind<IReadOnlyDictionary<long, GameRuntimeObject>> Parents => _parents;
@@ -63,10 +83,11 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
         public event Action<NativeArray<ObjectComponentDirty>> ComponentChanges;
 
         private uint NextOrder() => ++_order;
-        
+
         private GameRuntimeObject CreateDetached()
         {
             var id = _lastId++;
+            var world = RequireWorld();
             var obj = new GameRuntimeObject
             {
                 InstanceId = id,
@@ -74,7 +95,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
                 Realm = Realm
             };
 
-            obj.LinkRuntimeContext(this, _world);
+            obj.LinkRuntimeContext(this, world);
             _all.V[id] = obj;
             MarkTouchedUpToRoot(id);
             return obj;
@@ -94,31 +115,20 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
             return child;
         }
 
-public bool TryUpsertNetObject(GameRuntimeObject value)
+        public bool TryAddExternalObject(GameRuntimeObject value)
         {
             if (value == null || value.InstanceId < 0)
                 return false;
 
             var id = value.InstanceId;
+            var world = RequireWorld();
+            if (_all.V.ContainsKey(id) || _entityById.ContainsKey(id))
+                return false;
+
             value.StoreId = Id;
             value.Realm = Realm;
-            value.LinkRuntimeContext(this, _world);
-
-            if (_all.V.TryGetValue(id, out var prev) && prev != null && !ReferenceEquals(prev, value))
-            {
-                prev.Destroy();
-                prev.ClearRuntimeContext();
-            }
-
-            if (_entityById.TryGetValue(id, out var entity))
-                value.LinkToEntity(entity);
-            else
-                value.ClearEntityLink();
-
+            value.LinkRuntimeContext(this, world);
             _all.V[id] = value;
-
-            if (_parents.V.ContainsKey(id))
-                _parents.V[id] = value;
 
             if (_lastId <= id)
                 _lastId = id + 1;
@@ -244,7 +254,6 @@ public bool TryUpsertNetObject(GameRuntimeObject value)
             ScheduleFlush();
             return true;
         }
-
 
 
         public void BeginEntityLinkPass()
@@ -573,7 +582,7 @@ public bool TryUpsertNetObject(GameRuntimeObject value)
             return true;
         }
 
-private bool TryUnlinkEntity(long id, out Entity entity)
+        private bool TryUnlinkEntity(long id, out Entity entity)
         {
             if (!_entityById.Remove(id, out entity))
                 return false;

@@ -38,6 +38,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
         [JsonIgnore] public IReadOnlyDictionary<uint, ComponentDirty> ComponentsChanges => _componentsChanges;
         [JsonIgnore] public IReadOnlyDictionary<uint, ComponentStructDirty> StructureChanges => _structureChanges;
         [JsonIgnore] public IReadOnlyList<GameRuntimeComponent> Components => _components;
+        [JsonIgnore] public bool HasEntityProjection => _hasEntityProjection;
         [JsonIgnore] public RuntimeInstance RuntimeInstance => new() { Id = InstanceId, StoreId = StoreId };
 
         public void LinkRuntimeContext(RuntimeStore runtimeStore, World world)
@@ -120,16 +121,19 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
                 ecb.AddComponent(_entity, new AssetPresentationTag());
             ecb.AddComponent(_entity, new RuntimeRealm { Realm = Realm });
             ecb.AddComponent(_entity, RuntimeInstance);
+            SetupEntityProjection(ecb);
+            return _entity;
+        }
 
+        public void SetupEntityProjection(EntityCommandBuffer ecb)
+        {
             if (Components == null)
-                return _entity;
+                return;
 
             foreach (var c in Components)
             {
                 c?.SetupForEntity(_runtimeStore, ecb, this, _entity);
             }
-
-            return _entity;
         }
 
         private bool TryTakeEditingEcb(out EntityCommandBuffer ecb)

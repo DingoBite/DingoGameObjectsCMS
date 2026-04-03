@@ -535,7 +535,10 @@ namespace DingoGameObjectsCMS.Mirror
             obj.InstanceId = id;
             obj.StoreId = store.Id;
 
-            store.TryUpsertNetObject(obj);
+            if (!store.TryAddExternalObject(obj))
+                return false;
+
+            obj.CreateEntity();
 
             if (parentId < 0)
             {
@@ -614,3 +617,4 @@ namespace DingoGameObjectsCMS.Mirror
     }
 }
 #endif
+

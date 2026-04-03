@@ -52,10 +52,32 @@ namespace DingoGameObjectsCMS.Stores
             ResetState();
         }
         
-        public static void SetupWorld(World world)
+public static void SetupWorld(World world)
         {
+            if (world == null || !world.IsCreated)
+                throw new System.InvalidOperationException("RuntimeStores requires a valid ECS World.");
+
             _world = world;
+
+            foreach (var store in _serverStoresById.Values)
+            {
+                store.LinkWorld(world);
+            }
+
+            foreach (var store in _clientStoresById.Values)
+            {
+                store.LinkWorld(world);
+            }
         }
+
+private static World RequireWorld()
+        {
+            if (_world == null || !_world.IsCreated)
+                throw new System.InvalidOperationException("RuntimeStores requires SetupWorld(...) before store creation.");
+
+            return _world;
+        }
+
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
         private static void ResetOnSubsystemRegistration()
@@ -79,7 +101,7 @@ namespace DingoGameObjectsCMS.Stores
         }
 #endif
 
-        public static void ResetState()
+public static void ResetState()
         {
             _serverStoresById.Clear();
             _clientStoresById.Clear();
@@ -90,6 +112,7 @@ namespace DingoGameObjectsCMS.Stores
             _serverStores.V = _serverStores.V;
             _clientStores.V = _clientStores.V;
 
+            _world = null;
             _role.V = RuntimeExecutionRole.OfflineAuthoritative;
         }
 
@@ -130,7 +153,7 @@ namespace DingoGameObjectsCMS.Stores
             return GetDict(realm).Keys;
         }
 
-        public static RuntimeStore GetOrAddRuntimeStore(FixedString32Bytes key, StoreNetDir dir = StoreNetDir.None, StoreRealm realm = StoreRealm.Server, bool ensurePair = false)
+public static RuntimeStore GetOrAddRuntimeStore(FixedString32Bytes key, StoreNetDir dir = StoreNetDir.None, StoreRealm realm = StoreRealm.Server, bool ensurePair = false)
         {
             var dict = GetDict(realm);
             var bind = GetBind(realm);
@@ -149,7 +172,7 @@ namespace DingoGameObjectsCMS.Stores
                 return existing;
             }
 
-            var store = new RuntimeStore(key, realm, _world);
+            var store = new RuntimeStore(key, realm, RequireWorld());
             dict[key] = store;
             bind.V[key] = store;
             bind.V = bind.V;

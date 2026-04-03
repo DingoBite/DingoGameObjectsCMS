@@ -15,10 +15,19 @@ namespace DingoGameObjectsCMS
 
         private static readonly Dictionary<World, GrcEditingEcbState> _grcEditingBuffers = new();
 
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        private static void ResetGrcEditingBuffers()
+        {
+            _grcEditingBuffers.Clear();
+        }
+
         public static EntityCommandBuffer TakeGRCEditingECB(this World world) => world.TakeGRCEditingECB(out _);
 
         public static EntityCommandBuffer TakeGRCEditingECB(this World world, out int token)
         {
+            if (world == null || !world.IsCreated)
+                throw new System.InvalidOperationException("TakeGRCEditingECB requires a valid ECS World.");
+
             if (!_grcEditingBuffers.TryGetValue(world, out var state))
             {
                 state = new GrcEditingEcbState();

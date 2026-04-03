@@ -6,7 +6,7 @@
 
 1. Вы описываете объект не кодом сцены, а `GameAsset`.
 2. `GameAsset` собирает `GameRuntimeObject` с набором `GameRuntimeComponent`.
-3. `GameRuntimeObject` живёт в `RuntimeStore`, который умеет хранить дерево объектов, отслеживать dirty-изменения и публиковать потоки изменений.
+3. `GameRuntimeObject` живёт в `RuntimeStore`, который умеет хранить дерево объектов, отслеживать dirty-изменения, публиковать потоки изменений и связывать runtime-объекты с ECS entity.
 4. Тот же runtime-слой может быть использован для:
    - построения ECS entity;
    - сетевой репликации;
@@ -22,10 +22,11 @@
 - **Версионность как часть модели.** Asset имеет `GameAssetKey` и `GUID`, поэтому изменение shape данных можно оформлять новой версией asset-а, а не ломать старые сейвы и профили.
 - **Одна модель для нескольких слоёв.** Тот же runtime-объект может стать ECS entity, network payload, persistent root object или mod asset.
 - **Явный runtime store.** Состояние игры живёт не “размазано по сцене”, а в деревьях `RuntimeStore`, которые легко сериализовать, синхронизировать и анализировать.
+- **Статическая data platform.** `RuntimeStores` одновременно держит server/client realm, а `RuntimeExecutionContext` выбирает активную фазу исполнения и active side для high-level кода.
 - **Dirty-by-design.** Store копит структурные и компонентные изменения и публикует их как отдельные потоки, поэтому нет необходимости каждый раз пересылать весь мир.
 - **Слабая связность сериализации и сети.** Runtime serialization вынесена в `IRuntimePayloadSerializer`, а Mirror работает поверх этой абстракции.
 - **Mod-friendly pipeline.** Встроенные asset-ы и внешние mod pack-ы используют одинаковые ключи, одинаковую сериализацию и единый резолвер.
-- **Asset-backed persistent data.** Тот же подход можно применять к настройкам, профилям, мета-прогрессии и сейвам, сохраняя shape данных в versioned asset-ах.
+- **Гибкий runtime authoring.** Система одинаково поддерживает и authored content, и runtime-created domain objects вроде профилей, настроек, meta и save state.
 
 ## Ключевые концепции
 
@@ -96,18 +97,37 @@ Assets/GameAssets/base/characters/player/player@1.2.0.asset
 - добавлять и заменять runtime-компоненты
 - отслеживать dirty-изменения по данным и по структуре компонентов
 - создавать ECS entity через `CreateEntity(...)`
+- держать runtime-link к `RuntimeStore`, editing-context и связанной `Entity`
 
 `SourceAssetGUID` нужен для source/presentation linkage и смежных runtime-кейсов. Он не используется как lineage версии.
 
+### `GameRuntimeCommand`
+
+`GameRuntimeCommand` — это runtime payload для командной стороны. Он использует тот же компонентный язык, что и `GameRuntimeObject`, но представляет не persistent-узел в дереве store-а, а намерение на исполнение.
+
+Практический смысл:
+
+- `GameAsset` может собирать команду через `CreateRuntimeCommand()`;
+- команда, как и объект, состоит из `GameRuntimeComponent`;
+- команды потребляются через `RuntimeCommandsBus`, а не хранятся как runtime world state внутри `RuntimeStore`.
+
+Это позволяет держать object state и gameplay intent в одном словаре данных, не заставляя команды вести себя как обычные runtime-объекты.
+
 ### `GameRuntimeComponent`
 
-`GameRuntimeComponent` — базовый класс runtime-компонента. Он определяет runtime shape объекта и при необходимости добавляет ECS-компоненты/буферы в `SetupForEntity(...)`.
+`GameRuntimeComponent` — базовый класс runtime-компонента. Он определяет runtime shape объекта и при необходимости участвует в ECS-проекции через:
+
+- `SetupForEntity(RuntimeStore store, EntityCommandBuffer ecb, GameRuntimeObject g, Entity e)`
+- `AddForEntity(RuntimeStore store, EntityCommandBuffer ecb, GameRuntimeObject g, Entity e)`
+- `RemoveFromEntity(RuntimeStore store, EntityCommandBuffer ecb, GameRuntimeObject g, Entity e)`
 
 Это важная граница:
 
 - если компонент только хранит данные, он может вообще не участвовать в ECS;
 - если компонент нужен для simulation, он добавляет нужные ECS-компоненты;
 - если компонент должен уходить в dirty/sync, он реализует соответствующие dirty-маркеры.
+
+В текущем контуре ECS-facing контракт строится вокруг `EntityCommandBuffer`, а не вокруг прямого доступа к `World`. Это нужно, чтобы структурные изменения были консистентны, когда `GameRuntimeObject` ещё работает с deferred entity из того же editing-scope.
 
 ## Архитектура данных
 
@@ -141,6 +161,57 @@ Assets/GameAssets/base/characters/player/player@1.2.0.asset
 - удаление узла с перепривязкой детей к родителю
 
 Это даёт не просто “список сущностей”, а полноценную иерархическую runtime-модель.
+
+### `RuntimeStores`
+
+`RuntimeStores` — это статическая data platform entry point.
+
+Она отвечает за:
+
+- хранение server-side `RuntimeStore`
+- хранение client-side `RuntimeStore`
+- net-direction metadata
+- ECS `World`, который используется при создании новых store-ов
+
+
+Перед созданием или резолвом store-ов нужно вызвать `RuntimeStores.SetupWorld(world)`. Если валидный `World` не зарегистрирован, создание store-а завершается fail-fast.
+
+Это низкоуровневый слой. Он знает сразу про оба realm и нужен инфраструктуре вроде репликации, ECS-linking и snapshot apply.
+
+### `RuntimeExecutionContext`
+
+`RuntimeExecutionContext` — это high-level execution selector поверх `RuntimeStores`.
+
+Он даёт:
+
+- текущую фазу исполнения
+- стабильную runtime role
+- active read realm
+- active write realm
+- флаг, можно ли сейчас мутировать store-ы
+- active dictionary store-ов для текущей фазы
+
+Это позволяет project-коду не хардкодить `ServerStores` и `ClientStores` напрямую.
+
+### `RS`
+
+`RS` — узкая high-level точка доступа к store-слою для приложенческого кода.
+
+Модель использования:
+
+- вызывается `RS.Bind(storeId)`
+- наружу отдаётся `IReadonlyBind<RuntimeStore>`
+- текущий active store читается через `bind.V`
+
+`RS` резолвит store через `RuntimeExecutionContext`, создаёт его при первом запросе в active realm и автоматически перепривязывает bind при смене execution side.
+
+Так как `RS` может создать store на первом bind, `RuntimeStores.SetupWorld(...)` должен отработать до того, как high-level модели или binders начнут резолвить store-ы.
+
+
+Рекомендуемое правило:
+
+- инфраструктурный код может явно работать с `RuntimeStores`;
+- модели, binders и view-слой должны предпочитать `RS`.
 
 ### Dirty model
 
@@ -187,6 +258,13 @@ GameAsset
 
 Важно, что ECS здесь не является источником истины. Источник истины — runtime model.
 
+Для ECS-проекции теперь есть два разных слоя:
+
+- мутация `GameRuntimeObject` / `GameRuntimeComponent`, которая меняет authoritative runtime data;
+- ECS projection hooks на `GameRuntimeComponent`, которые через `EntityCommandBuffer` материализуют или снимают ECS-side представление.
+
+Это специально не universal always-live two-way sync. Runtime data может оставаться authoritative в `RuntimeStore`, а высокочастотная simulation при этом может жить в DOTS.
+
 ### Asset -> Runtime -> View
 
 View-слой может подписываться на runtime-объекты через `GameRuntimeObjectView` и `GameRuntimeObjectsCollection`, не ломая separation между данными и отображением.
@@ -199,7 +277,7 @@ View-слой может подписываться на runtime-объекты 
 - предсказуемую сериализацию
 - возможность делать full snapshot и delta на одном и том же слое
 
-### Asset -> Runtime -> Persistence
+### Runtime -> Persistence
 
 Фреймворк хорошо подходит и для persistent data:
 
@@ -208,14 +286,14 @@ View-слой может подписываться на runtime-объекты 
 - `metas`
 - `saves`
 
-Рекомендуемый паттерн:
+Текущий рекомендуемый паттерн:
 
-- отделять persistent stores от gameplay stores
-- задавать shape persistent-объектов через `GameAsset`, а не ручной `new ...`
-- падать fail-fast, если нужный bootstrap asset не задан
-- решать несовместимые изменения через новую версию asset-а или migration code
+- рассматривать persistent data как обычные именованные `RuntimeStore`; отдельного special-case слоя “только для persistence” фреймворк не вводит;
+- использовать authored asset-ы только там, где данные действительно выигрывают от versioned content authoring; профили, настройки, meta и похожие domain-данные могут создаваться кодом как runtime roots;
+- строить topology store-ов по предметной области и паттернам доступа, а не по искусственному делению на “persistent” и “gameplay”;
+- policy миграций и disk/cloud save держать на уровне проекта.
 
-В самом `DingoGameObjectsCMS` нет готового disk/cloud persistence service, но все базовые примитивы для asset-backed persistent data уже есть.
+В самом `DingoGameObjectsCMS` нет готового disk/cloud persistence service, но он уже даёт runtime model, serialization primitives и store-level change tracking, на которых такой слой можно собрать.
 
 ## Сериализация
 
@@ -353,6 +431,7 @@ Assets/StreamingAssets/runtime_component_types.json
 ## Ограничения и trade-offs
 
 - фреймворк сознательно добавляет свой runtime-слой поверх ECS, а не заменяет его
+- high-level код должен идти через `RuntimeExecutionContext` / `RS`, а low-level infrastructure всё ещё может работать с explicit realm
 - serialization manifest нужно держать в актуальном состоянии
 - persistent storage service не входит в поставку
 - Mirror-слой опционален, но при его использовании нужно соблюдать контракт snapshot/delta
@@ -371,4 +450,6 @@ Assets/StreamingAssets/runtime_component_types.json
 
 Если упростить до одной фразы:
 
-> `DingoGameObjectsCMS` превращает `GameAsset` в единый source of truth для runtime state, ECS integration, replication, modding и asset-backed persistence.
+> `DingoGameObjectsCMS` превращает `GameAsset` и `GameRuntimeObject` в общий source of truth для runtime state, ECS integration, replication, modding и persistence.
+
+
