@@ -5,9 +5,29 @@ using UnityEngine.Scripting;
 
 namespace DingoGameObjectsCMS.RuntimeObjects.Objects
 {
-    [Serializable, Preserve, HideInTypeMenu]
-    public class GameRuntimeComponent
+    public abstract class GameRuntimeComponent<TSelf> : GameRuntimeComponent where TSelf : GameRuntimeComponent<TSelf>, new()
     {
-        public virtual void SetupForEntity(RuntimeStore store, EntityCommandBuffer ecb, GameRuntimeObject g, Entity e) {}
+        public override void SetupForEntity(RuntimeStore store, EntityCommandBuffer ecb, GameRuntimeObject g, Entity e)
+        {
+            ecb.AddComponent(e, (TSelf)this);
+        }
+
+        public override void AddForEntity(RuntimeStore store, EntityCommandBuffer ecb, GameRuntimeObject g, Entity e)
+        {
+            ecb.AddComponent(e, (TSelf)this);
+        }
+
+        public override void RemoveFromEntity(RuntimeStore store, EntityCommandBuffer ecb, GameRuntimeObject g, Entity e)
+        {
+            ecb.RemoveComponent<TSelf>(e);
+        }
+    }
+
+    [Serializable, Preserve, HideInTypeMenu]
+    public class GameRuntimeComponent : IComponentData
+    {
+        public virtual void SetupForEntity(RuntimeStore store, EntityCommandBuffer ecb, GameRuntimeObject g, Entity e) { }
+        public virtual void AddForEntity(RuntimeStore store, EntityCommandBuffer ecb, GameRuntimeObject g, Entity e) { }
+        public virtual void RemoveFromEntity(RuntimeStore store, EntityCommandBuffer ecb, GameRuntimeObject g, Entity e) { }
     }
 }

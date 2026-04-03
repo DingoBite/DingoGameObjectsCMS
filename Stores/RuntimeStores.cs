@@ -3,6 +3,7 @@ using System.Linq;
 using Bind;
 using DingoGameObjectsCMS.RuntimeObjects.Stores;
 using Unity.Collections;
+using Unity.Entities;
 using UnityEngine;
 #if UNITY_EDITOR
 using UnityEditor;
@@ -36,6 +37,7 @@ namespace DingoGameObjectsCMS.Stores
         private static readonly BindDict<FixedString32Bytes, RuntimeStore> _clientStores = new();
 
         private static readonly Dictionary<FixedString32Bytes, StoreNetDir> _netDirById = new();
+        private static World _world;
 
         public static IReadonlyBind<RuntimeExecutionRole> Role => _role;
         public static RuntimeExecutionRole Current => _role.V;
@@ -48,6 +50,11 @@ namespace DingoGameObjectsCMS.Stores
         static RuntimeStores()
         {
             ResetState();
+        }
+        
+        public static void SetupWorld(World world)
+        {
+            _world = world;
         }
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
@@ -142,7 +149,7 @@ namespace DingoGameObjectsCMS.Stores
                 return existing;
             }
 
-            var store = new RuntimeStore(key, realm);
+            var store = new RuntimeStore(key, realm, _world);
             dict[key] = store;
             bind.V[key] = store;
             bind.V = bind.V;

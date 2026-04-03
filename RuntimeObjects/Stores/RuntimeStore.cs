@@ -18,8 +18,10 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
         public readonly FixedString32Bytes Id;
         public readonly StoreRealm Realm;
 
+        private World _world;
         private long _lastId;
         private uint _order;
+
 
         private readonly BindDict<long, GameRuntimeObject> _all = new();
         private readonly BindDict<long, GameRuntimeObject> _parents = new();
@@ -44,22 +46,24 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
         private readonly List<ObjectComponentDirty> _objectComponentsChanges = new();
         private readonly List<ObjectStructDirty> _objectStructureChanges = new();
 
-        public RuntimeStore(FixedString32Bytes id, StoreRealm realm)
+        public RuntimeStore(FixedString32Bytes id, StoreRealm realm, World world)
         {
             Id = id;
             Realm = realm;
+            _world = world;
         }
 
         public IReadonlyBind<IReadOnlyDictionary<long, GameRuntimeObject>> All => _all;
         public IReadonlyBind<IReadOnlyDictionary<long, GameRuntimeObject>> Parents => _parents;
         public bool ReplicationSuppressed => _suppressReplicationThisFlush;
+        public World World => _world;
 
         public event Action<NativeArray<RuntimeStructureDirty>> StructureChanges;
         public event Action<NativeArray<ObjectStructDirty>> ComponentStructureChanges;
         public event Action<NativeArray<ObjectComponentDirty>> ComponentChanges;
 
         private uint NextOrder() => ++_order;
-
+        
         private GameRuntimeObject CreateDetached()
         {
             var id = _lastId++;
@@ -70,6 +74,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
                 Realm = Realm
             };
 
+            obj.LinkRuntimeContext(this, _world);
             _all.V[id] = obj;
             MarkTouchedUpToRoot(id);
             return obj;
@@ -89,7 +94,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
             return child;
         }
 
-        public bool TryUpsertNetObject(GameRuntimeObject value)
+public bool TryUpsertNetObject(GameRuntimeObject value)
         {
             if (value == null || value.InstanceId < 0)
                 return false;
@@ -97,9 +102,18 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
             var id = value.InstanceId;
             value.StoreId = Id;
             value.Realm = Realm;
+            value.LinkRuntimeContext(this, _world);
 
             if (_all.V.TryGetValue(id, out var prev) && prev != null && !ReferenceEquals(prev, value))
+            {
                 prev.Destroy();
+                prev.ClearRuntimeContext();
+            }
+
+            if (_entityById.TryGetValue(id, out var entity))
+                value.LinkToEntity(entity);
+            else
+                value.ClearEntityLink();
 
             _all.V[id] = value;
 
@@ -129,10 +143,13 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
 
         public bool Remove(long id) => Remove(id, RemoveMode.Subtree, out _);
         public bool Remove(long id, out Entity entity) => Remove(id, RemoveMode.Subtree, out entity);
+        public bool Remove(long id, RemoveMode mode, out Entity entity) => RemoveInternal(id, mode, out entity, true, null);
 
-        public bool Remove(long id, RemoveMode mode, out Entity entity) => RemoveInternal(id, mode, out entity, recordOp: true);
+        public bool Remove(long id, EntityCommandBuffer ecb) => Remove(id, RemoveMode.Subtree, ecb, out _);
+        public bool Remove(long id, EntityCommandBuffer ecb, out Entity entity) => Remove(id, RemoveMode.Subtree, ecb, out entity);
+        public bool Remove(long id, RemoveMode mode, EntityCommandBuffer ecb, out Entity entity) => RemoveInternal(id, mode, out entity, true, ecb);
 
-        private bool RemoveInternal(long id, RemoveMode mode, out Entity entity, bool recordOp)
+        private bool RemoveInternal(long id, RemoveMode mode, out Entity entity, bool recordOp, EntityCommandBuffer? externalEcb)
         {
             var wasPublished = IsPublished(id);
 
@@ -140,16 +157,19 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
                 RecordOp(RuntimeStructureDirty.Remove(id, mode, NextOrder()));
 
             _parents.V.Remove(id);
-            TryUnlinkEntity(id, out entity);
+            entity = Entity.Null;
 
             MarkTouchedUpToRoot(id);
 
             if (!_all.V.TryGetValue(id, out var obj))
             {
+                TryUnlinkEntity(id, out entity);
                 DetachChildInternal(id);
                 RemoveChildrenIndexOnly(id);
                 return false;
             }
+
+            TryGetEntity(id, out entity);
 
             var hadParent = _parentByChild.TryGetValue(id, out var parentId);
             DetachChildInternal(id);
@@ -169,7 +189,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
                     case RemoveMode.Subtree:
                         foreach (var child in toProcess)
                         {
-                            RemoveInternal(child, RemoveMode.Subtree, out _, recordOp: false);
+                            RemoveInternal(child, RemoveMode.Subtree, out _, recordOp: false, externalEcb);
                         }
 
                         break;
@@ -205,9 +225,27 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
             obj.Destroy();
             _all.V.Remove(id);
 
+            if (entity != Entity.Null)
+            {
+                if (externalEcb.HasValue)
+                {
+                    var buffer = externalEcb.Value;
+                    buffer.DestroyEntity(entity);
+                }
+                else if (_world != null && _world.IsCreated)
+                {
+                    var buffer = _world.TakeGRCEditingECB();
+                    buffer.DestroyEntity(entity);
+                }
+            }
+
+            UnlinkEntity(id);
+            obj.ClearRuntimeContext();
             ScheduleFlush();
             return true;
         }
+
+
 
         public void BeginEntityLinkPass()
         {
@@ -244,7 +282,9 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
                 return;
 
             foreach (var id in staleIds)
+            {
                 UnlinkEntity(id);
+            }
         }
 
         public void LinkEntity(long id, Entity entity)
@@ -263,6 +303,8 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
 
             if (_entityLinkPassActive)
                 _seenEntityLinks.Add(id);
+            if (_all.V.TryGetValue(id, out var o))
+                o.LinkToEntity(entity);
         }
 
         public bool TryGetEntity(long id, out Entity e) => _entityById.TryGetValue(id, out e);
@@ -387,7 +429,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
             ScheduleFlush();
             return true;
         }
-        
+
         public void BeginNetApply()
         {
             _suppressReplicationThisFlush = true;
@@ -531,13 +573,17 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
             return true;
         }
 
-        private bool TryUnlinkEntity(long id, out Entity entity)
+private bool TryUnlinkEntity(long id, out Entity entity)
         {
             if (!_entityById.Remove(id, out entity))
                 return false;
 
             _idByEntity.Remove(entity);
             _seenEntityLinks.Remove(id);
+
+            if (_all.V.TryGetValue(id, out var obj))
+                obj.ClearEntityLink();
+
             return true;
         }
 

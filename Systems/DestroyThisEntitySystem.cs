@@ -23,7 +23,7 @@ namespace DingoGameObjectsCMS.Systems
             {
                 ecb.DestroyEntity(entity);
                 var store = instance.ValueRO.StoreId.ResolveStore(realm.ValueRO.Realm);
-                store?.Remove(instance.ValueRO.Id);
+                store?.Remove(instance.ValueRO.Id, ecb);
             }
             
             ecb.Playback(EntityManager);

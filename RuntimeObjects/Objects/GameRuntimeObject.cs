@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Runtime.Serialization;
+using DingoGameObjectsCMS;
 using DingoGameObjectsCMS.RuntimeObjects.Stores;
 using Newtonsoft.Json;
 using Unity.Collections;
@@ -18,17 +19,56 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
         public Hash128 AssetGUID;
         public Hash128 SourceAssetGUID;
 
-        [SerializeReference, JsonProperty("Components", ItemTypeNameHandling = TypeNameHandling.Auto)] private List<GameRuntimeComponent> _components = new();
+        [SerializeReference, JsonProperty("Components", ItemTypeNameHandling = TypeNameHandling.Auto)]
+        private List<GameRuntimeComponent> _components = new();
+
         [NonSerialized, JsonIgnore] private Dictionary<Type, GameRuntimeComponent> _componentsByType = new();
         [NonSerialized, JsonIgnore] private Dictionary<uint, GameRuntimeComponent> _componentsById = new();
         [NonSerialized, JsonIgnore] private Dictionary<uint, ComponentDirty> _componentsChanges = new();
         [NonSerialized, JsonIgnore] private Dictionary<uint, ComponentStructDirty> _structureChanges = new();
         [NonSerialized, JsonIgnore] private bool _isDestroyed;
+        [NonSerialized, JsonIgnore] private bool _isEcbEntity;
+        [NonSerialized, JsonIgnore] private int _grcEditingToken;
+        [NonSerialized, JsonIgnore] private bool _hasEntityProjection;
+        [NonSerialized, JsonIgnore] private Entity _entity;
+
+        [NonSerialized, JsonIgnore] private RuntimeStore _runtimeStore;
+        [NonSerialized, JsonIgnore] private World _world;
 
         [JsonIgnore] public IReadOnlyDictionary<uint, ComponentDirty> ComponentsChanges => _componentsChanges;
         [JsonIgnore] public IReadOnlyDictionary<uint, ComponentStructDirty> StructureChanges => _structureChanges;
         [JsonIgnore] public IReadOnlyList<GameRuntimeComponent> Components => _components;
         [JsonIgnore] public RuntimeInstance RuntimeInstance => new() { Id = InstanceId, StoreId = StoreId };
+
+        public void LinkRuntimeContext(RuntimeStore runtimeStore, World world)
+        {
+            _runtimeStore = runtimeStore;
+            _world = world;
+        }
+
+        public void LinkToEntity(Entity entity)
+        {
+            _entity = entity;
+            _isEcbEntity = false;
+            _grcEditingToken = 0;
+            _hasEntityProjection = true;
+        }
+
+        public void ClearEntityLink()
+        {
+            _entity = Entity.Null;
+            _isEcbEntity = false;
+            _grcEditingToken = 0;
+        }
+
+
+        public void ClearRuntimeContext()
+        {
+            _runtimeStore = null;
+            _world = null;
+            _hasEntityProjection = false;
+            ClearEntityLink();
+        }
 
         public GameRuntimeComponent GetById(uint typeId)
         {
@@ -47,7 +87,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
             EnsureCache();
             return _componentsByType.ContainsKey(typeof(T));
         }
-        
+
         public T TakeRO<T>() where T : GameRuntimeComponent
         {
             EnsureCache();
@@ -64,28 +104,52 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
             return (T)c;
         }
 
-        public Entity CreateEntity(RuntimeStore runtimeStore, EntityCommandBuffer ecb)
+        public Entity CreateEntity()
         {
-            var entity = ecb.CreateEntity();
+            var ecb = _world.TakeGRCEditingECB(out var ecbToken);
 
-            ecb.AddComponent(entity, new AssetLink { AssetGUID = AssetGUID });
+            _hasEntityProjection = true;
+            _isEcbEntity = true;
+            _grcEditingToken = ecbToken;
+            _entity = ecb.CreateEntity();
+
+            ecb.AddComponent(_entity, new AssetLink { AssetGUID = AssetGUID });
             var source = SourceAssetGUID.isValid ? SourceAssetGUID : GUID;
-            ecb.AddComponent(entity, new SourceAssetLink { AssetGUID = source });
+            ecb.AddComponent(_entity, new SourceAssetLink { AssetGUID = source });
             if (SourceAssetGUID.isValid)
-                ecb.AddComponent(entity, new AssetPresentationTag());
-            ecb.AddComponent(entity, new RuntimeRealm { Realm = Realm });
-            ecb.AddComponent(entity, RuntimeInstance);
+                ecb.AddComponent(_entity, new AssetPresentationTag());
+            ecb.AddComponent(_entity, new RuntimeRealm { Realm = Realm });
+            ecb.AddComponent(_entity, RuntimeInstance);
 
             if (Components == null)
-                return entity;
+                return _entity;
 
             foreach (var c in Components)
             {
-                c?.SetupForEntity(runtimeStore, ecb, this, entity);
+                c?.SetupForEntity(_runtimeStore, ecb, this, _entity);
             }
 
-            return entity;
+            return _entity;
         }
+
+        private bool TryTakeEditingEcb(out EntityCommandBuffer ecb)
+        {
+            if (!_hasEntityProjection)
+            {
+                ecb = default;
+                return false;
+            }
+
+            if (_entity == Entity.Null)
+                throw new InvalidOperationException($"GameRuntimeObject {InstanceId} in store '{StoreId}' lost its entity link.");
+
+            ecb = _world.TakeGRCEditingECB(out var ecbToken);
+            if (_isEcbEntity && ecbToken != _grcEditingToken)
+                throw new InvalidOperationException($"GameRuntimeObject {InstanceId} in store '{StoreId}' is still bound to a deferred ECB entity from another editing scope.");
+
+            return true;
+        }
+
 
         public void AddOrReplaceById(uint typeId, GameRuntimeComponent component)
         {
@@ -95,20 +159,36 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
             var keyType = component.GetType();
             EnsureCache();
 
-            if (_componentsByType.TryGetValue(keyType, out var existing) && existing != null)
+            var shouldSyncEntity = TryTakeEditingEcb(out var ecb);
+            var hadExisting = _componentsByType.TryGetValue(keyType, out var existing) && existing != null;
+            var existingWasInList = false;
+
+            if (hadExisting)
             {
                 var idx = _components.FindIndex(c => ReferenceEquals(c, existing));
                 if (idx >= 0)
                 {
                     _components[idx] = component;
-                    MarkComponentDirty(typeId);
+                    existingWasInList = true;
                 }
                 else
                 {
                     _components.Add(component);
-                    MarkComponentStructDirty(typeId, keyType, CompStructOpKind.Add);
-                    MarkComponentDirty(typeId);
                 }
+
+                if (!ReferenceEquals(existing, component))
+                {
+                    if (shouldSyncEntity)
+                        existing.RemoveFromEntity(_runtimeStore, ecb, this, _entity);
+
+                    if (existing is IDisposable disposable)
+                        disposable.Dispose();
+                }
+
+                if (!existingWasInList)
+                    MarkComponentStructDirty(typeId, keyType, CompStructOpKind.Add);
+
+                MarkComponentDirty(typeId);
             }
             else
             {
@@ -120,6 +200,9 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
             _componentsByType[keyType] = component;
             _componentsById[typeId] = component;
             _isDestroyed = false;
+
+            if (shouldSyncEntity)
+                component.AddForEntity(_runtimeStore, ecb, this, _entity);
         }
 
         public void AddOrReplace<T>(T component) where T : GameRuntimeComponent
@@ -140,7 +223,12 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
             if (!_componentsById.TryGetValue(typeId, out var c) || c == null)
                 return false;
 
+            var shouldSyncEntity = TryTakeEditingEcb(out var ecb);
             var keyType = c.GetType();
+
+            if (shouldSyncEntity)
+                c.RemoveFromEntity(_runtimeStore, ecb, this, _entity);
+
             _componentsByType.Remove(keyType);
             _componentsById.Remove(typeId);
             _components.Remove(c);
@@ -167,6 +255,15 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
 
             if (_components == null)
                 return;
+
+            var shouldSyncEntity = TryTakeEditingEcb(out var ecb);
+            if (shouldSyncEntity)
+            {
+                foreach (var component in _components)
+                {
+                    component?.RemoveFromEntity(_runtimeStore, ecb, this, _entity);
+                }
+            }
 
             foreach (var component in _components)
             {
@@ -262,6 +359,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
 
         [OnDeserialized]
         private void OnDeserialized(StreamingContext _) => RebuildCache();
+
         void ISerializationCallbackReceiver.OnBeforeSerialize() { }
         void ISerializationCallbackReceiver.OnAfterDeserialize() => RebuildCache();
     }
