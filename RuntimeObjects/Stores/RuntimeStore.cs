@@ -151,6 +151,35 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
 
         public bool TryTakeRO(long id, out GameRuntimeObject gameRuntimeObject) => _all.V.TryGetValue(id, out gameRuntimeObject);
 
+        public void SetDirty<T>(long id) where T : GameRuntimeComponent
+        {
+            SetDirty(id, typeof(T).GetId());
+        }
+
+        public void SetDirty<T>(RuntimeInstance runtimeInstance) where T : GameRuntimeComponent
+        {
+            SetDirty(runtimeInstance, typeof(T).GetId());
+        }
+
+        public void SetDirty(RuntimeInstance runtimeInstance, uint compTypeId)
+        {
+            if (!runtimeInstance.StoreId.Equals(Id))
+                throw new InvalidOperationException($"RuntimeStore '{Id}' cannot mark dirty a runtime instance from store '{runtimeInstance.StoreId}'.");
+
+            SetDirty(runtimeInstance.Id, compTypeId);
+        }
+
+        public void SetDirty(long id, uint compTypeId)
+        {
+            if (!_all.V.TryGetValue(id, out var obj))
+                throw new InvalidOperationException($"RuntimeStore '{Id}' cannot mark dirty component type id {compTypeId} for missing object {id}.");
+
+            if (!obj.TryGetById(compTypeId, out _))
+                throw new InvalidOperationException($"RuntimeStore '{Id}' cannot mark dirty component type id {compTypeId} for object {id}.");
+
+            obj.SetDirtyById(compTypeId);
+        }
+
         public bool Remove(long id) => Remove(id, RemoveMode.Subtree, out _);
         public bool Remove(long id, out Entity entity) => Remove(id, RemoveMode.Subtree, out entity);
         public bool Remove(long id, RemoveMode mode, out Entity entity) => RemoveInternal(id, mode, out entity, true, null);
@@ -549,6 +578,11 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
             }
 
             return cur;
+        }
+
+        internal void NotifyObjectDirty(long id)
+        {
+            MarkTouchedUpToRoot(id);
         }
 
         private void MarkTouchedUpToRoot(long id)

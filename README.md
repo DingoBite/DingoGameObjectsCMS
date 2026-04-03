@@ -99,6 +99,10 @@ It also supports:
 - creating ECS entities through `CreateEntity(...)`
 - holding runtime linkage to `RuntimeStore`, ECS editing context, and linked `Entity`
 
+Dirty rule:
+
+- `TakeRW<T>()` marks the component dirty automatically;
+- if a system mutates a `GameRuntimeComponent` through an already captured reference, query result, or `RuntimeInstance` lookup, it must explicitly call `SetDirty(...)` on `GameRuntimeObject` or `RuntimeStore`.
 `SourceAssetGUID` is used for source/presentation linkage and related runtime scenarios. It is not version lineage metadata.
 
 ### `GameRuntimeCommand`
@@ -226,6 +230,15 @@ Practical meaning:
 - local-only components do not need to generate network noise;
 - store structure and component data exist as separate change channels.
 
+
+Explicit dirty notification:
+
+- `GameRuntimeObject.SetDirty<T>()`
+- `GameRuntimeObject.SetDirtyById(...)`
+- `RuntimeStore.SetDirty<T>(instanceId)`
+- `RuntimeStore.SetDirty<T>(runtimeInstance)`
+
+Use this when data was changed outside the normal `TakeRW<T>()` path. Typical case: an ECS or bridge system resolves a `GRC`, mutates its fields directly, and then explicitly notifies the store that component data changed.
 ### Realm and network direction
 
 The framework supports realm separation for stores:
@@ -446,6 +459,7 @@ This approach is especially strong when you care about several of the following:
 If reduced to one sentence:
 
 > `DingoGameObjectsCMS` turns `GameAsset` and `GameRuntimeObject` into a shared source of truth for runtime state, ECS integration, replication, modding, and persistence.
+
 
 
 

@@ -276,6 +276,30 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
             }
         }
 
+        public void SetDirty<T>() where T : GameRuntimeComponent
+        {
+            var typeId = typeof(T).GetId();
+            SetDirtyById(typeId);
+        }
+
+        public void SetDirty(GameRuntimeComponent component)
+        {
+            if (component == null)
+                throw new InvalidOperationException($"GameRuntimeObject {InstanceId} in store '{StoreId}' cannot mark a null component dirty.");
+
+            SetDirtyById(component.GetType().GetId());
+        }
+
+        public void SetDirtyById(uint compTypeId)
+        {
+            EnsureCache();
+            if (!_componentsById.ContainsKey(compTypeId))
+                throw new InvalidOperationException($"GameRuntimeObject {InstanceId} in store '{StoreId}' does not contain component type id {compTypeId}.");
+
+            MarkComponentDirty(compTypeId);
+            _runtimeStore?.NotifyObjectDirty(InstanceId);
+        }
+
         public void ClearDirty()
         {
             _componentsChanges.Clear();

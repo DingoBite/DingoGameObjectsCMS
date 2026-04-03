@@ -99,6 +99,10 @@ Assets/GameAssets/base/characters/player/player@1.2.0.asset
 - создавать ECS entity через `CreateEntity(...)`
 - держать runtime-link к `RuntimeStore`, editing-context и связанной `Entity`
 
+Правило dirty:
+
+- `TakeRW<T>()` автоматически помечает компонент как dirty;
+- если система мутирует `GameRuntimeComponent` через уже захваченную ссылку, результат выборки или `RuntimeInstance` lookup, она обязана явно вызвать `SetDirty(...)` на `GameRuntimeObject` или `RuntimeStore`.
 `SourceAssetGUID` нужен для source/presentation linkage и смежных runtime-кейсов. Он не используется как lineage версии.
 
 ### `GameRuntimeCommand`
@@ -226,6 +230,15 @@ Assets/GameAssets/base/characters/player/player@1.2.0.asset
 - компоненты, важные только локально, не обязаны шуметь в сети;
 - структура store-а и данные компонентов живут как разные каналы изменений.
 
+
+Явное dirty-уведомление:
+
+- `GameRuntimeObject.SetDirty<T>()`
+- `GameRuntimeObject.SetDirtyById(...)`
+- `RuntimeStore.SetDirty<T>(instanceId)`
+- `RuntimeStore.SetDirty<T>(runtimeInstance)`
+
+Это используется, когда данные были изменены вне обычного пути `TakeRW<T>()`. Типичный кейс: ECS- или bridge-система находит `GRC`, мутирует его поля напрямую и потом явно сообщает store-у, что данные компонента изменились.
 ### Realm и направление сети
 
 Фреймворк поддерживает разделение store-ов по realm:
@@ -451,5 +464,6 @@ Assets/StreamingAssets/runtime_component_types.json
 Если упростить до одной фразы:
 
 > `DingoGameObjectsCMS` превращает `GameAsset` и `GameRuntimeObject` в общий source of truth для runtime state, ECS integration, replication, modding и persistence.
+
 
 
