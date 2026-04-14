@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using Bind;
 using DingoGameObjectsCMS.RuntimeObjects.Stores;
@@ -41,6 +42,15 @@ namespace DingoGameObjectsCMS.Stores
 #endif
 
         public static IReadonlyBind<RuntimeStore> Bind(FixedString32Bytes key) => GetActiveRuntimeStoreBind(key);
+
+        public static RuntimeStore Get(FixedString32Bytes key) => ResolveStore(key);
+        
+        public static RuntimeStore Set(RuntimeStore store)
+        {
+            if (store == null)
+                throw new ArgumentNullException(nameof(store));
+            return RuntimeStores.SetRuntimeStore(store);
+        }
 
         private static Bind<RuntimeStore> GetActiveRuntimeStoreBind(FixedString32Bytes key)
         {

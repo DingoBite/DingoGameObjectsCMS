@@ -1,6 +1,6 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
+
 using Bind;
 using DingoGameObjectsCMS.RuntimeObjects.Objects;
 using DingoProjectAppStructure.Core.Model;
@@ -14,13 +14,16 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
     public class RuntimeStore : AppModelBase
     {
         public const int UPDATE_ORDER = 1_000_000;
-
+        public const long StoreRootObjectId = 0;
+        public const long FirstUserObjectId = StoreRootObjectId + 1;
+        
         public readonly FixedString32Bytes Id;
         public readonly StoreRealm Realm;
 
         private World _world;
-        private long _lastId;
+        private long _lastId = FirstUserObjectId;
         private uint _order;
+        private GameRuntimeObject _storeRootObject;
 
 
         private readonly BindDict<long, GameRuntimeObject> _all = new();
@@ -78,15 +81,74 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
         public bool ReplicationSuppressed => _suppressReplicationThisFlush;
         public World World => _world;
 
+        public static bool IsStoreRootObject(long id) => id == StoreRootObjectId;
+
+        public bool TryGetStoreRoot(out GameRuntimeObject storeRoot)
+        {
+            if (_storeRootObject != null &&
+                _storeRootObject.InstanceId == StoreRootObjectId &&
+                _all.V.TryGetValue(StoreRootObjectId, out var cachedRoot) &&
+                ReferenceEquals(cachedRoot, _storeRootObject))
+            {
+                storeRoot = _storeRootObject;
+                return true;
+            }
+
+            if (_all.V.TryGetValue(StoreRootObjectId, out var root))
+            {
+                _storeRootObject = root;
+                storeRoot = root;
+                return true;
+            }
+
+            _storeRootObject = null;
+            storeRoot = null;
+            return false;
+        }
+
+        public GameRuntimeObject GetOrCreateStoreRoot()
+        {
+            if (TryGetStoreRoot(out var storeRoot))
+            {
+                if (!IsPublished(StoreRootObjectId))
+                    AddToRoot(StoreRootObjectId);
+
+                return storeRoot;
+            }
+
+            storeRoot = CreateDetached(StoreRootObjectId);
+            AddToRoot(storeRoot.InstanceId);
+            _storeRootObject = storeRoot;
+            return storeRoot;
+        }
+
+        public IEnumerable<GameRuntimeObject> EnumerateContentRoots()
+        {
+            foreach (var pair in _parents.V)
+            {
+                if (IsStoreRootObject(pair.Key))
+                    continue;
+
+                yield return pair.Value;
+            }
+        }
+
         public event Action<NativeArray<RuntimeStructureDirty>> StructureChanges;
         public event Action<NativeArray<ObjectStructDirty>> ComponentStructureChanges;
         public event Action<NativeArray<ObjectComponentDirty>> ComponentChanges;
 
         private uint NextOrder() => ++_order;
 
-        private GameRuntimeObject CreateDetached()
+        private GameRuntimeObject CreateDetached() => CreateDetached(_lastId++);
+
+        private GameRuntimeObject CreateDetached(long id)
         {
-            var id = _lastId++;
+            if (id < 0)
+                throw new InvalidOperationException($"RuntimeStore '{Id}' cannot create a runtime object with negative id {id}.");
+
+            if (_all.V.ContainsKey(id) || _entityById.ContainsKey(id))
+                throw new InvalidOperationException($"RuntimeStore '{Id}' already contains runtime object id {id}.");
+
             var world = RequireWorld();
             var obj = new GameRuntimeObject
             {
@@ -97,6 +159,13 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
 
             obj.LinkRuntimeContext(this, world);
             _all.V[id] = obj;
+
+            if (_lastId <= id)
+                _lastId = id + 1;
+
+            if (IsStoreRootObject(id))
+                _storeRootObject = obj;
+
             MarkTouchedUpToRoot(id);
             return obj;
         }
@@ -132,6 +201,9 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
 
             if (_lastId <= id)
                 _lastId = id + 1;
+
+            if (IsStoreRootObject(id))
+                _storeRootObject = value;
 
             MarkTouchedUpToRoot(id);
             ScheduleFlush();
@@ -202,6 +274,9 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
 
             if (!_all.V.TryGetValue(id, out var obj))
             {
+                if (IsStoreRootObject(id))
+                    _storeRootObject = null;
+
                 TryUnlinkEntity(id, out entity);
                 DetachChildInternal(id);
                 RemoveChildrenIndexOnly(id);
@@ -263,6 +338,9 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
 
             obj.Destroy();
             _all.V.Remove(id);
+
+            if (IsStoreRootObject(id))
+                _storeRootObject = null;
 
             if (entity != Entity.Null)
             {

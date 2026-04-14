@@ -1,3 +1,5 @@
+using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using Bind;
@@ -51,8 +53,8 @@ namespace DingoGameObjectsCMS.Stores
         {
             ResetState();
         }
-        
-public static void SetupWorld(World world)
+
+        public static void SetupWorld(World world)
         {
             if (world == null || !world.IsCreated)
                 throw new System.InvalidOperationException("RuntimeStores requires a valid ECS World.");
@@ -70,7 +72,7 @@ public static void SetupWorld(World world)
             }
         }
 
-private static World RequireWorld()
+        private static World RequireWorld()
         {
             if (_world == null || !_world.IsCreated)
                 throw new System.InvalidOperationException("RuntimeStores requires SetupWorld(...) before store creation.");
@@ -101,7 +103,7 @@ private static World RequireWorld()
         }
 #endif
 
-public static void ResetState()
+        public static void ResetState()
         {
             _serverStoresById.Clear();
             _clientStoresById.Clear();
@@ -152,8 +154,34 @@ public static void ResetState()
 
             return GetDict(realm).Keys;
         }
+        
+        public static RuntimeStore SetRuntimeStore(RuntimeStore store, StoreNetDir dir = StoreNetDir.None, bool ensurePair = false)
+        {
+            if (store == null)
+                throw new ArgumentNullException(nameof(store));
 
-public static RuntimeStore GetOrAddRuntimeStore(FixedString32Bytes key, StoreNetDir dir = StoreNetDir.None, StoreRealm realm = StoreRealm.Server, bool ensurePair = false)
+            var key = store.Id;
+            var realm = store.Realm;
+            
+            store.LinkWorld(RequireWorld());
+
+            var dict = GetDict(realm);
+            var bind = GetBind(realm);
+
+            dict[key] = store;
+            bind.V[key] = store;
+            bind.V = bind.V;
+
+            if (dir != StoreNetDir.None)
+                _netDirById[key] = dir;
+
+            if (ensurePair)
+                EnsureOtherRealmExists(key);
+
+            return store;
+        }
+
+        public static RuntimeStore GetOrAddRuntimeStore(FixedString32Bytes key, StoreNetDir dir = StoreNetDir.None, StoreRealm realm = StoreRealm.Server, bool ensurePair = false)
         {
             var dict = GetDict(realm);
             var bind = GetBind(realm);
