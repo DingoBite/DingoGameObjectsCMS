@@ -161,6 +161,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
             EnsureCache();
 
             var shouldSyncEntity = TryTakeEditingEcb(out var ecb);
+            var projectedEntity = shouldSyncEntity ? _entity : Entity.Null;
             var hadExisting = _componentsByType.TryGetValue(keyType, out var existing) && existing != null;
             var existingWasInList = false;
 
@@ -179,8 +180,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
 
                 if (!ReferenceEquals(existing, component))
                 {
-                    if (shouldSyncEntity)
-                        existing.RemoveFromEntity(_runtimeStore, ecb, this, _entity);
+                    existing.DestroyForRuntime(_runtimeStore, shouldSyncEntity ? ecb : default, this, projectedEntity);
 
                     if (existing is IDisposable disposable)
                         disposable.Dispose();
@@ -203,7 +203,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
             _isDestroyed = false;
 
             if (shouldSyncEntity)
-                component.AddForEntity(_runtimeStore, ecb, this, _entity);
+                component.AddForEntity(_runtimeStore, ecb, this, projectedEntity);
         }
 
         public void AddOrReplace<T>(T component) where T : GameRuntimeComponent
@@ -225,10 +225,10 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
                 return false;
 
             var shouldSyncEntity = TryTakeEditingEcb(out var ecb);
+            var projectedEntity = shouldSyncEntity ? _entity : Entity.Null;
             var keyType = c.GetType();
 
-            if (shouldSyncEntity)
-                c.RemoveFromEntity(_runtimeStore, ecb, this, _entity);
+            c.DestroyForRuntime(_runtimeStore, shouldSyncEntity ? ecb : default, this, projectedEntity);
 
             _componentsByType.Remove(keyType);
             _componentsById.Remove(typeId);
@@ -258,12 +258,10 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
                 return;
 
             var shouldSyncEntity = TryTakeEditingEcb(out var ecb);
-            if (shouldSyncEntity)
+            var projectedEntity = shouldSyncEntity ? _entity : Entity.Null;
+            foreach (var component in _components)
             {
-                foreach (var component in _components)
-                {
-                    component?.RemoveFromEntity(_runtimeStore, ecb, this, _entity);
-                }
+                component?.DestroyForRuntime(_runtimeStore, shouldSyncEntity ? ecb : default, this, projectedEntity);
             }
 
             foreach (var component in _components)
@@ -388,4 +386,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
         void ISerializationCallbackReceiver.OnAfterDeserialize() => RebuildCache();
     }
 }
+
+
+
 

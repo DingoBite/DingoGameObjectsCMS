@@ -81,13 +81,34 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
             Retired = true;
             _entityLinkPassActive = false;
             _seenEntityLinks.Clear();
+
+            var objects = new List<GameRuntimeObject>(_all.V.Values);
+            foreach (var obj in objects)
+            {
+                if (obj == null)
+                    continue;
+
+                obj.Destroy();
+                obj.ClearRuntimeContext();
+            }
+
             _entityById.Clear();
             _idByEntity.Clear();
-
-            foreach (var obj in _all.V.Values)
-            {
-                obj?.ClearEntityLink();
-            }
+            _parentByChild.Clear();
+            _childrenByParent.Clear();
+            _touched.Clear();
+            _cycleVisited.Clear();
+            _structureChanges.Clear();
+            _objectComponentsChanges.Clear();
+            _objectStructureChanges.Clear();
+            _scheduled = false;
+            _flushInProgress = false;
+            _rescheduleRequested = false;
+            _suppressReplicationThisFlush = false;
+            _order = 0;
+            _lastId = FIRST_USER_OBJECT_ID;
+            _parents.V.Clear();
+            _all.V.Clear();
         }
 
         public bool IsRuntimeInstanceActive(RuntimeInstance runtimeInstance)
@@ -885,3 +906,4 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
         }
     }
 }
+
