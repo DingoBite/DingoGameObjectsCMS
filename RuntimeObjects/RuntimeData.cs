@@ -10,6 +10,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects
     {
         public long Id;
         public FixedString32Bytes StoreId;
+        public uint Epoch;
     }
 
     [Serializable, Preserve]

@@ -57,12 +57,42 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
         public IReadonlyBind<IReadOnlyDictionary<long, GameRuntimeObject>> Parents => _parents;
         public bool ReplicationSuppressed => _suppressReplicationThisFlush;
         public World World => _world;
+        public uint Epoch { get; private set; }
+        public bool Retired { get; private set; }
         
         public RuntimeStore(FixedString32Bytes id, StoreRealm realm, World world)
         {
             Id = id;
             Realm = realm;
             LinkWorld(world);
+        }
+
+        internal void AdoptSlotEpoch(uint epoch)
+        {
+            Epoch = epoch;
+            Retired = false;
+        }
+
+        internal void Retire()
+        {
+            if (Retired)
+                return;
+
+            Retired = true;
+            _entityLinkPassActive = false;
+            _seenEntityLinks.Clear();
+            _entityById.Clear();
+            _idByEntity.Clear();
+
+            foreach (var obj in _all.V.Values)
+            {
+                obj?.ClearEntityLink();
+            }
+        }
+
+        public bool IsRuntimeInstanceActive(RuntimeInstance runtimeInstance)
+        {
+            return !Retired && runtimeInstance.StoreId.Equals(Id) && runtimeInstance.Epoch == Epoch;
         }
         
         public void LinkWorld(World world)
@@ -207,16 +237,46 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
             SetDirty(runtimeInstance, typeof(T).GetId());
         }
 
+        public bool TrySetDirty<T>(RuntimeInstance runtimeInstance) where T : GameRuntimeComponent
+        {
+            return TrySetDirty(runtimeInstance, typeof(T).GetId());
+        }
+
         public void SetDirty(RuntimeInstance runtimeInstance, uint compTypeId)
         {
             if (!runtimeInstance.StoreId.Equals(Id))
                 throw new InvalidOperationException($"RuntimeStore '{Id}' cannot mark dirty a runtime instance from store '{runtimeInstance.StoreId}'.");
 
+            if (Retired)
+                throw new InvalidOperationException($"RuntimeStore '{Id}' epoch {Epoch} is retired.");
+
+            if (runtimeInstance.Epoch != Epoch)
+                throw new InvalidOperationException($"RuntimeStore '{Id}' cannot mark dirty runtime instance {runtimeInstance.Id} from epoch {runtimeInstance.Epoch} while active epoch is {Epoch}.");
+
             SetDirty(runtimeInstance.Id, compTypeId);
+        }
+
+        public bool TrySetDirty(RuntimeInstance runtimeInstance, uint compTypeId)
+        {
+            if (!IsRuntimeInstanceActive(runtimeInstance))
+                return false;
+
+            if (!_all.V.TryGetValue(runtimeInstance.Id, out var obj))
+                return false;
+
+            if (!obj.TryGetById(compTypeId, out _))
+                return false;
+
+            obj.SetDirtyById(compTypeId);
+            SetObjectTouched(runtimeInstance.Id);
+            return true;
         }
 
         public void SetDirty(long id, uint compTypeId)
         {
+            if (Retired)
+                throw new InvalidOperationException($"RuntimeStore '{Id}' epoch {Epoch} is retired.");
+
             if (!_all.V.TryGetValue(id, out var obj))
                 throw new InvalidOperationException($"RuntimeStore '{Id}' cannot mark dirty component type id {compTypeId} for missing object {id}.");
 
@@ -334,12 +394,18 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
 
         public void BeginEntityLinkPass()
         {
+            if (Retired)
+                return;
+
             _entityLinkPassActive = true;
             _seenEntityLinks.Clear();
         }
 
         public void EndEntityLinkPass()
         {
+            if (Retired)
+                return;
+
             if (!_entityLinkPassActive)
                 return;
 
@@ -374,6 +440,9 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
 
         public void LinkEntity(long id, Entity entity)
         {
+            if (Retired)
+                return;
+
             if (id < 0 || entity == Entity.Null)
                 return;
 

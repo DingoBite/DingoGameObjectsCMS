@@ -5,28 +5,27 @@ using Unity.Entities;
 
 namespace DingoGameObjectsCMS.Systems
 {
-    public struct DestroyThisEntityRequest : IComponentData
-    {
-    }
-    
-    [UpdateInGroup(typeof(FixedStepSimulationSystemGroup), OrderLast = true)]
-    public partial class DestroyThisEntitySystem : SystemBase
+    [UpdateInGroup(typeof(FixedStepSimulationSystemGroup), OrderFirst = true)]
+    public partial class DestroyStaleRuntimeEntitiesSystem : SystemBase
     {
         protected override void OnUpdate()
         {
             using var ecb = new EntityCommandBuffer(Allocator.Temp);
-            
+            var hasAny = false;
+
             foreach (var (instance, realm, entity) in SystemAPI
                          .Query<RefRO<RuntimeInstance>, RefRO<RuntimeRealm>>()
-                         .WithAll<DestroyThisEntityRequest>()
                          .WithEntityAccess())
             {
+                if (instance.ValueRO.TryResolveActiveStore(realm.ValueRO.Realm, out _))
+                    continue;
+
                 ecb.DestroyEntity(entity);
-                var store = instance.ValueRO.ResolveStore(realm.ValueRO.Realm);
-                store?.Remove(instance.ValueRO.Id, ecb);
+                hasAny = true;
             }
-            
-            ecb.Playback(EntityManager);
+
+            if (hasAny)
+                ecb.Playback(EntityManager);
         }
     }
 }

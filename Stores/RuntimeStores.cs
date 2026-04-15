@@ -1,5 +1,4 @@
 using System;
-using System;
 using System.Collections.Generic;
 using System.Linq;
 using Bind;
@@ -34,6 +33,8 @@ namespace DingoGameObjectsCMS.Stores
 
         private static readonly Dictionary<FixedString32Bytes, RuntimeStore> _serverStoresById = new();
         private static readonly Dictionary<FixedString32Bytes, RuntimeStore> _clientStoresById = new();
+        private static readonly Dictionary<FixedString32Bytes, uint> _serverStoreEpochById = new();
+        private static readonly Dictionary<FixedString32Bytes, uint> _clientStoreEpochById = new();
 
         private static readonly BindDict<FixedString32Bytes, RuntimeStore> _serverStores = new();
         private static readonly BindDict<FixedString32Bytes, RuntimeStore> _clientStores = new();
@@ -57,7 +58,7 @@ namespace DingoGameObjectsCMS.Stores
         public static void SetupWorld(World world)
         {
             if (world == null || !world.IsCreated)
-                throw new System.InvalidOperationException("RuntimeStores requires a valid ECS World.");
+                throw new InvalidOperationException("RuntimeStores requires a valid ECS World.");
 
             _world = world;
 
@@ -75,11 +76,10 @@ namespace DingoGameObjectsCMS.Stores
         private static World RequireWorld()
         {
             if (_world == null || !_world.IsCreated)
-                throw new System.InvalidOperationException("RuntimeStores requires SetupWorld(...) before store creation.");
+                throw new InvalidOperationException("RuntimeStores requires SetupWorld(...) before store creation.");
 
             return _world;
         }
-
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
         private static void ResetOnSubsystemRegistration()
@@ -88,7 +88,6 @@ namespace DingoGameObjectsCMS.Stores
         }
 
 #if UNITY_EDITOR
-        // Static state must be cleared explicitly because play mode can run without domain reload.
         [InitializeOnLoadMethod]
         private static void InstallPlayModeReset()
         {
@@ -105,8 +104,20 @@ namespace DingoGameObjectsCMS.Stores
 
         public static void ResetState()
         {
+            foreach (var store in _serverStoresById.Values)
+            {
+                store.Retire();
+            }
+
+            foreach (var store in _clientStoresById.Values)
+            {
+                store.Retire();
+            }
+
             _serverStoresById.Clear();
             _clientStoresById.Clear();
+            _serverStoreEpochById.Clear();
+            _clientStoreEpochById.Clear();
             _netDirById.Clear();
 
             _serverStores.V.Clear();
@@ -124,11 +135,18 @@ namespace DingoGameObjectsCMS.Stores
         }
 
         private static Dictionary<FixedString32Bytes, RuntimeStore> GetDict(StoreRealm realm) => realm == StoreRealm.Server ? _serverStoresById : _clientStoresById;
-
+        private static Dictionary<FixedString32Bytes, uint> GetEpochDict(StoreRealm realm) => realm == StoreRealm.Server ? _serverStoreEpochById : _clientStoreEpochById;
         private static BindDict<FixedString32Bytes, RuntimeStore> GetBind(StoreRealm realm) => realm == StoreRealm.Server ? _serverStores : _clientStores;
 
-        public static bool TryGetRuntimeStore(FixedString32Bytes id, StoreRealm realm, out RuntimeStore runtimeStore) => GetDict(realm).TryGetValue(id, out runtimeStore);
+        private static uint NextEpoch(FixedString32Bytes id, StoreRealm realm)
+        {
+            var dict = GetEpochDict(realm);
+            var next = dict.TryGetValue(id, out var current) ? current + 1u : 1u;
+            dict[id] = next;
+            return next;
+        }
 
+        public static bool TryGetRuntimeStore(FixedString32Bytes id, StoreRealm realm, out RuntimeStore runtimeStore) => GetDict(realm).TryGetValue(id, out runtimeStore);
         public static RuntimeStore GetRuntimeStore(FixedString32Bytes id, StoreRealm realm) => GetDict(realm).GetValueOrDefault(id);
         public static IEnumerable<RuntimeStore> EnumerateStores(StoreRealm realm) => GetDict(realm).Values;
 
@@ -167,7 +185,12 @@ namespace DingoGameObjectsCMS.Stores
 
             var dict = GetDict(realm);
             var bind = GetBind(realm);
+            var epoch = NextEpoch(key, realm);
 
+            if (dict.TryGetValue(key, out var previous) && !ReferenceEquals(previous, store))
+                previous.Retire();
+
+            store.AdoptSlotEpoch(epoch);
             dict[key] = store;
             bind.V[key] = store;
             bind.V = bind.V;
@@ -201,6 +224,7 @@ namespace DingoGameObjectsCMS.Stores
             }
 
             var store = new RuntimeStore(key, realm, RequireWorld());
+            store.AdoptSlotEpoch(NextEpoch(key, realm));
             dict[key] = store;
             bind.V[key] = store;
             bind.V = bind.V;

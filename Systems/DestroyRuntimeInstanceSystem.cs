@@ -20,7 +20,7 @@ namespace DingoGameObjectsCMS.Systems
             
             foreach (var (r, e) in SystemAPI.Query<RefRO<DestroyRuntimeInstanceRequest>>().WithEntityAccess())
             {
-                var store = r.ValueRO.Instance.StoreId.ResolveStore(r.ValueRO.Realm);
+                var store = r.ValueRO.Instance.ResolveStore(r.ValueRO.Realm);
                 if (store != null && store.Remove(r.ValueRO.Instance.Id, ecb, out var instanceE))
                 {
                     ecb.DestroyEntity(instanceE);

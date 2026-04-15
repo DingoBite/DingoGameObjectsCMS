@@ -19,8 +19,10 @@ namespace DingoGameObjectsCMS.Systems
                              .Query<RefRO<RuntimeInstance>, RefRO<RuntimeRealm>>()
                              .WithEntityAccess())
                 {
-                    var store = instance.ValueRO.StoreId.ResolveStore(realm.ValueRO.Realm);
-                    store?.LinkEntity(instance.ValueRO.Id, entity);
+                    if (!instance.ValueRO.TryResolveActiveStore(realm.ValueRO.Realm, out var store))
+                        continue;
+
+                    store.LinkEntity(instance.ValueRO.Id, entity);
                 }
             }
             finally

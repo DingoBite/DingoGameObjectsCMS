@@ -6,7 +6,6 @@ using UnityEngine.Scripting;
 namespace DingoGameObjectsCMS.RuntimeObjects.Objects
 {
     public abstract class GameRuntimeComponent<TSelf> : GameRuntimeComponent where TSelf : GameRuntimeComponent<TSelf>
-
     {
         public override void SetupForEntity(RuntimeStore store, EntityCommandBuffer ecb, GameRuntimeObject g, Entity e)
         {

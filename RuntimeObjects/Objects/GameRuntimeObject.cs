@@ -1,10 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Runtime.Serialization;
-using DingoGameObjectsCMS;
 using DingoGameObjectsCMS.RuntimeObjects.Stores;
 using Newtonsoft.Json;
-using Unity.Collections;
 using Unity.Entities;
 using UnityEngine;
 using UnityEngine.Scripting;
@@ -39,7 +37,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
         [JsonIgnore] public IReadOnlyDictionary<uint, ComponentStructDirty> StructureChanges => _structureChanges;
         [JsonIgnore] public IReadOnlyList<GameRuntimeComponent> Components => _components;
         [JsonIgnore] public bool HasEntityProjection => _hasEntityProjection;
-        [JsonIgnore] public RuntimeInstance RuntimeInstance => new() { Id = InstanceId, StoreId = StoreId };
+        [JsonIgnore] public RuntimeInstance RuntimeInstance => new() { Id = InstanceId, StoreId = StoreId, Epoch = _runtimeStore?.Epoch ?? 0u };
 
         public void LinkRuntimeContext(RuntimeStore runtimeStore, World world)
         {
@@ -61,7 +59,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
             _isEcbEntity = false;
             _grcEditingToken = 0;
         }
-
 
         public void ClearRuntimeContext()
         {
@@ -391,3 +388,4 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
         void ISerializationCallbackReceiver.OnAfterDeserialize() => RebuildCache();
     }
 }
+
