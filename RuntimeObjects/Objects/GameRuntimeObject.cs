@@ -297,7 +297,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
                 throw new InvalidOperationException($"GameRuntimeObject {InstanceId} in store '{StoreId}' does not contain component type id {compTypeId}.");
 
             MarkComponentDirty(compTypeId);
-            _runtimeStore?.NotifyObjectDirty(InstanceId);
         }
 
         public void ClearDirty()

@@ -14,17 +14,21 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
     public class RuntimeStore : AppModelBase
     {
         public const int UPDATE_ORDER = 1_000_000;
-        public const long StoreRootObjectId = 0;
-        public const long FirstUserObjectId = StoreRootObjectId + 1;
+        public const long STORE_ROOT_OBJECT_ID = 0;
+        public const long FIRST_USER_OBJECT_ID = STORE_ROOT_OBJECT_ID + 1;
+     
+        
+        public event Action<NativeArray<RuntimeStructureDirty>> StructureChanges;
+        public event Action<NativeArray<ObjectStructDirty>> ComponentStructureChanges;
+        public event Action<NativeArray<ObjectComponentDirty>> ComponentChanges;
+
         
         public readonly FixedString32Bytes Id;
         public readonly StoreRealm Realm;
 
         private World _world;
-        private long _lastId = FirstUserObjectId;
+        private long _lastId = FIRST_USER_OBJECT_ID;
         private uint _order;
-        private GameRuntimeObject _storeRootObject;
-
 
         private readonly BindDict<long, GameRuntimeObject> _all = new();
         private readonly BindDict<long, GameRuntimeObject> _parents = new();
@@ -48,14 +52,19 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
         private readonly List<RuntimeStructureDirty> _structureChanges = new();
         private readonly List<ObjectComponentDirty> _objectComponentsChanges = new();
         private readonly List<ObjectStructDirty> _objectStructureChanges = new();
-
+        
+        public IReadonlyBind<IReadOnlyDictionary<long, GameRuntimeObject>> All => _all;
+        public IReadonlyBind<IReadOnlyDictionary<long, GameRuntimeObject>> Parents => _parents;
+        public bool ReplicationSuppressed => _suppressReplicationThisFlush;
+        public World World => _world;
+        
         public RuntimeStore(FixedString32Bytes id, StoreRealm realm, World world)
         {
             Id = id;
             Realm = realm;
             LinkWorld(world);
         }
-
+        
         public void LinkWorld(World world)
         {
             if (world == null || !world.IsCreated)
@@ -75,68 +84,25 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
             return _world;
         }
 
-
-        public IReadonlyBind<IReadOnlyDictionary<long, GameRuntimeObject>> All => _all;
-        public IReadonlyBind<IReadOnlyDictionary<long, GameRuntimeObject>> Parents => _parents;
-        public bool ReplicationSuppressed => _suppressReplicationThisFlush;
-        public World World => _world;
-
-        public static bool IsStoreRootObject(long id) => id == StoreRootObjectId;
-
-        public bool TryGetStoreRoot(out GameRuntimeObject storeRoot)
-        {
-            if (_storeRootObject != null &&
-                _storeRootObject.InstanceId == StoreRootObjectId &&
-                _all.V.TryGetValue(StoreRootObjectId, out var cachedRoot) &&
-                ReferenceEquals(cachedRoot, _storeRootObject))
-            {
-                storeRoot = _storeRootObject;
-                return true;
-            }
-
-            if (_all.V.TryGetValue(StoreRootObjectId, out var root))
-            {
-                _storeRootObject = root;
-                storeRoot = root;
-                return true;
-            }
-
-            _storeRootObject = null;
-            storeRoot = null;
-            return false;
-        }
-
-        public GameRuntimeObject GetOrCreateStoreRoot()
-        {
-            if (TryGetStoreRoot(out var storeRoot))
-            {
-                if (!IsPublished(StoreRootObjectId))
-                    AddToRoot(StoreRootObjectId);
-
-                return storeRoot;
-            }
-
-            storeRoot = CreateDetached(StoreRootObjectId);
-            AddToRoot(storeRoot.InstanceId);
-            _storeRootObject = storeRoot;
-            return storeRoot;
-        }
-
-        public IEnumerable<GameRuntimeObject> EnumerateContentRoots()
+        public IEnumerable<GameRuntimeObject> EnumerateGRONoRoot()
         {
             foreach (var pair in _parents.V)
             {
-                if (IsStoreRootObject(pair.Key))
+                if (pair.Key == STORE_ROOT_OBJECT_ID)
                     continue;
 
                 yield return pair.Value;
             }
         }
 
-        public event Action<NativeArray<RuntimeStructureDirty>> StructureChanges;
-        public event Action<NativeArray<ObjectStructDirty>> ComponentStructureChanges;
-        public event Action<NativeArray<ObjectComponentDirty>> ComponentChanges;
-
+        private void EnsureRootCreated()
+        {
+            if (_all.V.ContainsKey(STORE_ROOT_OBJECT_ID) || _entityById.ContainsKey(STORE_ROOT_OBJECT_ID))
+                return;
+            var storeRoot = CreateDetached(STORE_ROOT_OBJECT_ID);
+            AddToRoot(storeRoot.InstanceId);
+        }
+        
         private uint NextOrder() => ++_order;
 
         private GameRuntimeObject CreateDetached() => CreateDetached(_lastId++);
@@ -162,9 +128,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
 
             if (_lastId <= id)
                 _lastId = id + 1;
-
-            if (IsStoreRootObject(id))
-                _storeRootObject = obj;
 
             MarkTouchedUpToRoot(id);
             return obj;
@@ -202,16 +165,27 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
             if (_lastId <= id)
                 _lastId = id + 1;
 
-            if (IsStoreRootObject(id))
-                _storeRootObject = value;
-
             MarkTouchedUpToRoot(id);
             ScheduleFlush();
             return true;
         }
 
-        public void PublishRootExisting(long id) => AddToRoot(id);
+        public GameRuntimeObject TakeRootRW()
+        {
+            EnsureRootCreated();
+            if (TryTakeRW(STORE_ROOT_OBJECT_ID, out var gameRuntimeObject))
+                return gameRuntimeObject;
+            return null;
+        }
 
+        public GameRuntimeObject TakeRootRO()
+        {
+            EnsureRootCreated();
+            if (TryTakeRO(STORE_ROOT_OBJECT_ID, out var gameRuntimeObject))
+                return gameRuntimeObject;
+            return null;
+        }
+        
         public bool TryTakeRW(long id, out GameRuntimeObject gameRuntimeObject)
         {
             if (!_all.V.TryGetValue(id, out gameRuntimeObject))
@@ -250,6 +224,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
                 throw new InvalidOperationException($"RuntimeStore '{Id}' cannot mark dirty component type id {compTypeId} for object {id}.");
 
             obj.SetDirtyById(compTypeId);
+            SetObjectTouched(id);
         }
 
         public bool Remove(long id) => Remove(id, RemoveMode.Subtree, out _);
@@ -274,9 +249,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
 
             if (!_all.V.TryGetValue(id, out var obj))
             {
-                if (IsStoreRootObject(id))
-                    _storeRootObject = null;
-
                 TryUnlinkEntity(id, out entity);
                 DetachChildInternal(id);
                 RemoveChildrenIndexOnly(id);
@@ -338,9 +310,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
 
             obj.Destroy();
             _all.V.Remove(id);
-
-            if (IsStoreRootObject(id))
-                _storeRootObject = null;
 
             if (entity != Entity.Null)
             {
@@ -658,10 +627,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
             return cur;
         }
 
-        internal void NotifyObjectDirty(long id)
-        {
-            MarkTouchedUpToRoot(id);
-        }
+        public void SetObjectTouched(long id) => MarkTouchedUpToRoot(id);
 
         private void MarkTouchedUpToRoot(long id)
         {
@@ -708,21 +674,18 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
             return true;
         }
 
-        private static void InvokeSafe<T>(Action<NativeArray<T>> handlers, NativeArray<T> payload) where T : struct
+        private static void InvokeSafe<T>(Action<NativeArray<T>> action, NativeArray<T> payload) where T : struct
         {
-            if (handlers == null || payload.Length == 0)
+            if (action == null || payload.Length == 0)
                 return;
 
-            foreach (var d in handlers.GetInvocationList())
+            try
             {
-                try
-                {
-                    ((Action<NativeArray<T>>)d).Invoke(payload);
-                }
-                catch (Exception e)
-                {
-                    Debug.LogException(e);
-                }
+                action.Invoke(payload);
+            }
+            catch (Exception e)
+            {
+                Debug.LogException(e);
             }
         }
 

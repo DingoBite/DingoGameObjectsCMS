@@ -207,9 +207,9 @@ Usage model:
 - receive an `IReadonlyBind<RuntimeStore>`
 - read the current active store from `bind.V`
 
-`RS` resolves the store through `RuntimeExecutionContext`, creates it on first request in the active realm, and automatically rebinds when the active execution side changes.
+`RS` resolves the store through `RuntimeExecutionContext`, reads only the already existing store in the active realm, and automatically rebinds when the active execution side changes.
 
-Because `RS` can create a store on first bind, `RuntimeStores.SetupWorld(...)` must run before high-level models or binders start resolving stores.
+If `bind.V == null`, the store has not been built or injected yet by another layer. Explicit store creation/loading should go through infrastructure code such as `RuntimeStores` or `RS.Set(...)`.
 
 
 Recommended rule:
@@ -459,6 +459,7 @@ This approach is especially strong when you care about several of the following:
 If reduced to one sentence:
 
 > `DingoGameObjectsCMS` turns `GameAsset` and `GameRuntimeObject` into a shared source of truth for runtime state, ECS integration, replication, modding, and persistence.
+
 
 
 

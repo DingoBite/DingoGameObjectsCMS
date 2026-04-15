@@ -207,9 +207,9 @@ Assets/GameAssets/base/characters/player/player@1.2.0.asset
 - наружу отдаётся `IReadonlyBind<RuntimeStore>`
 - текущий active store читается через `bind.V`
 
-`RS` резолвит store через `RuntimeExecutionContext`, создаёт его при первом запросе в active realm и автоматически перепривязывает bind при смене execution side.
+`RS` резолвит store через `RuntimeExecutionContext`, читает только уже существующий store в active realm и автоматически перепривязывает bind при смене execution side.
 
-Так как `RS` может создать store на первом bind, `RuntimeStores.SetupWorld(...)` должен отработать до того, как high-level модели или binders начнут резолвить store-ы.
+Если `bind.V == null`, значит store ещё не был построен или подложен другим слоем. Явное создание/загрузка store-а должно идти через инфраструктурный код, например `RuntimeStores` или `RS.Set(...)`.
 
 
 Рекомендуемое правило:
@@ -464,6 +464,7 @@ Assets/StreamingAssets/runtime_component_types.json
 Если упростить до одной фразы:
 
 > `DingoGameObjectsCMS` превращает `GameAsset` и `GameRuntimeObject` в общий source of truth для runtime state, ECS integration, replication, modding и persistence.
+
 
 
 

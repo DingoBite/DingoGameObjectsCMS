@@ -85,7 +85,7 @@ namespace DingoGameObjectsCMS.Stores
 
         private static RuntimeStore ResolveStore(FixedString32Bytes key)
         {
-            return RuntimeStores.GetOrAddRuntimeStore(key, realm: RuntimeExecutionContext.ReadRealm);
+            return RuntimeStores.GetRuntimeStore(key, RuntimeExecutionContext.ReadRealm);
         }
     }
 }
