@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-
 using Bind;
 using DingoGameObjectsCMS.RuntimeObjects.Objects;
 using DingoProjectAppStructure.Core.Model;
@@ -8,6 +7,7 @@ using DingoUnityExtensions;
 using Unity.Collections;
 using Unity.Entities;
 using UnityEngine;
+using Hash128 = UnityEngine.Hash128;
 
 namespace DingoGameObjectsCMS.RuntimeObjects.Stores
 {
@@ -304,7 +304,11 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
             return TryTakeRO(id, out gameRuntimeObject);
         }
 
-        public bool TryGetId(Hash128 guid, out long id) => guid.isValid && _idByGuid.TryGetValue(guid, out id);
+        public bool TryGetId(Hash128 guid, out long id)
+        {
+            id = -1;
+            return guid.isValid && _idByGuid.TryGetValue(guid, out id);
+        }
 
         public void SetDirty<T>(long id) where T : GameRuntimeComponent
         {
