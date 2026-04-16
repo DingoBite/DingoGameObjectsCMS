@@ -200,6 +200,11 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
             return child;
         }
 
+        public void PublishRootExisting(long id)
+        {
+            AddToRoot(id);
+        }
+
         public bool TryAddExternalObject(GameRuntimeObject value)
         {
             if (value == null || value.InstanceId < 0)
