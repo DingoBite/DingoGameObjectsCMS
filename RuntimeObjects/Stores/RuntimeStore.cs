@@ -34,6 +34,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
 
         private readonly Dictionary<long, Entity> _entityById = new();
         private readonly Dictionary<Entity, long> _idByEntity = new();
+        private readonly Dictionary<Hash128, long> _idByGuid = new();
         private readonly HashSet<long> _seenEntityLinks = new();
 
         private readonly Dictionary<long, long> _parentByChild = new();
@@ -93,6 +94,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
 
             _entityById.Clear();
             _idByEntity.Clear();
+            _idByGuid.Clear();
             _parentByChild.Clear();
             _childrenByParent.Clear();
             _touched.Clear();
@@ -174,6 +176,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
             };
 
             obj.LinkRuntimeContext(this, world);
+            RegisterGuid(id, obj);
             _all.V[id] = obj;
 
             if (_lastId <= id)
@@ -207,9 +210,13 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
             if (_all.V.ContainsKey(id) || _entityById.ContainsKey(id))
                 return false;
 
+            if (value.GUID.isValid && _idByGuid.TryGetValue(value.GUID, out var existingGuidId) && existingGuidId != id)
+                return false;
+
             value.StoreId = Id;
             value.Realm = Realm;
             value.LinkRuntimeContext(this, world);
+            RegisterGuid(id, value);
             _all.V[id] = value;
 
             if (_lastId <= id)
@@ -249,7 +256,21 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
                 return gro;
             return null;
         }
-        
+
+        public GameRuntimeObject TakeRW(Hash128 guid)
+        {
+            if (TryTakeRW(guid, out var gro))
+                return gro;
+            return null;
+        }
+
+        public GameRuntimeObject TakeRO(Hash128 guid)
+        {
+            if (TryTakeRO(guid, out var gro))
+                return gro;
+            return null;
+        }
+
         public bool TryTakeRW(long id, out GameRuntimeObject gameRuntimeObject)
         {
             if (!_all.V.TryGetValue(id, out gameRuntimeObject))
@@ -260,6 +281,30 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
         }
 
         public bool TryTakeRO(long id, out GameRuntimeObject gameRuntimeObject) => _all.V.TryGetValue(id, out gameRuntimeObject);
+
+        public bool TryTakeRW(Hash128 guid, out GameRuntimeObject gameRuntimeObject)
+        {
+            if (!TryGetId(guid, out var id))
+            {
+                gameRuntimeObject = null;
+                return false;
+            }
+
+            return TryTakeRW(id, out gameRuntimeObject);
+        }
+
+        public bool TryTakeRO(Hash128 guid, out GameRuntimeObject gameRuntimeObject)
+        {
+            if (!TryGetId(guid, out var id))
+            {
+                gameRuntimeObject = null;
+                return false;
+            }
+
+            return TryTakeRO(id, out gameRuntimeObject);
+        }
+
+        public bool TryGetId(Hash128 guid, out long id) => guid.isValid && _idByGuid.TryGetValue(guid, out id);
 
         public void SetDirty<T>(long id) where T : GameRuntimeComponent
         {
@@ -404,6 +449,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
 
             obj.Destroy();
             _all.V.Remove(id);
+            UnregisterGuid(obj.GUID, id);
 
             if (entity != Entity.Null)
             {
@@ -753,6 +799,26 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
 
             _scheduled = true;
             CoroutineParent.AddLateUpdater(this, Flush, UPDATE_ORDER);
+        }
+
+        private void RegisterGuid(long id, GameRuntimeObject obj)
+        {
+            if (obj == null || !obj.GUID.isValid)
+                return;
+
+            if (_idByGuid.TryGetValue(obj.GUID, out var existingId) && existingId != id)
+                throw new InvalidOperationException($"RuntimeStore '{Id}' already contains runtime object guid {obj.GUID} on id {existingId}.");
+
+            _idByGuid[obj.GUID] = id;
+        }
+
+        private void UnregisterGuid(Hash128 guid, long id)
+        {
+            if (!guid.isValid)
+                return;
+
+            if (_idByGuid.TryGetValue(guid, out var existingId) && existingId == id)
+                _idByGuid.Remove(guid);
         }
 
         private bool UnlinkEntity(long id)
