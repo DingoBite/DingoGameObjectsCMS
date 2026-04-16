@@ -15,7 +15,6 @@ namespace DingoGameObjectsCMS.View
         protected sealed override void PreviousValueFree(GameRuntimeObject previousData)
         {
             _previousValue = previousData;
-            OnBeforeGameRuntimeObjectChanged(previousData);
             base.PreviousValueFree(previousData);
         }
 
@@ -25,23 +24,18 @@ namespace DingoGameObjectsCMS.View
             var sameRuntimeObject = IsSameRuntimeObject(previousValue, value);
 
             if (!sameRuntimeObject && previousValue != null)
-                OnGameRuntimeObjectDestroyed(previousValue);
-
-            SetGameRuntimeObjectWithoutNotify(value);
+                OnGRODestroy(previousValue);
 
             if (!sameRuntimeObject && value != null)
-                OnGameRuntimeObjectCreated(value);
+                OnGROCreated(value);
 
-            OnGameRuntimeObjectChanged(previousValue, value);
+            UpdateGRO(previousValue, value);
             _previousValue = null;
         }
 
-        protected virtual void OnBeforeGameRuntimeObjectChanged(GameRuntimeObject previousValue) { }
-        protected virtual void OnGameRuntimeObjectCreated(GameRuntimeObject value) { }
-        protected virtual void OnGameRuntimeObjectDestroyed(GameRuntimeObject value) { }
-        protected virtual void OnGameRuntimeObjectChanged(GameRuntimeObject previousValue, GameRuntimeObject value) { }
-
-        protected abstract void SetGameRuntimeObjectWithoutNotify(GameRuntimeObject value);
+        protected virtual void OnGROCreated(GameRuntimeObject value) { }
+        protected virtual void OnGRODestroy(GameRuntimeObject value) { }
+        protected virtual void UpdateGRO(GameRuntimeObject previousValue, GameRuntimeObject value) { }
 
         private static bool IsSameRuntimeObject(GameRuntimeObject a, GameRuntimeObject b)
         {

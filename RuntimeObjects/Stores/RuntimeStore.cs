@@ -16,7 +16,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
         public const int UPDATE_ORDER = 1_000_000;
         public const long STORE_ROOT_OBJECT_ID = 0;
         public const long FIRST_USER_OBJECT_ID = STORE_ROOT_OBJECT_ID + 1;
-     
         
         public event Action<NativeArray<RuntimeStructureDirty>> StructureChanges;
         public event Action<NativeArray<ObjectStructDirty>> ComponentStructureChanges;
@@ -234,6 +233,20 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
             EnsureRootCreated();
             if (TryTakeRO(STORE_ROOT_OBJECT_ID, out var gameRuntimeObject))
                 return gameRuntimeObject;
+            return null;
+        }
+
+        public GameRuntimeObject TakeRW(long id)
+        {
+            if (TryTakeRW(id, out var gro))
+                return gro;
+            return null;
+        }
+
+        public GameRuntimeObject TakeRO(long id)
+        {
+            if (TryTakeRO(id, out var gro))
+                return gro;
             return null;
         }
         
