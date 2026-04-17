@@ -204,6 +204,7 @@ namespace DingoGameObjectsCMS.Mirror
         private static void TryUnregisterClientHandlers()
         {
             NetworkClient.UnregisterHandler<RtCommandMsg>();
+            NetworkClient.UnregisterHandler<RtAssetLibraryLockMsg>();
             NetworkClient.UnregisterHandler<RtStoreSyncMsg>();
         }
 
@@ -234,3 +235,6 @@ namespace DingoGameObjectsCMS.Mirror
     }
 }
 #endif
+
+
+

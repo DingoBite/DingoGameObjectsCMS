@@ -25,6 +25,13 @@ namespace DingoGameObjectsCMS.Mirror
     }
 
     [Serializable, Preserve]
+    public struct RtAssetLibraryLockMsg : NetworkMessage
+    {
+        public FixedString32Bytes LockName;
+        public byte[] Payload;
+    }
+
+    [Serializable, Preserve]
     public struct RtStoreAckMsg : NetworkMessage
     {
         public FixedString32Bytes StoreId;

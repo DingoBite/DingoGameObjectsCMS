@@ -42,6 +42,7 @@ namespace DingoGameObjectsCMS.Mirror
             _replicaReadyChanged = replicaReadyChanged;
             _serializer = serializer ?? RuntimePayloadSerialization.Current;
 
+            NetworkClient.RegisterHandler<RtAssetLibraryLockMsg>(OnAssetLibraryLock);
             NetworkClient.RegisterHandler<RtStoreSyncMsg>(OnStoreSync);
 
             if (_commandsBus != null && !NetworkServer.active)
@@ -190,6 +191,15 @@ namespace DingoGameObjectsCMS.Mirror
             }
         }
 
+        private void OnAssetLibraryLock(RtAssetLibraryLockMsg msg)
+        {
+            var assetLock = _serializer.Deserialize<GameAssetLibraryLock>(msg.Payload);
+            GameAssetLibraryLocks.Set(msg.LockName, StoreRealm.Client, assetLock);
+
+            if (RuntimeNetTrace.LOG_SNAPSHOTS)
+                RuntimeNetTrace.Client("SNAP", $"recv asset-lock name={msg.LockName} bytes={(msg.Payload?.Length ?? 0)}");
+        }
+
         private void OnStoreSync(RtStoreSyncMsg msg)
         {
             var payload = _serializer.Deserialize<RtStoreSyncPayload>(msg.Payload);
@@ -295,6 +305,7 @@ namespace DingoGameObjectsCMS.Mirror
         {
             _initialFullSnapshots.Clear();
             _resyncInFlight.Clear();
+            GameAssetLibraryLocks.ClearAll(StoreRealm.Client);
             SetReplicaReady(false);
         }
 

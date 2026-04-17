@@ -79,6 +79,7 @@ namespace DingoGameObjectsCMS.Mirror
                 return;
 
             var snapshotId = state.LastSnapshotId + 1;
+            SendAssetLibraryLock(state, conn);
             var payload = BuildFullSyncPayload(state, snapshotId, conn);
             var encoded = _serializer.Serialize(payload);
 
@@ -97,6 +98,24 @@ namespace DingoGameObjectsCMS.Mirror
         {
             if (RuntimeNetTrace.LOG_COMMANDS && command != null)
                 RuntimeNetTrace.Server("CMD", $"skip s2c command tick={tick} sender={sender} reason=commands_are_c2s_only");
+        }
+
+        private void SendAssetLibraryLock(StoreReplicationState state, NetworkConnectionToClient conn)
+        {
+            if (conn == null)
+                return;
+
+            var lockName = state.StoreId;
+            GameAssetLibraryLocks.TryGet(lockName, StoreRealm.Server, out var assetLock);
+            var encoded = _serializer.Serialize(assetLock);
+            conn.Send(new RtAssetLibraryLockMsg
+            {
+                LockName = lockName,
+                Payload = encoded,
+            }, Channels.Reliable);
+
+            if (RuntimeNetTrace.LOG_SNAPSHOTS)
+                RuntimeNetTrace.Server("SNAP", $"send asset-lock name={lockName} conn={conn.connectionId} bytes={(encoded?.Length ?? 0)}");
         }
 
         private void OnCommand(NetworkConnectionToClient conn, RtCommandMsg msg)
@@ -257,6 +276,7 @@ namespace DingoGameObjectsCMS.Mirror
                 {
                     if (connState.LastSentSnapshotId == 0)
                     {
+                        SendAssetLibraryLock(state, conn);
                         var fullEncoded = _serializer.Serialize(BuildFullSyncPayload(state, snapshotId, conn));
                         conn.Send(new RtStoreSyncMsg { Payload = fullEncoded }, Channels.Reliable);
                         connState.LastSentSnapshotId = snapshotId;
@@ -878,3 +898,4 @@ namespace DingoGameObjectsCMS.Mirror
     }
 }
 #endif
+

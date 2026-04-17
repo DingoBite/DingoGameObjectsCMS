@@ -117,6 +117,7 @@ namespace DingoGameObjectsCMS
                 _ = Resources.UnloadUnusedAssets();
         }
 
+        
         public static bool TryResolve(GameAssetKey key, out GameAssetScriptableObject asset)
         {
             asset = null;
@@ -146,7 +147,6 @@ namespace DingoGameObjectsCMS
 
             return s.TryResolveBuiltInGuid(guid, out asset) || s.TryResolveExternal(guid, out asset);
         }
-
         public static Dictionary<Hash128, GameAssetScriptableObject> CollectAllAssets(bool includeExternal)
         {
             var s = GetNoCheck();
@@ -173,6 +173,42 @@ namespace DingoGameObjectsCMS
             }
 
             return dict;
+        }
+
+        
+        public static List<GameAssetKey> CollectIdentityRequests()
+        {
+            var requests = new List<GameAssetKey>();
+            var s = GetNoCheck();
+            if (s == null)
+                return requests;
+
+            s.EnsureRuntimeCacheSync();
+            foreach (var request in s.EnumerateIdentityRequests())
+            {
+                requests.Add(request);
+            }
+
+            return requests;
+        }
+
+        public static List<ModManifest> CollectLoadedModManifests()
+        {
+            var manifests = new List<ModManifest>();
+            var s = GetNoCheck();
+            if (s == null)
+                return manifests;
+
+            s.EnsureRuntimeCacheSync();
+            foreach (var package in s._packages)
+            {
+                if (package?.Manifest == null)
+                    continue;
+
+                manifests.Add(package.Manifest);
+            }
+
+            return manifests;
         }
 
         private void MarkRuntimeCacheDirty()
@@ -624,6 +660,34 @@ namespace DingoGameObjectsCMS
             return false;
         }
 
+        
+        private IEnumerable<GameAssetKey> EnumerateIdentityRequests()
+        {
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+
+            foreach (var key in _builtInByKey.Keys)
+            {
+                if (!seen.Add(GameAssetIdentityKey.Normalize(key)))
+                    continue;
+
+                yield return BuildIdentityRequest(key);
+            }
+
+            foreach (var key in _externalByKey.Keys)
+            {
+                if (!seen.Add(GameAssetIdentityKey.Normalize(key)))
+                    continue;
+
+                yield return BuildIdentityRequest(key);
+            }
+        }
+
+        private static GameAssetKey BuildIdentityRequest(GameAssetKey key)
+        {
+            return new GameAssetKey(key.Mod, key.Type, key.Key, string.Empty);
+        }
+
+
         private static string ResolveExternalAbsPath(string subPath)
         {
             if (string.IsNullOrWhiteSpace(subPath))
@@ -739,3 +803,9 @@ namespace DingoGameObjectsCMS
         }
     }
 }
+
+
+
+
+
+
