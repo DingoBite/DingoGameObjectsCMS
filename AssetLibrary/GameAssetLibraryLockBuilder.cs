@@ -1,10 +1,9 @@
 using System;
 using System.Collections.Generic;
 using DingoGameObjectsCMS.AssetObjects;
-using DingoGameObjectsCMS.Modding;
 using DingoGameObjectsCMS.RuntimeObjects;
 
-namespace DingoGameObjectsCMS
+namespace DingoGameObjectsCMS.AssetLibrary
 {
     public static class GameAssetLibraryLockBuilder
     {

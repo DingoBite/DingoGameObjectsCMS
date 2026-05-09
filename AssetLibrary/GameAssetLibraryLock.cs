@@ -4,7 +4,7 @@ using DingoGameObjectsCMS.RuntimeObjects;
 using UnityEngine;
 using UnityEngine.Scripting;
 
-namespace DingoGameObjectsCMS
+namespace DingoGameObjectsCMS.AssetLibrary
 {
     public static class GameAssetIdentityKey
     {

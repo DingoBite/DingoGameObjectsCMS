@@ -4,12 +4,10 @@ using DingoGameObjectsCMS.AssetObjects;
 using DingoGameObjectsCMS.RuntimeObjects;
 using DingoGameObjectsCMS.Stores;
 using Unity.Collections;
-using UnityEngine;
-#if UNITY_EDITOR
 using UnityEditor;
-#endif
+using UnityEngine;
 
-namespace DingoGameObjectsCMS
+namespace DingoGameObjectsCMS.AssetLibrary
 {
     public static class GameAssetLibraryLocks
     {

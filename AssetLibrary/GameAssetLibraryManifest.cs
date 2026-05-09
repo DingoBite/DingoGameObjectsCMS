@@ -7,18 +7,17 @@ using System.Threading.Tasks;
 using DingoGameObjectsCMS.AssetObjects;
 using DingoGameObjectsCMS.Modding;
 using DingoGameObjectsCMS.RuntimeObjects;
-using DingoGameObjectsCMS.RuntimeObjects.Objects;
 using DingoGameObjectsCMS.Serialization;
 using DingoUnityExtensions.MonoBehaviours.Singletons;
 using NaughtyAttributes;
 using Newtonsoft.Json;
-#if UNITY_EDITOR
 using UnityEditor;
-#endif
 using UnityEngine;
 using UnityEngine.Scripting;
+#if UNITY_EDITOR
+#endif
 
-namespace DingoGameObjectsCMS
+namespace DingoGameObjectsCMS.AssetLibrary
 {
 #if UNITY_EDITOR
     public static class GameAssetManifestPlayHook
