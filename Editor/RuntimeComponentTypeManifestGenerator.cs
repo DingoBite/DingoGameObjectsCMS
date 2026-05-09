@@ -47,9 +47,22 @@ namespace DingoGameObjectsCMS.Editor
                 }
             }).Where(t => t != null && !t.IsAbstract && typeof(GameRuntimeComponent).IsAssignableFrom(t) && typeof(GameRuntimeComponent) != t);
 
+            manifest.Types = manifest.Types
+                .Where(e => e != null
+                            && !string.IsNullOrWhiteSpace(e.AssemblyQualifiedName)
+                            && Type.GetType(e.AssemblyQualifiedName, throwOnError: false) != null)
+                .GroupBy(e => e.AssemblyQualifiedName)
+                .Select(group => group.OrderBy(e => e.Order).First())
+                .OrderBy(e => e.Order)
+                .ToList();
+
+            var existing = new HashSet<string>(manifest.Types.Select(e => e.AssemblyQualifiedName), StringComparer.Ordinal);
             var maxOrder = manifest.Types.Count == 0 ? -1 : manifest.Types.Max(e => e.Order);
             foreach (var t in all)
             {
+                if (string.IsNullOrWhiteSpace(t.AssemblyQualifiedName) || !existing.Add(t.AssemblyQualifiedName))
+                    continue;
+
                 manifest.Types.Add(new Entry
                 {
                     AssemblyQualifiedName = t.AssemblyQualifiedName,
