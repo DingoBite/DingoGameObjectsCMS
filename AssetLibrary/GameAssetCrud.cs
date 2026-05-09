@@ -61,8 +61,7 @@ namespace DingoGameObjectsCMS.AssetLibrary
             Hash128 sourceGuid = default)
         {
             var asset = ScriptableObject.CreateInstance<GameAsset>();
-            asset.name = $"{key.Key}@{key.Version}";
-            asset.SetIdentity(key, guid);
+            asset.ResetToDefault(key, guid);
             asset.SetSourceAssetGuid(sourceGuid);
             asset.SetComponents(components);
             return asset;
