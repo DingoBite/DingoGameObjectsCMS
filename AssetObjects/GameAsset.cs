@@ -18,6 +18,16 @@ namespace DingoGameObjectsCMS.AssetObjects
         [JsonIgnore] public List<GameAssetComponent> Components => _components;
         [JsonIgnore] public Hash128 SourceAssetGUID => _sourceAssetGUID;
 
+        public void SetComponents(IEnumerable<GameAssetComponent> components)
+        {
+            _components = components != null ? new List<GameAssetComponent>(components) : new List<GameAssetComponent>();
+        }
+
+        public void SetSourceAssetGuid(Hash128 sourceAssetGuid)
+        {
+            _sourceAssetGUID = sourceAssetGuid;
+        }
+
         public virtual void SetupRuntimeObject(GameRuntimeObject g)
         {
             g.Key = Key;

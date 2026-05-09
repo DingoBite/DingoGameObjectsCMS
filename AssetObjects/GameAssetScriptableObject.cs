@@ -16,6 +16,22 @@ namespace DingoGameObjectsCMS.AssetObjects
 
         [JsonIgnore] public Hash128 GUID => _guid;
         [JsonIgnore] public GameAssetKey Key => _key;
+
+        public void SetIdentity(GameAssetKey key, Hash128 guid)
+        {
+            _key = key;
+            _guid = guid.isValid ? guid : Hash128.Parse(Guid.NewGuid().ToString());
+        }
+
+        public void SetKey(GameAssetKey key)
+        {
+            _key = key;
+        }
+
+        public void SetGuid(Hash128 guid)
+        {
+            _guid = guid.isValid ? guid : Hash128.Parse(Guid.NewGuid().ToString());
+        }
         
         private void OnValidate()
         {
