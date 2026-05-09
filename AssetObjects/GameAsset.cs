@@ -15,7 +15,8 @@ namespace DingoGameObjectsCMS.AssetObjects
         [Header("Keep value by default if there is no SourceAsset")]
         [SerializeField, Tooltip("If this GameAsset is representation of other GameAsset"), JsonProperty("SourceAssetGUID")] private Hash128 _sourceAssetGUID;
 
-        [JsonIgnore] public IReadOnlyList<GameAssetComponent> Components => _components;
+        [JsonIgnore] public List<GameAssetComponent> Components => _components;
+        [JsonIgnore] public Hash128 SourceAssetGUID => _sourceAssetGUID;
 
         public virtual void SetupRuntimeObject(GameRuntimeObject g)
         {
