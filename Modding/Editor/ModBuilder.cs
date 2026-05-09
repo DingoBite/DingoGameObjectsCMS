@@ -24,6 +24,32 @@ namespace DingoGameObjectsCMS.Modding.Editor
             public string RelativeJsonPath;
         }
 
+        public static void BuildModToFolder(string modRootUnityPath, string dstModRootAbs, bool overwriteExisting = false)
+        {
+            modRootUnityPath = Normalize(modRootUnityPath).TrimEnd('/');
+            dstModRootAbs = Path.GetFullPath(dstModRootAbs);
+
+            if (string.IsNullOrWhiteSpace(modRootUnityPath) || !AssetDatabase.IsValidFolder(modRootUnityPath))
+                throw new DirectoryNotFoundException($"Mod root is not a valid Unity folder: {modRootUnityPath}");
+            if (!modRootUnityPath.StartsWith(GAME_ASSETS_ROOT + "/", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException($"Mod root must be inside {GAME_ASSETS_ROOT}/<mod>: {modRootUnityPath}");
+
+            var parent = Normalize(Path.GetDirectoryName(modRootUnityPath) ?? string.Empty);
+            if (!string.Equals(parent, GAME_ASSETS_ROOT, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException($"Mod root must be exactly {GAME_ASSETS_ROOT}/<mod>: {modRootUnityPath}");
+
+            if (Directory.Exists(dstModRootAbs) && Directory.EnumerateFileSystemEntries(dstModRootAbs).Any())
+            {
+                if (!overwriteExisting)
+                    throw new IOException($"Destination folder is not empty: {dstModRootAbs}");
+
+                Directory.Delete(dstModRootAbs, recursive: true);
+            }
+
+            Directory.CreateDirectory(dstModRootAbs);
+            BuildModToFolderInternal(modRootUnityPath, dstModRootAbs);
+        }
+
         [MenuItem("Assets/Game Assets/Build Mod To Folder...", false, 2200)]
         private static void BuildModToFolderMenu()
         {
@@ -52,23 +78,9 @@ namespace DingoGameObjectsCMS.Modding.Editor
                 Directory.Delete(dstModRootAbs, recursive: true);
             }
 
-            Directory.CreateDirectory(dstModRootAbs);
-
             try
             {
-                EditorUtility.DisplayProgressBar("Mod Build", "Preparing...", 0f);
-
-                var exportItems = FindAllExportableAssets(modRoot);
-
-                var exportAssetPaths = new HashSet<string>(exportItems.Select(x => x.UnityPath), StringComparer.OrdinalIgnoreCase);
-
-                CopyAllFilesExceptMetaAndExportedAssets(modRoot, dstModRootAbs, exportAssetPaths);
-
-                ExportAssetsToJson(modRoot, dstModRootAbs, exportItems);
-
-                WriteManifest(dstModRootAbs, modName, exportItems);
-
-                Debug.Log($"Mod build complete: {dstModRootAbs}");
+                BuildModToFolder(modRoot, dstModRootAbs, overwriteExisting: false);
             }
             catch (Exception e)
             {
@@ -136,6 +148,22 @@ namespace DingoGameObjectsCMS.Modding.Editor
 
             list.Sort((a, b) => string.Compare(a.UnityPath, b.UnityPath, StringComparison.OrdinalIgnoreCase));
             return list;
+        }
+
+        private static void BuildModToFolderInternal(string modRoot, string dstModRootAbs)
+        {
+            var modName = Path.GetFileName(modRoot.TrimEnd('/'));
+
+            EditorUtility.DisplayProgressBar("Mod Build", "Preparing...", 0f);
+
+            var exportItems = FindAllExportableAssets(modRoot);
+            var exportAssetPaths = new HashSet<string>(exportItems.Select(x => x.UnityPath), StringComparer.OrdinalIgnoreCase);
+
+            CopyAllFilesExceptMetaAndExportedAssets(modRoot, dstModRootAbs, exportAssetPaths);
+            ExportAssetsToJson(modRoot, dstModRootAbs, exportItems);
+            WriteManifest(dstModRootAbs, modName, exportItems);
+
+            Debug.Log($"Mod build complete: {dstModRootAbs}");
         }
 
         private static void CopyAllFilesExceptMetaAndExportedAssets(string modRootUnityPath, string dstModRootAbs, HashSet<string> exportedAssetUnityPaths)
