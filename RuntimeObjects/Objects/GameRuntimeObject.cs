@@ -28,6 +28,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
         [NonSerialized, JsonIgnore] private bool _isEcbEntity;
         [NonSerialized, JsonIgnore] private int _grcEditingToken;
         [NonSerialized, JsonIgnore] private bool _hasEntityProjection;
+        [NonSerialized, JsonIgnore] private bool _cacheHasRuntimeIds;
         [NonSerialized, JsonIgnore] private Entity _entity;
 
         [NonSerialized, JsonIgnore] private RuntimeStore _runtimeStore;
@@ -352,7 +353,9 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
 
         private void EnsureCache()
         {
-            if (_componentsById == null || _componentsByType == null)
+            if (_componentsById == null
+                || _componentsByType == null
+                || (RuntimeComponentTypeRegistry.IsInitialized && !_cacheHasRuntimeIds))
                 RebuildCache();
         }
 
@@ -365,14 +368,19 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
 
             _componentsByType.Clear();
             _componentsById.Clear();
+            _cacheHasRuntimeIds = RuntimeComponentTypeRegistry.IsInitialized;
             foreach (var c in _components)
             {
                 if (c == null)
                     continue;
 
                 var type = c.GetType();
-                var id = type.GetId();
                 _componentsByType[type] = c;
+
+                if (!_cacheHasRuntimeIds)
+                    continue;
+
+                var id = type.GetId();
                 _componentsById[id] = c;
             }
 
