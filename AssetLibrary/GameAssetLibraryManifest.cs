@@ -408,7 +408,7 @@ namespace DingoGameObjectsCMS.AssetLibrary
                 var manifestPath = Path.Combine(mount.ModRootAbs, MANIFEST_FILE_NAME);
                 if (!File.Exists(manifestPath))
                 {
-                    Debug.LogError($"No {MANIFEST_FILE_NAME} in '{mount.ModRootAbs}', skip.");
+                    Debug.LogWarning($"No {MANIFEST_FILE_NAME} in '{mount.ModRootAbs}', skip.");
                     return;
                 }
 
@@ -443,7 +443,7 @@ namespace DingoGameObjectsCMS.AssetLibrary
                 var manifestPath = Path.Combine(mount.ModRootAbs, MANIFEST_FILE_NAME);
                 if (!File.Exists(manifestPath))
                 {
-                    Debug.LogError($"No {MANIFEST_FILE_NAME} in '{mount.ModRootAbs}', skip.");
+                    Debug.LogWarning($"No {MANIFEST_FILE_NAME} in '{mount.ModRootAbs}', skip.");
                     return;
                 }
 
