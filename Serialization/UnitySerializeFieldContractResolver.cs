@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Generic;
 using System.Reflection;
+using DingoGameObjectsCMS.AssetObjects;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Serialization;
 using UnityEngine;
@@ -48,14 +49,19 @@ namespace DingoGameObjectsCMS.Serialization
             return prop;
         }
 
-        private static bool HasUnitySerializeField(FieldInfo f) =>
-            f.GetCustomAttribute<SerializeField>() != null;
+        protected override JsonObjectContract CreateObjectContract(Type objectType)
+        {
+            var contract = base.CreateObjectContract(objectType);
 
-        private static bool HasUnitySerializeReference(FieldInfo f) =>
-            f.GetCustomAttribute<SerializeReference>() != null;
+            if (!objectType.IsAbstract && typeof(GameAssetScriptableObject).IsAssignableFrom(objectType))
+                contract.DefaultCreator = () => ScriptableObject.CreateInstance(objectType);
 
-        private static bool HasJsonProperty(FieldInfo f) =>
-            f.GetCustomAttribute<JsonPropertyAttribute>() != null;
+            return contract;
+        }
+
+        private static bool HasUnitySerializeField(FieldInfo f) => f.GetCustomAttribute<SerializeField>() != null;
+        private static bool HasUnitySerializeReference(FieldInfo f) => f.GetCustomAttribute<SerializeReference>() != null;
+        private static bool HasJsonProperty(FieldInfo f) => f.GetCustomAttribute<JsonPropertyAttribute>() != null;
 
         private static IEnumerable<Type> EnumerateTypeHierarchy(Type t)
         {

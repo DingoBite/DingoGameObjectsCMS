@@ -20,7 +20,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects
     }
 
     [Serializable, Preserve]
-    public struct GameAssetKey
+    public struct GameAssetKey : IEquatable<GameAssetKey>
     {
         public const string MODS = "mods";
         public const string UNDEFINED = "_undefined";
@@ -41,5 +41,30 @@ namespace DingoGameObjectsCMS.RuntimeObjects
         }
 
         public override string ToString() => $"{Mod}.{Type}.{Key}.{Version}";
+
+        public bool Equals(GameAssetKey other)
+        {
+            return Mod == other.Mod && Type == other.Type && Key == other.Key && Version == other.Version;
+        }
+
+        public override bool Equals(object obj)
+        {
+            return obj is GameAssetKey other && Equals(other);
+        }
+
+        public override int GetHashCode()
+        {
+            return HashCode.Combine(Mod, Type, Key, Version);
+        }
+
+        public static bool operator ==(GameAssetKey left, GameAssetKey right)
+        {
+            return left.Equals(right);
+        }
+
+        public static bool operator !=(GameAssetKey left, GameAssetKey right)
+        {
+            return !left.Equals(right);
+        }
     }
 }

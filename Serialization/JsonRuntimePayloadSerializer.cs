@@ -14,7 +14,7 @@ namespace DingoGameObjectsCMS.Serialization
             if (value == null)
                 return Array.Empty<byte>();
 
-            var json = JsonConvert.SerializeObject(value, Formatting.None, GameRuntimeComponentJson.Settings);
+            var json = JsonConvert.SerializeObject(value, Formatting.None, GameRuntimeJson.Settings);
             return Encoding.UTF8.GetBytes(json);
         }
 
@@ -24,7 +24,7 @@ namespace DingoGameObjectsCMS.Serialization
                 return default;
 
             var json = Encoding.UTF8.GetString(payload);
-            return JsonConvert.DeserializeObject<T>(json, GameRuntimeComponentJson.Settings);
+            return JsonConvert.DeserializeObject<T>(json, GameRuntimeJson.Settings);
         }
 
         public byte[] SerializeRuntimeObject(GameRuntimeObject value) => Serialize(value);
@@ -36,7 +36,7 @@ namespace DingoGameObjectsCMS.Serialization
             if (value == null)
                 return Array.Empty<byte>();
 
-            var json = JsonConvert.SerializeObject(value, value.GetType(), Formatting.None, GameRuntimeComponentJson.Settings);
+            var json = JsonConvert.SerializeObject(value, value.GetType(), Formatting.None, GameRuntimeJson.Settings);
             return Encoding.UTF8.GetBytes(json);
         }
 
@@ -49,7 +49,7 @@ namespace DingoGameObjectsCMS.Serialization
                 return null;
 
             var json = Encoding.UTF8.GetString(payload);
-            return JsonConvert.DeserializeObject(json, compType, GameRuntimeComponentJson.Settings) as GameRuntimeComponent;
+            return JsonConvert.DeserializeObject(json, compType, GameRuntimeJson.Settings) as GameRuntimeComponent;
         }
     }
 }

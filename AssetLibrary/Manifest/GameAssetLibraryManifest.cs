@@ -65,19 +65,19 @@ namespace DingoGameObjectsCMS.AssetLibrary
 
         public bool ExternalOverridesBuiltIn => _externalOverridesBuiltIn;
 
-        [NonSerialized] private bool _runtimeCacheBuilt;
+        private bool _runtimeCacheBuilt;
 
-        [NonSerialized] private readonly Dictionary<Hash128, GameAsset> _builtInByGuid = new();
-        [NonSerialized] private readonly Dictionary<GameAssetKey, GameAsset> _builtInByKey = new(new GameAssetKeyComparer());
+        private readonly Dictionary<Hash128, GameAsset> _builtInByGuid = new();
+        private readonly Dictionary<GameAssetKey, GameAsset> _builtInByKey = new(new GameAssetKeyComparer());
 
-        [NonSerialized] private readonly List<ModPackage> _packages = new();
+        private readonly List<ModPackage> _packages = new();
 
-        [NonSerialized] private readonly Dictionary<GameAssetKey, ExternalLocator> _externalByKey = new(new GameAssetKeyComparer());
-        [NonSerialized] private readonly Dictionary<Hash128, ExternalLocator> _externalByGuid = new();
+        private readonly Dictionary<GameAssetKey, ExternalLocator> _externalByKey = new(new GameAssetKeyComparer());
+        private readonly Dictionary<Hash128, ExternalLocator> _externalByGuid = new();
 
-        [NonSerialized] private readonly object _cacheLock = new();
-        [NonSerialized] private readonly SemaphoreSlim _buildGate = new(1, 1);
-        [NonSerialized] private Task _inFlightBuild;
+        private readonly object _cacheLock = new();
+        private readonly SemaphoreSlim _buildGate = new(1, 1);
+        private Task _inFlightBuild;
 
         public static void AddFolder(GameAssetFolderPath gameAssetFolderPath)
         {
@@ -413,7 +413,7 @@ namespace DingoGameObjectsCMS.AssetLibrary
                 }
 
                 var manifestJson = File.ReadAllText(manifestPath);
-                var manifest = JsonConvert.DeserializeObject<ModManifest>(manifestJson, GameRuntimeComponentJson.Settings);
+                var manifest = JsonConvert.DeserializeObject<ModManifest>(manifestJson, GameRuntimeJson.Settings);
                 if (manifest == null)
                     return;
 
@@ -449,7 +449,7 @@ namespace DingoGameObjectsCMS.AssetLibrary
 
                 var manifestJson = await File.ReadAllTextAsync(manifestPath, ct).ConfigureAwait(false);
 
-                var manifest = JsonConvert.DeserializeObject<ModManifest>(manifestJson, GameRuntimeComponentJson.Settings);
+                var manifest = JsonConvert.DeserializeObject<ModManifest>(manifestJson, GameRuntimeJson.Settings);
                 if (manifest == null)
                     return;
 

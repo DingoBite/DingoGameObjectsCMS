@@ -62,10 +62,11 @@ namespace DingoGameObjectsCMS.Modding.Editor
                     EditorUtility.DisplayProgressBar("Mod Import", $"Importing {rel}", (float)(i + 1) / Math.Max(1, jsonFiles.Count));
 
                     var json = File.ReadAllText(jsonPathAbs);
+                    var importedAsset = GameAssetJson.FromJson(json);
+                    if (importedAsset == null)
+                        continue;
 
-                    var soType = ResolveRootTypeFromJson(json) ?? typeof(GameAsset);
-
-                    var so = CreateOrUpdateAsset(dstUnityPath, soType, json);
+                    var so = CreateOrUpdateAsset(dstUnityPath, importedAsset, json);
                     if (so != null)
                         importedAssets.Add(so);
                 }
@@ -90,22 +91,27 @@ namespace DingoGameObjectsCMS.Modding.Editor
         [MenuItem("Assets/Game Assets/Import Mod From Folder...", true)]
         private static bool ValidateImportModFromFolderMenu() => !string.IsNullOrEmpty(GetSelectedModRoot());
 
-        private static ScriptableObject CreateOrUpdateAsset(string unityAssetPath, Type soType, string json)
+        private static ScriptableObject CreateOrUpdateAsset(string unityAssetPath, GameAssetScriptableObject importedAsset, string json)
         {
             unityAssetPath = Normalize(unityAssetPath);
+            var assetType = importedAsset.GetType();
 
             ScriptableObject asset = null;
 
             if (UPDATE_EXISTING_ASSETS)
-                asset = AssetDatabase.LoadAssetAtPath(unityAssetPath, soType) as ScriptableObject;
+                asset = AssetDatabase.LoadAssetAtPath(unityAssetPath, assetType) as ScriptableObject;
 
             if (asset == null)
             {
-                asset = ScriptableObject.CreateInstance(soType);
+                asset = importedAsset;
                 AssetDatabase.CreateAsset(asset, unityAssetPath);
             }
+            else
+            {
+                UnityEngine.Object.DestroyImmediate(importedAsset);
+                JsonConvert.PopulateObject(json, asset, GameAssetJson.Settings);
+            }
 
-            JsonConvert.PopulateObject(json, asset, GameAssetJsonRuntime.Settings);
             SubAssetFixer.RebuildSubAssets(
                 root: asset,
                 rootAssetPath: unityAssetPath,
@@ -115,44 +121,6 @@ namespace DingoGameObjectsCMS.Modding.Editor
             EditorUtility.SetDirty(asset);
             return asset;
         }
-
-        private static Type ResolveRootTypeFromJson(string json)
-        {
-            try
-            {
-                var jo = JObject.Parse(json);
-                var typeToken = jo["$type"]?.Value<string>();
-                if (string.IsNullOrWhiteSpace(typeToken))
-                    return typeof(GameAsset);
-
-                SplitTypeName(typeToken, out var typeName, out var assemblyName);
-
-                var binder = GameAssetJsonRuntime.Settings.SerializationBinder;
-#if NEWTONSOFT_JSON_ISERIALIZATIONBINDER
-                return binder.BindToType(assemblyName, typeName) ?? typeof(DingoGameObjectsCMS.AssetObjects.GameAsset);
-#else
-                return binder.BindToType(assemblyName, typeName) ?? typeof(GameAsset);
-#endif
-            }
-            catch
-            {
-                return typeof(GameAsset);
-            }
-        }
-
-        private static void SplitTypeName(string s, out string typeName, out string assemblyName)
-        {
-            typeName = s;
-            assemblyName = null;
-
-            var comma = s.IndexOf(',');
-            if (comma < 0)
-                return;
-
-            typeName = s.Substring(0, comma).Trim();
-            assemblyName = s.Substring(comma + 1).Trim();
-        }
-
 
         private static bool LooksLikeAssetJson(string jsonPathAbs)
         {

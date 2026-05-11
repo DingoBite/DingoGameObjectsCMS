@@ -3,7 +3,7 @@ using DingoGameObjectsCMS.AssetObjects;
 using DingoGameObjectsCMS.RuntimeObjects;
 using Unity.Collections;
 
-namespace DingoGameObjectsCMS.AssetLibrary
+namespace DingoGameObjectsCMS.AssetLibrary.Manifest
 {
     public static class A
     {

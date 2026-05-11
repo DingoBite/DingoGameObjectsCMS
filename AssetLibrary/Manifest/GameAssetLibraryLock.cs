@@ -94,12 +94,12 @@ namespace DingoGameObjectsCMS.AssetLibrary
 
     public static class GameAssetLibraryLockIssueKinds
     {
-        public const string MissingGuid = "missing_guid";
-        public const string MissingResolvedKey = "missing_resolved_key";
-        public const string GuidKeyMismatch = "guid_key_mismatch";
-        public const string IdentityMissingInCurrentLibrary = "identity_missing_in_current_library";
-        public const string MissingMod = "missing_mod";
-        public const string ModChanged = "mod_changed";
+        public const string MISSING_GUID = "missing_guid";
+        public const string MISSING_RESOLVED_KEY = "missing_resolved_key";
+        public const string GUID_KEY_MISMATCH = "guid_key_mismatch";
+        public const string IDENTITY_MISSING_IN_CURRENT_LIBRARY = "identity_missing_in_current_library";
+        public const string MISSING_MOD = "missing_mod";
+        public const string MOD_CHANGED = "mod_changed";
     }
 
     [Serializable, Preserve]

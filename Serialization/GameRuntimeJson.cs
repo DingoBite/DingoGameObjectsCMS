@@ -7,11 +7,11 @@ using Newtonsoft.Json;
 
 namespace DingoGameObjectsCMS.Serialization
 {
-    public static class GameRuntimeComponentJson
+    public static class GameRuntimeJson
     {
         public static readonly JsonSerializerSettings Settings = new();
 
-        static GameRuntimeComponentJson()
+        static GameRuntimeJson()
         {
             Settings.ReferenceLoopHandling = ReferenceLoopHandling.Ignore;
             Settings.TypeNameHandling = TypeNameHandling.None;

@@ -79,7 +79,7 @@ namespace DingoGameObjectsCMS.AssetLibrary
                 {
                     report.Issues.Add(new GameAssetLibraryLockIssue
                     {
-                        Kind = GameAssetLibraryLockIssueKinds.IdentityMissingInCurrentLibrary,
+                        Kind = GameAssetLibraryLockIssueKinds.IDENTITY_MISSING_IN_CURRENT_LIBRARY,
                         Identity = identity,
                         LockedResolvedKey = entry.ResolvedKey,
                         LockedResolvedGuid = entry.ResolvedGuid,
@@ -90,7 +90,7 @@ namespace DingoGameObjectsCMS.AssetLibrary
                 {
                     report.Issues.Add(new GameAssetLibraryLockIssue
                     {
-                        Kind = GameAssetLibraryLockIssueKinds.MissingGuid,
+                        Kind = GameAssetLibraryLockIssueKinds.MISSING_GUID,
                         Identity = identity,
                         LockedResolvedKey = entry.ResolvedKey,
                         LockedResolvedGuid = entry.ResolvedGuid,
@@ -103,7 +103,7 @@ namespace DingoGameObjectsCMS.AssetLibrary
                 {
                     report.Issues.Add(new GameAssetLibraryLockIssue
                     {
-                        Kind = GameAssetLibraryLockIssueKinds.MissingResolvedKey,
+                        Kind = GameAssetLibraryLockIssueKinds.MISSING_RESOLVED_KEY,
                         Identity = identity,
                         LockedResolvedKey = entry.ResolvedKey,
                         LockedResolvedGuid = entry.ResolvedGuid,
@@ -117,7 +117,7 @@ namespace DingoGameObjectsCMS.AssetLibrary
                     var currentAsset = hasCurrentResolvedKey ? currentResolvedKeyAsset : currentGuidAsset;
                     report.Issues.Add(new GameAssetLibraryLockIssue
                     {
-                        Kind = GameAssetLibraryLockIssueKinds.GuidKeyMismatch,
+                        Kind = GameAssetLibraryLockIssueKinds.GUID_KEY_MISMATCH,
                         Identity = identity,
                         LockedResolvedKey = entry.ResolvedKey,
                         LockedResolvedGuid = entry.ResolvedGuid,
@@ -146,7 +146,7 @@ namespace DingoGameObjectsCMS.AssetLibrary
                 {
                     report.Issues.Add(new GameAssetLibraryLockIssue
                     {
-                        Kind = GameAssetLibraryLockIssueKinds.MissingMod,
+                        Kind = GameAssetLibraryLockIssueKinds.MISSING_MOD,
                         Mod = lockedMod.Mod,
                         LockedManifestVersion = lockedMod.ManifestVersion,
                         LockedGeneratedUtc = lockedMod.GeneratedUtc,
@@ -158,7 +158,7 @@ namespace DingoGameObjectsCMS.AssetLibrary
                 {
                     report.Issues.Add(new GameAssetLibraryLockIssue
                     {
-                        Kind = GameAssetLibraryLockIssueKinds.ModChanged,
+                        Kind = GameAssetLibraryLockIssueKinds.MOD_CHANGED,
                         Mod = lockedMod.Mod,
                         LockedManifestVersion = lockedMod.ManifestVersion,
                         LockedGeneratedUtc = lockedMod.GeneratedUtc,

@@ -23,7 +23,5 @@ namespace DingoGameObjectsCMS.Modding
         public GameAssetKey Key;
         public Hash128 GUID;
         public string RelativeJsonPath;
-
-        public string SoType;
     }
 }

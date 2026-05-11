@@ -229,12 +229,11 @@ namespace DingoGameObjectsCMS.Modding.Editor
                 {
                     Key = it.Asset.Key,
                     GUID = it.Asset.GUID,
-                    RelativeJsonPath = it.RelativeJsonPath,
-                    SoType = it.Asset.GetType().FullName
+                    RelativeJsonPath = it.RelativeJsonPath
                 }).OrderBy(e => e.RelativeJsonPath, StringComparer.OrdinalIgnoreCase).ToList()
             };
 
-            var json = JsonConvert.SerializeObject(m, Formatting.Indented, GameAssetJsonRuntime.Settings);
+            var json = JsonConvert.SerializeObject(m, Formatting.Indented, GameAssetJson.Settings);
 
             File.WriteAllText(Path.Combine(dstModRootAbs, "manifest.json"), json);
         }

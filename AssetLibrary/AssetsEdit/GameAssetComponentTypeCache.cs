@@ -4,7 +4,7 @@ using System.Linq;
 using System.Reflection;
 using DingoGameObjectsCMS.AssetObjects;
 
-namespace DingoGameObjectsCMS.AssetLibrary
+namespace DingoGameObjectsCMS.AssetLibrary.AssetsEdit
 {
     public static class GameAssetComponentTypeCache
     {

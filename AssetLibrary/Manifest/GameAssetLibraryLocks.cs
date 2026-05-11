@@ -7,7 +7,7 @@ using Unity.Collections;
 using UnityEditor;
 using UnityEngine;
 
-namespace DingoGameObjectsCMS.AssetLibrary
+namespace DingoGameObjectsCMS.AssetLibrary.Manifest
 {
     public static class GameAssetLibraryLocks
     {
