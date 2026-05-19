@@ -4,36 +4,17 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using DingoGameObjectsCMS.AssetLibrary.AssetsEdit;
 using DingoGameObjectsCMS.AssetObjects;
 using DingoGameObjectsCMS.Modding;
 using DingoGameObjectsCMS.RuntimeObjects;
 using DingoGameObjectsCMS.Serialization;
-using DingoUnityExtensions.MonoBehaviours.Singletons;
-using NaughtyAttributes;
 using Newtonsoft.Json;
-using UnityEditor;
 using UnityEngine;
 using UnityEngine.Scripting;
-#if UNITY_EDITOR
-#endif
 
 namespace DingoGameObjectsCMS.AssetLibrary
 {
-#if UNITY_EDITOR
-    public static class GameAssetManifestPlayHook
-    {
-        [InitializeOnLoadMethod]
-        private static void Install()
-        {
-            EditorApplication.playModeStateChanged += state =>
-            {
-                if (state == PlayModeStateChange.ExitingEditMode)
-                    GameAssetLibraryManifest.GetNoCheck()?.RebuildCacheInEditor();
-            };
-        }
-    }
-#endif
-
     public enum GameAssetFolderType
     {
         BuildIn = 0,
@@ -45,389 +26,288 @@ namespace DingoGameObjectsCMS.AssetLibrary
     {
         public string Name;
         public GameAssetFolderType FolderType;
-
         public string SubPath;
         public int Priority = 0;
-
         public bool Enabled = true;
     }
-    
-    // TODO Improve
-    [CreateAssetMenu(menuName = MENU_PREFIX + nameof(GameAssetLibraryManifest), fileName = S_PREFIX + nameof(GameAssetLibraryManifest), order = 0)]
-    public class GameAssetLibraryManifest : ProtectedSingletonScriptableObject<GameAssetLibraryManifest>
+
+    public sealed class GameAssetLibraryManifest
     {
-        private const string MENU_PREFIX = "Game Assets/";
-        private const string MANIFEST_FILE_NAME = "manifest.json";
+        private const string BASE_MOD = "base";
+        private const string MANIFEST_FILE_NAME = ModManifestStore.MANIFEST_FILE_NAME;
 
-        [SerializeField] private List<GameAssetFolderPath> _assetFolderPaths = new();
-        [SerializeField] private List<GameAsset> _cachedAssets = new();
-        [SerializeField] private bool _externalOverridesBuiltIn = true;
+        private static readonly GameAssetLibraryManifest Instance = new();
 
-        public bool ExternalOverridesBuiltIn => _externalOverridesBuiltIn;
+        private readonly object _cacheLock = new();
+        private readonly Dictionary<GameAssetKey, ExternalLocator> _byKey = new(new GameAssetKeyComparer());
+        private readonly Dictionary<Hash128, ExternalLocator> _byGuid = new();
+        private readonly List<ModPackage> _packages = new();
 
         private bool _runtimeCacheBuilt;
 
-        private readonly Dictionary<Hash128, GameAsset> _builtInByGuid = new();
-        private readonly Dictionary<GameAssetKey, GameAsset> _builtInByKey = new(new GameAssetKeyComparer());
+        public bool ExternalOverridesBuiltIn => true;
 
-        private readonly List<ModPackage> _packages = new();
-
-        private readonly Dictionary<GameAssetKey, ExternalLocator> _externalByKey = new(new GameAssetKeyComparer());
-        private readonly Dictionary<Hash128, ExternalLocator> _externalByGuid = new();
-
-        private readonly object _cacheLock = new();
-        private readonly SemaphoreSlim _buildGate = new(1, 1);
-        private Task _inFlightBuild;
+        public static GameAssetLibraryManifest GetNoCheck()
+        {
+            return Instance;
+        }
 
         public static void AddFolder(GameAssetFolderPath gameAssetFolderPath)
         {
-            var s = GetNoCheck();
-            if (s == null)
-                return;
-            s._assetFolderPaths.Add(gameAssetFolderPath);
-            s.MarkRuntimeCacheDirty();
+            ClearRuntimeCaches();
         }
 
         public static void RemoveFolder(GameAssetFolderPath gameAssetFolderPath)
         {
-            var s = GetNoCheck();
-            if (s == null)
-                return;
-            s._assetFolderPaths.Remove(gameAssetFolderPath);
-            s.MarkRuntimeCacheDirty();
+            ClearRuntimeCaches();
         }
-        
+
+        public static void EnsureInitialized()
+        {
+            Instance.EnsureRuntimeCacheSync();
+        }
+
         public static Task EnsureInitializedAsync(CancellationToken ct = default)
         {
-            var s = GetNoCheck();
-            if (s == null)
-                return Task.CompletedTask;
-            return s.EnsureRuntimeCacheAsync(ct);
+            ct.ThrowIfCancellationRequested();
+            EnsureInitialized();
+            return Task.CompletedTask;
         }
-        
+
         public static void ClearRuntimeCaches(bool clearExternalPackages = true, bool unloadUnusedAssets = false)
         {
-            var s = GetNoCheck();
-            if (s == null)
-                return;
-            s.ClearRuntimeCache(clearExternalPackages);
+            Instance.ClearRuntimeCache();
 
             if (unloadUnusedAssets)
                 _ = Resources.UnloadUnusedAssets();
         }
 
-        
         public static bool TryResolve(GameAssetKey key, out GameAssetScriptableObject asset)
         {
-            asset = null;
-            var s = GetNoCheck();
-            if (s == null)
-                return false;
-
-            s.EnsureRuntimeCacheSync();
-
-            if (s._externalOverridesBuiltIn)
-                return s.TryResolveExternal(key, out asset) || s.TryResolveBuiltIn(key, out asset);
-
-            return s.TryResolveBuiltIn(key, out asset) || s.TryResolveExternal(key, out asset);
+            return Instance.TryResolveInternal(key, out asset);
         }
 
         public static bool TryResolveGuid(Hash128 guid, out GameAssetScriptableObject asset)
         {
-            asset = null;
-            var s = GetNoCheck();
-            if (s == null)
-                return false;
-
-            s.EnsureRuntimeCacheSync();
-
-            if (s._externalOverridesBuiltIn)
-                return s.TryResolveExternal(guid, out asset) || s.TryResolveBuiltInGuid(guid, out asset);
-
-            return s.TryResolveBuiltInGuid(guid, out asset) || s.TryResolveExternal(guid, out asset);
+            return Instance.TryResolveGuidInternal(guid, out asset);
         }
+
         public static Dictionary<Hash128, GameAssetScriptableObject> CollectAllAssets(bool includeExternal)
         {
-            var s = GetNoCheck();
-            var dict = new Dictionary<Hash128, GameAssetScriptableObject>();
-            if (s == null)
-                return dict;
-
-            s.EnsureRuntimeCacheSync();
-
-            foreach (var e in s._cachedAssets)
-            {
-                if (e == null)
-                    continue;
-                dict[e.GUID] = e;
-            }
-
-            if (!includeExternal)
-                return dict;
-
-            foreach (var kv in s._externalByKey)
-            {
-                if (s.TryResolveExternal(kv.Key, out var a) && a != null)
-                    dict[a.GUID] = a;
-            }
-
-            return dict;
+            return Instance.CollectAllAssetsInternal(includeExternal);
         }
 
-        
         public static List<GameAssetKey> CollectIdentityRequests()
         {
-            var requests = new List<GameAssetKey>();
-            var s = GetNoCheck();
-            if (s == null)
-                return requests;
-
-            s.EnsureRuntimeCacheSync();
-            foreach (var request in s.EnumerateIdentityRequests())
-            {
-                requests.Add(request);
-            }
-
-            return requests;
+            return Instance.CollectIdentityRequestsInternal();
         }
 
         public static List<ModManifest> CollectLoadedModManifests()
         {
-            var manifests = new List<ModManifest>();
-            var s = GetNoCheck();
-            if (s == null)
-                return manifests;
-
-            s.EnsureRuntimeCacheSync();
-            foreach (var package in s._packages)
-            {
-                if (package?.Manifest == null)
-                    continue;
-
-                manifests.Add(package.Manifest);
-            }
-
-            return manifests;
+            return Instance.CollectLoadedModManifestsInternal();
         }
 
-        private void MarkRuntimeCacheDirty()
+        public void RebuildRuntimeCache()
         {
+            RebuildRuntimeCacheInternal();
+        }
+
+        public Task RebuildRuntimeCacheAsync(CancellationToken ct = default)
+        {
+            ct.ThrowIfCancellationRequested();
+            RebuildRuntimeCacheInternal();
+            return Task.CompletedTask;
+        }
+
+        public void ClearRuntimeCache(bool clearExternalPackages = true)
+        {
+            ClearRuntimeCache();
+        }
+
+        private bool TryResolveInternal(GameAssetKey key, out GameAssetScriptableObject asset)
+        {
+            asset = null;
+            EnsureRuntimeCacheSync();
+
+            if (!TryGetLocator(key, out var locator))
+                return false;
+
+            return locator.Package.TryGet(locator.Key, out asset);
+        }
+
+        private bool TryResolveGuidInternal(Hash128 guid, out GameAssetScriptableObject asset)
+        {
+            asset = null;
+            EnsureRuntimeCacheSync();
+
+            ExternalLocator locator;
             lock (_cacheLock)
             {
-                _runtimeCacheBuilt = false;
+                if (!_byGuid.TryGetValue(guid, out locator))
+                    return false;
+            }
+
+            return locator.Package.TryGet(locator.Key, out asset);
+        }
+
+        private Dictionary<Hash128, GameAssetScriptableObject> CollectAllAssetsInternal(bool includeExternal)
+        {
+            EnsureRuntimeCacheSync();
+
+            List<ExternalLocator> locators;
+            lock (_cacheLock)
+            {
+                locators = _byKey.Values
+                    .Where(locator => includeExternal || locator.IsBase)
+                    .ToList();
+            }
+
+            var result = new Dictionary<Hash128, GameAssetScriptableObject>();
+            for (var i = 0; i < locators.Count; i++)
+            {
+                if (locators[i].Package.TryGet(locators[i].Key, out var asset) && asset != null)
+                    result[asset.GUID] = asset;
+            }
+
+            return result;
+        }
+
+        private List<GameAssetKey> CollectIdentityRequestsInternal()
+        {
+            EnsureRuntimeCacheSync();
+
+            var result = new List<GameAssetKey>();
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            lock (_cacheLock)
+            {
+                foreach (var key in _byKey.Keys)
+                {
+                    if (seen.Add(GameAssetIdentityKey.Normalize(key)))
+                        result.Add(new GameAssetKey(key.Mod, key.Type, key.Key, string.Empty));
+                }
+            }
+
+            return result;
+        }
+
+        private List<ModManifest> CollectLoadedModManifestsInternal()
+        {
+            EnsureRuntimeCacheSync();
+
+            lock (_cacheLock)
+            {
+                return _packages
+                    .Where(package => package?.Manifest != null)
+                    .Select(package => package.Manifest)
+                    .ToList();
             }
         }
 
         private void EnsureRuntimeCacheSync()
         {
-            Task inFlight;
             lock (_cacheLock)
             {
                 if (_runtimeCacheBuilt)
                     return;
-                inFlight = _inFlightBuild;
             }
 
-            if (inFlight != null && !inFlight.IsCompleted)
-            {
-                inFlight.GetAwaiter().GetResult();
-                return;
-            }
-
-            RebuildRuntimeCache();
+            RebuildRuntimeCacheInternal();
         }
 
-        private Task EnsureRuntimeCacheAsync(CancellationToken ct)
+        private void RebuildRuntimeCacheInternal()
         {
+            var packages = new List<ModPackage>();
+            var byKey = new Dictionary<GameAssetKey, ExternalLocator>(new GameAssetKeyComparer());
+            var byGuid = new Dictionary<Hash128, ExternalLocator>();
+
+            var mounts = BuildModRootSnapshot();
+            for (var i = 0; i < mounts.Count; i++)
+                TryMountModRoot(mounts[i], packages, byKey, byGuid);
+
             lock (_cacheLock)
             {
-                if (_runtimeCacheBuilt)
-                    return Task.CompletedTask;
-
-                if (_inFlightBuild != null && !_inFlightBuild.IsCompleted)
-                    return _inFlightBuild;
-
-                _inFlightBuild = RebuildRuntimeCacheAsync(ct);
-                return _inFlightBuild;
-            }
-        }
-
-        [Button]
-        public void RebuildRuntimeCache()
-        {
-            _buildGate.Wait();
-            try
-            {
-                var builtInByGuid = new Dictionary<Hash128, GameAsset>();
-                var builtInByKey = new Dictionary<GameAssetKey, GameAsset>(new GameAssetKeyComparer());
-
-                BuildBuiltInCaches(builtInByGuid, builtInByKey);
-
-                var mounts = BuildExternalMountsSnapshot();
-                var packages = new List<ModPackage>();
-                var externalByKey = new Dictionary<GameAssetKey, ExternalLocator>(new GameAssetKeyComparer());
-                var externalByGuid = new Dictionary<Hash128, ExternalLocator>();
-
-                foreach (var m in mounts)
-                {
-                    TryMountModRootSync(m, packages, externalByKey, externalByGuid);
-                }
-
-                SwapCaches(builtInByGuid, builtInByKey, packages, externalByKey, externalByGuid);
-            }
-            finally
-            {
-                _buildGate.Release();
-            }
-        }
-
-        public async Task RebuildRuntimeCacheAsync(CancellationToken ct = default)
-        {
-            await _buildGate.WaitAsync(ct).ConfigureAwait(false);
-            try
-            {
-                var builtInByGuid = new Dictionary<Hash128, GameAsset>();
-                var builtInByKey = new Dictionary<GameAssetKey, GameAsset>(new GameAssetKeyComparer());
-
-                BuildBuiltInCaches(builtInByGuid, builtInByKey);
-
-                var mounts = BuildExternalMountsSnapshot();
-
-                var packages = new List<ModPackage>();
-                var externalByKey = new Dictionary<GameAssetKey, ExternalLocator>(new GameAssetKeyComparer());
-                var externalByGuid = new Dictionary<Hash128, ExternalLocator>();
-
-                foreach (var m in mounts)
-                {
-                    ct.ThrowIfCancellationRequested();
-                    await TryMountModRootAsync(m, packages, externalByKey, externalByGuid, ct).ConfigureAwait(false);
-                }
-
-                SwapCaches(builtInByGuid, builtInByKey, packages, externalByKey, externalByGuid);
-            }
-            finally
-            {
-                _buildGate.Release();
-            }
-        }
-
-        public void ClearRuntimeCache(bool clearExternalPackages = true)
-        {
-            lock (_cacheLock)
-            {
-                _externalByKey.Clear();
-                _externalByGuid.Clear();
-
-                if (clearExternalPackages)
-                    _packages.Clear();
-
-                _builtInByGuid.Clear();
-                _builtInByKey.Clear();
-
-                _runtimeCacheBuilt = false;
-                _inFlightBuild = null;
-            }
-        }
-
-        private void BuildBuiltInCaches(Dictionary<Hash128, GameAsset> builtInByGuid, Dictionary<GameAssetKey, GameAsset> builtInByKey)
-        {
-            foreach (var a in _cachedAssets)
-            {
-                if (a == null)
-                    continue;
-
-                if (a.GUID.isValid)
-                    builtInByGuid[a.GUID] = a;
-
-                builtInByKey[a.Key] = a;
-            }
-        }
-
-        private List<MountInfo> BuildExternalMountsSnapshot()
-        {
-            var externalFolders = _assetFolderPaths.Select((f, idx) => (f, idx)).Where(x => x.f != null && x.f.Enabled && x.f.FolderType != GameAssetFolderType.BuildIn).OrderByDescending(x => x.f.Priority).ThenBy(x => x.idx).Select(x => x.f).ToList();
-
-            var mounts = new List<MountInfo>(externalFolders.Count);
-
-            var order = 0;
-            foreach (var f in externalFolders)
-            {
-                order++;
-
-                var abs = ResolveExternalAbsPath(f.SubPath);
-                if (string.IsNullOrEmpty(abs))
-                    continue;
-
-                mounts.Add(new MountInfo(abs, f.Priority, order));
-            }
-
-            return mounts;
-        }
-
-        private void SwapCaches(Dictionary<Hash128, GameAsset> builtInByGuid, Dictionary<GameAssetKey, GameAsset> builtInByKey, List<ModPackage> packages, Dictionary<GameAssetKey, ExternalLocator> externalByKey, Dictionary<Hash128, ExternalLocator> externalByGuid)
-        {
-            lock (_cacheLock)
-            {
-                _builtInByGuid.Clear();
-                _builtInByKey.Clear();
                 _packages.Clear();
-                _externalByKey.Clear();
-                _externalByGuid.Clear();
-
-                foreach (var kv in builtInByGuid)
-                {
-                    _builtInByGuid[kv.Key] = kv.Value;
-                }
-
-                foreach (var kv in builtInByKey)
-                {
-                    _builtInByKey[kv.Key] = kv.Value;
-                }
-
                 _packages.AddRange(packages);
-
-                foreach (var kv in externalByKey)
-                {
-                    _externalByKey[kv.Key] = kv.Value;
-                }
-
-                foreach (var kv in externalByGuid)
-                {
-                    _externalByGuid[kv.Key] = kv.Value;
-                }
-
+                _byKey.Clear();
+                foreach (var kv in byKey)
+                    _byKey[kv.Key] = kv.Value;
+                _byGuid.Clear();
+                foreach (var kv in byGuid)
+                    _byGuid[kv.Key] = kv.Value;
                 _runtimeCacheBuilt = true;
-                _inFlightBuild = null;
             }
         }
 
-        private void TryMountModRootSync(MountInfo mount, List<ModPackage> packages, Dictionary<GameAssetKey, ExternalLocator> externalByKey, Dictionary<Hash128, ExternalLocator> externalByGuid)
+        private void ClearRuntimeCache()
+        {
+            lock (_cacheLock)
+            {
+                _packages.Clear();
+                _byKey.Clear();
+                _byGuid.Clear();
+                _runtimeCacheBuilt = false;
+            }
+        }
+
+        private static List<MountInfo> BuildModRootSnapshot()
+        {
+            var assetsRoot = GameAssetModPathPolicy.GetAssetsRootPath();
+            Directory.CreateDirectory(assetsRoot);
+
+            var result = new List<MountInfo>();
+            var baseRoot = Path.Combine(assetsRoot, BASE_MOD);
+            result.Add(new MountInfo(baseRoot, BASE_MOD, priority: 0, order: 0));
+
+            var directories = Directory.GetDirectories(assetsRoot)
+                .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
+            var order = 1;
+            for (var i = 0; i < directories.Length; i++)
+            {
+                var mod = Path.GetFileName(directories[i]);
+                if (string.Equals(mod, BASE_MOD, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                result.Add(new MountInfo(directories[i], mod, priority: 100, order));
+                order++;
+            }
+
+            return result;
+        }
+
+        private static void TryMountModRoot(
+            MountInfo mount,
+            List<ModPackage> packages,
+            Dictionary<GameAssetKey, ExternalLocator> byKey,
+            Dictionary<Hash128, ExternalLocator> byGuid)
         {
             try
             {
                 var manifestPath = Path.Combine(mount.ModRootAbs, MANIFEST_FILE_NAME);
                 if (!File.Exists(manifestPath))
-                {
-                    Debug.LogWarning($"No {MANIFEST_FILE_NAME} in '{mount.ModRootAbs}', skip.");
                     return;
-                }
 
                 var manifestJson = File.ReadAllText(manifestPath);
-                var manifest = JsonConvert.DeserializeObject<ModManifest>(manifestJson, GameRuntimeJson.Settings);
+                var manifest = JsonConvert.DeserializeObject<ModManifest>(manifestJson, GameAssetJson.Settings);
                 if (manifest == null)
                     return;
 
-                var pkg = new ModPackage(mount.ModRootAbs, manifest);
-                packages.Add(pkg);
+                manifest.Assets ??= new List<ModManifestEntry>();
+                var package = new ModPackage(mount.ModRootAbs, manifest);
+                packages.Add(package);
 
-                foreach (var e in manifest.Assets)
+                for (var i = 0; i < manifest.Assets.Count; i++)
                 {
-                    var locator = new ExternalLocator(pkg, e.Key, mount.Priority, mount.Order);
+                    var entry = manifest.Assets[i];
+                    if (entry == null)
+                        continue;
 
-                    UpsertExternalKey(externalByKey, locator);
+                    var locator = new ExternalLocator(package, entry.Key, mount.IsBase, mount.Priority, mount.Order);
+                    UpsertKey(byKey, locator);
 
-                    if (e.GUID.isValid)
-                        UpsertExternalGuid(externalByGuid, e.GUID, locator);
+                    if (entry.GUID.isValid)
+                        UpsertGuid(byGuid, entry.GUID, locator);
                 }
             }
             catch (Exception ex)
@@ -436,172 +316,65 @@ namespace DingoGameObjectsCMS.AssetLibrary
             }
         }
 
-        private async Task TryMountModRootAsync(MountInfo mount, List<ModPackage> packages, Dictionary<GameAssetKey, ExternalLocator> externalByKey, Dictionary<Hash128, ExternalLocator> externalByGuid, CancellationToken ct)
+        private bool TryGetLocator(GameAssetKey key, out ExternalLocator locator)
         {
-            try
+            EnsureRuntimeCacheSync();
+
+            lock (_cacheLock)
             {
-                var manifestPath = Path.Combine(mount.ModRootAbs, MANIFEST_FILE_NAME);
-                if (!File.Exists(manifestPath))
+                if (!IsLatestVersionRequest(key))
+                    return _byKey.TryGetValue(key, out locator);
+
+                var found = false;
+                var bestVersion = string.Empty;
+                locator = default;
+                foreach (var kv in _byKey)
                 {
-                    Debug.LogWarning($"No {MANIFEST_FILE_NAME} in '{mount.ModRootAbs}', skip.");
-                    return;
+                    if (!MatchesIdentity(kv.Key, key))
+                        continue;
+
+                    if (!found || CompareVersions(kv.Key.Version, bestVersion) > 0)
+                    {
+                        found = true;
+                        bestVersion = kv.Key.Version;
+                        locator = kv.Value;
+                    }
                 }
 
-                var manifestJson = await File.ReadAllTextAsync(manifestPath, ct).ConfigureAwait(false);
-
-                var manifest = JsonConvert.DeserializeObject<ModManifest>(manifestJson, GameRuntimeJson.Settings);
-                if (manifest == null)
-                    return;
-
-                var pkg = new ModPackage(mount.ModRootAbs, manifest);
-                packages.Add(pkg);
-
-                foreach (var e in manifest.Assets)
-                {
-                    var locator = new ExternalLocator(pkg, e.Key, mount.Priority, mount.Order);
-
-                    UpsertExternalKey(externalByKey, locator);
-
-                    if (e.GUID.isValid)
-                        UpsertExternalGuid(externalByGuid, e.GUID, locator);
-                }
-            }
-            catch (OperationCanceledException)
-            {
-            }
-            catch (Exception ex)
-            {
-                Debug.LogException(ex);
+                return found;
             }
         }
 
-        private static void UpsertExternalKey(Dictionary<GameAssetKey, ExternalLocator> dict, ExternalLocator loc)
+        private static void UpsertKey(Dictionary<GameAssetKey, ExternalLocator> dict, ExternalLocator locator)
         {
-            if (dict.TryGetValue(loc.Key, out var existing))
+            if (dict.TryGetValue(locator.Key, out var existing))
             {
-                if (IsBetter(loc, existing))
-                    dict[loc.Key] = loc;
+                if (IsBetter(locator, existing))
+                    dict[locator.Key] = locator;
                 return;
             }
 
-            dict.Add(loc.Key, loc);
+            dict.Add(locator.Key, locator);
         }
 
-        private static void UpsertExternalGuid(Dictionary<Hash128, ExternalLocator> dict, Hash128 guid, ExternalLocator loc)
+        private static void UpsertGuid(Dictionary<Hash128, ExternalLocator> dict, Hash128 guid, ExternalLocator locator)
         {
             if (dict.TryGetValue(guid, out var existing))
             {
-                if (IsBetter(loc, existing))
-                    dict[guid] = loc;
+                if (IsBetter(locator, existing))
+                    dict[guid] = locator;
                 return;
             }
 
-            dict.Add(guid, loc);
+            dict.Add(guid, locator);
         }
 
-        private static bool IsBetter(ExternalLocator a, ExternalLocator b)
+        private static bool IsBetter(ExternalLocator left, ExternalLocator right)
         {
-            if (a.Priority != b.Priority)
-                return a.Priority > b.Priority;
+            if (left.Priority != right.Priority)
+                return left.Priority > right.Priority;
 
-            return a.Order > b.Order;
-        }
-
-        private bool TryResolveBuiltIn(GameAssetKey key, out GameAssetScriptableObject asset)
-        {
-            asset = null;
-
-            if (!IsLatestVersionRequest(key))
-            {
-                if (_builtInByKey.TryGetValue(key, out var ga) && ga != null)
-                {
-                    asset = ga;
-                    return true;
-                }
-
-                return false;
-            }
-
-            if (!TryGetLatestBuiltIn(key, out var latest))
-                return false;
-
-            asset = latest;
-            return true;
-        }
-
-        private bool TryResolveBuiltInGuid(Hash128 guid, out GameAssetScriptableObject asset)
-        {
-            asset = null;
-            if (_builtInByGuid.TryGetValue(guid, out var ga) && ga != null)
-            {
-                asset = ga;
-                return true;
-            }
-
-            return false;
-        }
-
-        private bool TryResolveExternal(GameAssetKey key, out GameAssetScriptableObject asset)
-        {
-            asset = null;
-
-            if (!TryGetExternalLocator(key, out var loc))
-                return false;
-
-            if (loc.Package.TryGet(loc.Key, out var so) && so != null)
-            {
-                asset = so;
-                return true;
-            }
-
-            return false;
-        }
-
-        private bool TryGetLatestBuiltIn(GameAssetKey key, out GameAsset asset)
-        {
-            asset = null;
-
-            var found = false;
-            var bestVersion = string.Empty;
-            foreach (var kv in _builtInByKey)
-            {
-                if (kv.Value == null || !MatchesIdentity(kv.Key, key))
-                    continue;
-
-                if (!found || CompareVersions(kv.Key.Version, bestVersion) > 0)
-                {
-                    found = true;
-                    bestVersion = kv.Key.Version;
-                    asset = kv.Value;
-                }
-            }
-
-            return found;
-        }
-
-        private bool TryGetExternalLocator(GameAssetKey key, out ExternalLocator locator)
-        {
-            locator = default;
-
-            if (!IsLatestVersionRequest(key))
-                return _externalByKey.TryGetValue(key, out locator);
-
-            var found = false;
-            var bestVersion = string.Empty;
-            foreach (var kv in _externalByKey)
-            {
-                if (!MatchesIdentity(kv.Key, key))
-                    continue;
-
-                if (!found || CompareVersions(kv.Key.Version, bestVersion) > 0)
-                {
-                    found = true;
-                    bestVersion = kv.Key.Version;
-                    locator = kv.Value;
-                }
-            }
-
-            return found;
+            return left.Order > right.Order;
         }
 
         private static bool IsLatestVersionRequest(GameAssetKey key)
@@ -618,166 +391,49 @@ namespace DingoGameObjectsCMS.AssetLibrary
 
         private static int CompareVersions(string left, string right)
         {
-            var leftParsed = TryParseVersion(left, out var leftVersion);
-            var rightParsed = TryParseVersion(right, out var rightVersion);
+            var leftParsed = Version.TryParse(string.IsNullOrWhiteSpace(left) ? string.Empty : left.Trim(), out var leftVersion);
+            var rightParsed = Version.TryParse(string.IsNullOrWhiteSpace(right) ? string.Empty : right.Trim(), out var rightVersion);
 
             if (leftParsed && rightParsed)
                 return leftVersion.CompareTo(rightVersion);
-
             if (leftParsed)
                 return 1;
-
             if (rightParsed)
                 return -1;
 
             return StringComparer.OrdinalIgnoreCase.Compare(left ?? string.Empty, right ?? string.Empty);
         }
 
-        private static bool TryParseVersion(string value, out System.Version version)
+        private readonly struct MountInfo
         {
-            version = null;
-
-            if (string.IsNullOrWhiteSpace(value))
-                return false;
-
-            return System.Version.TryParse(value.Trim(), out version);
-        }
-
-        private bool TryResolveExternal(Hash128 guid, out GameAssetScriptableObject asset)
-        {
-            asset = null;
-
-            if (!_externalByGuid.TryGetValue(guid, out var loc))
-                return false;
-
-            if (loc.Package.TryGet(loc.Key, out var so) && so != null)
-            {
-                asset = so;
-                return true;
-            }
-
-            return false;
-        }
-
-        
-        private IEnumerable<GameAssetKey> EnumerateIdentityRequests()
-        {
-            var seen = new HashSet<string>(StringComparer.Ordinal);
-
-            foreach (var key in _builtInByKey.Keys)
-            {
-                if (!seen.Add(GameAssetIdentityKey.Normalize(key)))
-                    continue;
-
-                yield return BuildIdentityRequest(key);
-            }
-
-            foreach (var key in _externalByKey.Keys)
-            {
-                if (!seen.Add(GameAssetIdentityKey.Normalize(key)))
-                    continue;
-
-                yield return BuildIdentityRequest(key);
-            }
-        }
-
-        private static GameAssetKey BuildIdentityRequest(GameAssetKey key)
-        {
-            return new GameAssetKey(key.Mod, key.Type, key.Key, string.Empty);
-        }
-
-
-        private static string ResolveExternalAbsPath(string subPath)
-        {
-            if (string.IsNullOrWhiteSpace(subPath))
-                return string.Empty;
-
-            var p = subPath.Replace('\\', '/').Trim();
-
-            if (Path.IsPathRooted(p))
-                return Path.GetFullPath(p);
-
-            return Path.GetFullPath(Path.Combine(Application.persistentDataPath, p));
-        }
-
-#if UNITY_EDITOR
-        [Button]
-        public void RebuildCacheInEditor()
-        {
-            _cachedAssets.Clear();
-
-            foreach (var folder in _assetFolderPaths)
-            {
-                if (folder == null || !folder.Enabled)
-                    continue;
-
-                if (folder.FolderType != GameAssetFolderType.BuildIn)
-                    continue;
-
-                var root = ResolveProjectFolder(folder);
-                if (!AssetDatabase.IsValidFolder(root))
-                    continue;
-
-                var guids = AssetDatabase.FindAssets($"t:{nameof(GameAsset)}", new[] { root });
-                foreach (var guidStr in guids)
-                {
-                    var path = AssetDatabase.GUIDToAssetPath(guidStr);
-                    var asset = AssetDatabase.LoadAssetAtPath<GameAsset>(path);
-                    if (asset == null)
-                        continue;
-                    _cachedAssets.Add(asset);
-                }
-            }
-
-            _cachedAssets = _cachedAssets.OrderBy(x => x.GUID.ToString()).ToList();
-
-            EditorUtility.SetDirty(this);
-            AssetDatabase.SaveAssets();
-
-            MarkRuntimeCacheDirty();
-        }
-
-        private static string ResolveProjectFolder(GameAssetFolderPath folder)
-        {
-            var sub = (folder.SubPath ?? string.Empty).Replace('\\', '/').Trim('/');
-
-            if (string.IsNullOrEmpty(sub))
-                return "Assets";
-
-            if (sub.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase) || sub.Equals("Assets", StringComparison.OrdinalIgnoreCase) || sub.StartsWith("Packages/", StringComparison.OrdinalIgnoreCase) || sub.Equals("Packages", StringComparison.OrdinalIgnoreCase))
-            {
-                return sub;
-            }
-
-            return "Assets/" + sub;
-        }
-#endif
-
-        private readonly struct ExternalLocator
-        {
-            public readonly ModPackage Package;
-            public readonly GameAssetKey Key;
+            public readonly string ModRootAbs;
+            public readonly string Mod;
             public readonly int Priority;
             public readonly int Order;
+            public bool IsBase => string.Equals(Mod, BASE_MOD, StringComparison.OrdinalIgnoreCase);
 
-            public ExternalLocator(ModPackage package, GameAssetKey key, int priority, int order)
+            public MountInfo(string modRootAbs, string mod, int priority, int order)
             {
-                Package = package;
-                Key = key;
+                ModRootAbs = modRootAbs;
+                Mod = mod;
                 Priority = priority;
                 Order = order;
             }
         }
 
-        private readonly struct MountInfo
+        private readonly struct ExternalLocator
         {
-            public readonly string ModRootAbs;
+            public readonly ModPackage Package;
+            public readonly GameAssetKey Key;
+            public readonly bool IsBase;
             public readonly int Priority;
             public readonly int Order;
 
-            public MountInfo(string modRootAbs, int priority, int order)
+            public ExternalLocator(ModPackage package, GameAssetKey key, bool isBase, int priority, int order)
             {
-                ModRootAbs = modRootAbs;
+                Package = package;
+                Key = key;
+                IsBase = isBase;
                 Priority = priority;
                 Order = order;
             }
@@ -787,24 +443,23 @@ namespace DingoGameObjectsCMS.AssetLibrary
         {
             private static readonly StringComparer C = StringComparer.OrdinalIgnoreCase;
 
-            public bool Equals(GameAssetKey a, GameAssetKey b) =>
-                C.Equals(a.Mod, b.Mod) && C.Equals(a.Type, b.Type) && C.Equals(a.Key, b.Key) && C.Equals(a.Version, b.Version);
-
-            public int GetHashCode(GameAssetKey k)
+            public bool Equals(GameAssetKey a, GameAssetKey b)
             {
-                var hc = new HashCode();
-                hc.Add(k.Mod, C);
-                hc.Add(k.Type, C);
-                hc.Add(k.Key, C);
-                hc.Add(k.Version, C);
-                return hc.ToHashCode();
+                return C.Equals(a.Mod, b.Mod)
+                       && C.Equals(a.Type, b.Type)
+                       && C.Equals(a.Key, b.Key)
+                       && C.Equals(a.Version, b.Version);
+            }
+
+            public int GetHashCode(GameAssetKey key)
+            {
+                var hash = new HashCode();
+                hash.Add(key.Mod, C);
+                hash.Add(key.Type, C);
+                hash.Add(key.Key, C);
+                hash.Add(key.Version, C);
+                return hash.ToHashCode();
             }
         }
     }
 }
-
-
-
-
-
-

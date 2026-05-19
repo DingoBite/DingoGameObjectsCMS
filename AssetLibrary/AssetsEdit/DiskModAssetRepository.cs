@@ -75,10 +75,7 @@ namespace DingoGameObjectsCMS.AssetLibrary.AssetsEdit
 
             var resolvedAsset = asset;
             if (request.RefreshLibrary)
-            {
                 GameAssetLibraryManifest.ClearRuntimeCaches();
-                await GameAssetLibraryManifest.EnsureInitializedAsync(ct);
-            }
 
             if (request.ResolveSavedAsset && GameAssetLibraryManifest.TryResolve(asset.Key, out var resolved) && resolved is GameAsset gameAsset)
                 resolvedAsset = gameAsset;
@@ -143,10 +140,7 @@ namespace DingoGameObjectsCMS.AssetLibrary.AssetsEdit
             await ModManifestStore.SaveAsync(_modRootAbs, manifest, ct);
 
             if (request.RefreshLibrary)
-            {
                 GameAssetLibraryManifest.ClearRuntimeCaches();
-                await GameAssetLibraryManifest.EnsureInitializedAsync(ct);
-            }
 
             return true;
         }

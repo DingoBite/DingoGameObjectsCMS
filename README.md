@@ -376,16 +376,17 @@ Why it matters:
 
 ## Modding and external asset packs
 
-`GameAssetLibraryManifest` builds a library of assets from two sources:
+`GameAssetLibraryManifest` hot-builds the asset library from the filesystem:
 
-- built-in assets inside the project;
-- external mod packs mounted through `manifest.json`.
+- mod root: `Application.persistentDataPath/assets`;
+- built-in-like mod: `Application.persistentDataPath/assets/base`;
+- external mods: sibling folders with `manifest.json`.
 
 Capabilities:
 
-- built-in and external assets resolve through the same `GameAssetKey`
-- external mods can override built-in assets
-- mount points have priority
+- base and external assets resolve through the same `GameAssetKey`
+- external mods can override base assets
+- mod folders are indexed without ScriptableObject configuration
 - assets can be requested by exact version or by `latest`
 
 `ModPackage` lazily loads JSON assets by `GameAssetKey` and reconstructs the required `ScriptableObject`.

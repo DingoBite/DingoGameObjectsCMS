@@ -381,16 +381,17 @@ Assets/StreamingAssets/runtime_component_types.json
 
 ## Моддинг и внешние asset-паки
 
-`GameAssetLibraryManifest` умеет собирать библиотеку asset-ов из двух источников:
+`GameAssetLibraryManifest` собирает библиотеку asset-ов по горячему из файловой структуры:
 
-- built-in assets внутри проекта
-- внешние mod pack-ы с `manifest.json`
+- корень модов: `Application.persistentDataPath/assets`
+- built-in-like мод: `Application.persistentDataPath/assets/base`
+- внешние моды: соседние папки с `manifest.json`
 
 Возможности:
 
-- built-in и external asset-ы резолвятся по одному и тому же `GameAssetKey`
-- внешний мод может переопределять built-in asset
-- mount point имеет приоритет
+- base и external asset-ы резолвятся по одному и тому же `GameAssetKey`
+- внешний мод может переопределять base asset
+- папки модов индексируются без ScriptableObject-конфига
 - asset можно запросить по точной версии или по `latest`
 
 `ModPackage` лениво загружает JSON asset по `GameAssetKey` и восстанавливает нужный `ScriptableObject`.
