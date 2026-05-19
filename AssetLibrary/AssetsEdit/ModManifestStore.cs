@@ -30,6 +30,19 @@ namespace DingoGameObjectsCMS.AssetLibrary.AssetsEdit
             return manifest;
         }
 
+        public static ModManifest Load(string modRootAbs, string mod)
+        {
+            Directory.CreateDirectory(modRootAbs);
+            var path = GetManifestPath(modRootAbs);
+            if (!File.Exists(path))
+                return CreateEmpty(mod);
+
+            var json = File.ReadAllText(path);
+            var manifest = JsonConvert.DeserializeObject<ModManifest>(json, GameAssetJson.Settings) ?? CreateEmpty(mod);
+            Normalize(manifest, mod);
+            return manifest;
+        }
+
         public static async Task SaveAsync(string modRootAbs, ModManifest manifest, CancellationToken ct = default)
         {
             Directory.CreateDirectory(modRootAbs);

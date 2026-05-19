@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using DingoGameObjectsCMS.AssetObjects;
 using DingoGameObjectsCMS.Modding;
 using DingoGameObjectsCMS.RuntimeObjects;
+using DingoGameObjectsCMS.Serialization;
 
 namespace DingoGameObjectsCMS.AssetLibrary.AssetsEdit
 {
@@ -104,9 +105,27 @@ namespace DingoGameObjectsCMS.AssetLibrary.AssetsEdit
             return await GameAssetJsonStore.ReadAsync(GameAssetPathPolicy.CombineAbsolute(_modRootAbs, entry.RelativeJsonPath), ct);
         }
 
+        public GameAssetScriptableObject Load(GameAssetKey key)
+        {
+            ValidateKey(key);
+            var manifest = ModManifestStore.Load(_modRootAbs, _mod);
+            var entry = ModManifestStore.FindByKey(manifest, key);
+            if (entry == null)
+                return null;
+
+            var jsonPath = GameAssetPathPolicy.CombineAbsolute(_modRootAbs, entry.RelativeJsonPath);
+            return GameAssetJson.FromJson(File.ReadAllText(jsonPath));
+        }
+
         public async Task<IReadOnlyList<ModManifestEntry>> ListAsync(CancellationToken ct = default)
         {
             var manifest = await ModManifestStore.LoadAsync(_modRootAbs, _mod, ct);
+            return manifest.Assets.ToArray();
+        }
+
+        public IReadOnlyList<ModManifestEntry> List()
+        {
+            var manifest = ModManifestStore.Load(_modRootAbs, _mod);
             return manifest.Assets.ToArray();
         }
 

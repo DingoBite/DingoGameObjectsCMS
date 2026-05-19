@@ -34,10 +34,7 @@ namespace DingoGameObjectsCMS.AssetLibrary.AssetsEdit
 
         public IReadOnlyList<GameAsset> ListEditableAssets(bool includeExternal = true)
         {
-            return GameAssetLibraryManifest.CollectAllAssets(includeExternal)
-                .Values
-                .OfType<GameAsset>()
-                .Where(Profile.CanEditAsset)
+            return CollectEditableAssets(includeExternal)
                 .OrderBy(asset => asset.Key.Mod)
                 .ThenBy(Profile.BuildAssetLabel)
                 .ToArray();
@@ -126,12 +123,75 @@ namespace DingoGameObjectsCMS.AssetLibrary.AssetsEdit
 
         private bool KeyExists(GameAssetKey key)
         {
-            return GameAssetLibraryManifest.TryResolve(key, out _);
+            if (GameAssetLibraryManifest.TryResolve(key, out _))
+                return true;
+
+            try
+            {
+                var entries = CreateRepository().List();
+                for (var i = 0; i < entries.Count; i++)
+                {
+                    if (entries[i].Key == key)
+                        return true;
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"Failed to check editable GameAsset key '{key}': {ex.Message}");
+            }
+
+            return false;
         }
 
         private DiskModAssetRepository CreateRepository()
         {
             return new DiskModAssetRepository(GetModRootPath(Profile.EditableMod), Profile.EditableMod);
+        }
+
+        private IEnumerable<GameAsset> CollectEditableAssets(bool includeExternal)
+        {
+            var byGuid = new Dictionary<Hash128, GameAsset>();
+            var byKey = new Dictionary<string, GameAsset>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var asset in GameAssetLibraryManifest.CollectAllAssets(includeExternal).Values.OfType<GameAsset>())
+                AddAsset(asset, byGuid, byKey);
+
+            if (includeExternal)
+                AddRepositoryAssets(byGuid, byKey);
+
+            return byGuid.Values.Concat(byKey.Values);
+        }
+
+        private void AddRepositoryAssets(Dictionary<Hash128, GameAsset> byGuid, Dictionary<string, GameAsset> byKey)
+        {
+            try
+            {
+                var repository = CreateRepository();
+                var entries = repository.List();
+                for (var i = 0; i < entries.Count; i++)
+                {
+                    if (repository.Load(entries[i].Key) is GameAsset asset)
+                        AddAsset(asset, byGuid, byKey);
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"Failed to list editable GameAssets for '{Profile.EditableMod}': {ex.Message}");
+            }
+        }
+
+        private void AddAsset(GameAsset asset, Dictionary<Hash128, GameAsset> byGuid, Dictionary<string, GameAsset> byKey)
+        {
+            if (asset == null || !Profile.CanEditAsset(asset))
+                return;
+
+            if (asset.GUID.isValid)
+            {
+                byGuid[asset.GUID] = asset;
+                return;
+            }
+
+            byKey[asset.Key.ToString()] = asset;
         }
     }
 }
