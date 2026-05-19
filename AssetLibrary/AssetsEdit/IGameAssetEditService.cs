@@ -13,6 +13,10 @@ namespace DingoGameObjectsCMS.AssetLibrary.AssetsEdit
 
         IReadOnlyList<GameAsset> ListEditableAssets(bool includeExternal = true);
         GameAsset CreateDefaultAsset();
+        GameAssetKey CreateNewKey(GameAsset asset);
+        GameAssetKey CreateNextVersionKey(GameAssetKey previousKey);
+        bool KeyExists(GameAssetKey key);
+        Task<GameAssetSaveResult> SaveAsAsync(GameAsset asset, GameAssetKey key, CancellationToken ct = default);
         Task<GameAssetSaveResult> SaveNewAsync(GameAsset asset, CancellationToken ct = default);
         Task<GameAssetSaveResult> SaveNewVersionAsync(GameAsset asset, GameAssetKey previousKey, UnityEngine.Hash128 previousGuid, CancellationToken ct = default);
         Task<bool> DeleteAsync(GameAssetKey key, CancellationToken ct = default);

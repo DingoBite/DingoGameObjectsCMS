@@ -54,9 +54,7 @@ namespace DingoGameObjectsCMS.AssetLibrary.AssetsEdit
             if (asset == null)
                 throw new ArgumentNullException(nameof(asset));
 
-            var key = GameAssetKeyPolicy.CreateUniqueKey(asset, Profile.EditableMod, Profile.FallbackType, KeyExists);
-            asset.SetIdentity(key, IdUtils.NewHash128FromGuid());
-            return await SaveCreatedAssetAsync(asset, ct);
+            return await SaveAsAsync(asset, CreateNewKey(asset), ct);
         }
 
         public async Task<GameAssetSaveResult> SaveNewVersionAsync(GameAsset asset, GameAssetKey previousKey, Hash128 previousGuid, CancellationToken ct = default)
@@ -72,7 +70,37 @@ namespace DingoGameObjectsCMS.AssetLibrary.AssetsEdit
             if (existing == null || existing.GUID != previousGuid)
                 throw new InvalidOperationException($"Existing editable asset does not match key/guid: {previousKey} / {previousGuid}");
 
-            var key = GameAssetKeyPolicy.CreateNextVersionKey(previousKey, KeyExists);
+            var key = CreateNextVersionKey(previousKey);
+            return await SaveAsAsync(asset, key, ct);
+        }
+
+        public GameAssetKey CreateNewKey(GameAsset asset)
+        {
+            if (asset == null)
+                throw new ArgumentNullException(nameof(asset));
+
+            return GameAssetKeyPolicy.CreateUniqueKey(asset, Profile.EditableMod, Profile.FallbackType, KeyExists);
+        }
+
+        public GameAssetKey CreateNextVersionKey(GameAssetKey previousKey)
+        {
+            if (!IsEditableKey(previousKey))
+                throw new InvalidOperationException($"Only {Profile.EditableMod} assets can create new versions.");
+
+            return GameAssetKeyPolicy.CreateNextVersionKey(previousKey, KeyExists);
+        }
+
+        public async Task<GameAssetSaveResult> SaveAsAsync(GameAsset asset, GameAssetKey key, CancellationToken ct = default)
+        {
+            if (asset == null)
+                throw new ArgumentNullException(nameof(asset));
+
+            key = NormalizeExplicitKey(asset, key);
+            if (!IsEditableKey(key))
+                throw new InvalidOperationException($"Only {Profile.EditableMod} assets can be saved by this editor.");
+            if (KeyExists(key))
+                throw new InvalidOperationException($"GameAsset key already exists: {key}");
+
             asset.SetIdentity(key, IdUtils.NewHash128FromGuid());
             return await SaveCreatedAssetAsync(asset, ct);
         }
@@ -121,7 +149,7 @@ namespace DingoGameObjectsCMS.AssetLibrary.AssetsEdit
             }, ct);
         }
 
-        private bool KeyExists(GameAssetKey key)
+        public bool KeyExists(GameAssetKey key)
         {
             if (GameAssetLibraryManifest.TryResolve(key, out _))
                 return true;
@@ -141,6 +169,21 @@ namespace DingoGameObjectsCMS.AssetLibrary.AssetsEdit
             }
 
             return false;
+        }
+
+        private GameAssetKey NormalizeExplicitKey(GameAsset asset, GameAssetKey key)
+        {
+            var mod = GameAssetKeyPolicy.NormalizeModName(key.Mod, Profile.EditableMod);
+            var typeFallback = string.IsNullOrWhiteSpace(asset.Key.Type) || asset.Key.Type == GameAssetKey.NONE
+                ? Profile.FallbackType
+                : asset.Key.Type;
+            var keyFallback = string.IsNullOrWhiteSpace(asset.Key.Key) || asset.Key.Key == GameAssetKey.NONE
+                ? typeFallback
+                : asset.Key.Key;
+            var type = GameAssetKeyPolicy.NormalizeSegment(key.Type, typeFallback);
+            var slug = GameAssetKeyPolicy.BuildSlug(key.Key, keyFallback);
+            var version = string.IsNullOrWhiteSpace(key.Version) ? GameAssetKey.ZERO_V : key.Version.Trim();
+            return new GameAssetKey(mod, type, slug, version);
         }
 
         private DiskModAssetRepository CreateRepository()
