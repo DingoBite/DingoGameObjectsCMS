@@ -67,13 +67,6 @@ namespace DingoGameObjectsCMS.AssetLibrary
             Instance.EnsureRuntimeCacheSync();
         }
 
-        public static Task EnsureInitializedAsync(CancellationToken ct = default)
-        {
-            ct.ThrowIfCancellationRequested();
-            EnsureInitialized();
-            return Task.CompletedTask;
-        }
-
         public static void ClearRuntimeCaches(bool clearExternalPackages = true, bool unloadUnusedAssets = false)
         {
             Instance.ClearRuntimeCache();
@@ -111,14 +104,7 @@ namespace DingoGameObjectsCMS.AssetLibrary
         {
             RebuildRuntimeCacheInternal();
         }
-
-        public Task RebuildRuntimeCacheAsync(CancellationToken ct = default)
-        {
-            ct.ThrowIfCancellationRequested();
-            RebuildRuntimeCacheInternal();
-            return Task.CompletedTask;
-        }
-
+        
         public void ClearRuntimeCache(bool clearExternalPackages = true)
         {
             ClearRuntimeCache();
