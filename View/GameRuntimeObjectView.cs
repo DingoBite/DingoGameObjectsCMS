@@ -2,6 +2,7 @@ using Cysharp.Threading.Tasks;
 using DingoGameObjectsCMS.RuntimeObjects.Objects;
 using DingoUnityExtensions.UnityViewProviders.Core;
 using DingoUnityExtensions.UnityViewProviders.Pools;
+using UnityEngine;
 
 namespace DingoGameObjectsCMS.View
 {

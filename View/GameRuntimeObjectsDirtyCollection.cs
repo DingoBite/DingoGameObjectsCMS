@@ -25,7 +25,6 @@ namespace DingoGameObjectsCMS.View
         private readonly List<long> _snapshotKeys = new();
         private readonly HashSet<long> _snapshotLookup = new();
         private readonly List<long> _removedKeys = new();
-        private readonly HashSet<long> _refreshIds = new();
         private int _entryVersion;
 
         public IEnumerable<GameRuntimeObjectOperationView> GetOrderedViews()
@@ -254,14 +253,10 @@ namespace DingoGameObjectsCMS.View
             if (store == null || changes.Length == 0 || _activeEntries.Count == 0)
                 return;
 
-            _refreshIds.Clear();
-
             for (var i = 0; i < changes.Length; i++)
             {
                 var dirty = changes[i];
                 if (!_activeEntries.TryGetValue(dirty.Id, out var activeEntry))
-                    continue;
-                if (!_refreshIds.Add(dirty.Id))
                     continue;
                 if (!TryTakeVisible(store, dirty.Id, out var value))
                     continue;
@@ -270,8 +265,6 @@ namespace DingoGameObjectsCMS.View
                 activeEntry.Value = value;
                 ApplyOperation(activeEntry.Container, operation);
             }
-
-            _refreshIds.Clear();
         }
 
         private void RefreshChangedEntries(RuntimeStore store, NativeArray<ObjectComponentDirty> changes)
@@ -279,14 +272,10 @@ namespace DingoGameObjectsCMS.View
             if (store == null || changes.Length == 0 || _activeEntries.Count == 0)
                 return;
 
-            _refreshIds.Clear();
-
             for (var i = 0; i < changes.Length; i++)
             {
                 var dirty = changes[i];
                 if (!_activeEntries.TryGetValue(dirty.Id, out var activeEntry))
-                    continue;
-                if (!_refreshIds.Add(dirty.Id))
                     continue;
                 if (!TryTakeVisible(store, dirty.Id, out var value))
                     continue;
@@ -295,8 +284,6 @@ namespace DingoGameObjectsCMS.View
                 activeEntry.Value = value;
                 ApplyOperation(activeEntry.Container, operation);
             }
-
-            _refreshIds.Clear();
         }
 
         private bool TryTakeVisible(RuntimeStore store, long id, out GameRuntimeObject value)
