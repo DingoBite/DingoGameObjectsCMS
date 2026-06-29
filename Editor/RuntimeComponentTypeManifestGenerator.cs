@@ -33,48 +33,151 @@ namespace DingoGameObjectsCMS.Editor
         public static void Generate()
         {
             var path = ManifestPath;
-            var manifest = File.Exists(path) ? JsonUtility.FromJson<Manifest>(File.ReadAllText(path)) : new Manifest { Version = 1, Types = new List<Entry>() };
+            var manifest = File.Exists(path) ? JsonUtility.FromJson<Manifest>(File.ReadAllText(path)) : CreateEmptyManifest();
 
-            var all = AppDomain.CurrentDomain.GetAssemblies().SelectMany(a =>
+            var types = CollectRuntimeComponentTypes();
+            var entries = NormalizeExistingEntries(manifest);
+            var usedIds = new HashSet<int>();
+            var usedKeys = new HashSet<string>(StringComparer.Ordinal);
+            var usedTypes = new HashSet<string>(StringComparer.Ordinal);
+            var nextId = -1;
+            var nextEntries = new List<Entry>();
+
+            foreach (var entry in entries.OrderBy(e => e.Id))
             {
-                try
-                {
-                    return a.GetTypes();
-                }
-                catch
-                {
-                    return Array.Empty<Type>();
-                }
-            }).Where(t => t != null && !t.IsAbstract && typeof(GameRuntimeComponent).IsAssignableFrom(t) && typeof(GameRuntimeComponent) != t);
-
-            manifest.Types = manifest.Types
-                .Where(e => e != null
-                            && !string.IsNullOrWhiteSpace(e.AssemblyQualifiedName)
-                            && Type.GetType(e.AssemblyQualifiedName, throwOnError: false) != null)
-                .GroupBy(e => e.AssemblyQualifiedName)
-                .Select(group => group.OrderBy(e => e.Order).First())
-                .OrderBy(e => e.Order)
-                .ToList();
-
-            var existing = new HashSet<string>(manifest.Types.Select(e => e.AssemblyQualifiedName), StringComparer.Ordinal);
-            var maxOrder = manifest.Types.Count == 0 ? -1 : manifest.Types.Max(e => e.Order);
-            foreach (var t in all)
-            {
-                if (string.IsNullOrWhiteSpace(t.AssemblyQualifiedName) || !existing.Add(t.AssemblyQualifiedName))
+                var type = ResolveType(entry);
+                if (type == null)
                     continue;
 
-                manifest.Types.Add(new Entry
-                {
-                    AssemblyQualifiedName = t.AssemblyQualifiedName,
-                    CreatedAt = DateTime.UtcNow.ToString("O"),
-                    Order = ++maxOrder
-                });
+                var nextEntry = RuntimeComponentTypeRegistry.CreateEntry(entry.Id, type, entry.CreatedAt);
+                AddEntry(nextEntries, nextEntry, usedIds, usedKeys, usedTypes);
+                nextId = Math.Max(nextId, nextEntry.Id);
             }
 
-            manifest.Types = manifest.Types.OrderBy(e => e.Order).ToList();
+            nextId = usedIds.Count == 0 ? -1 : usedIds.Max();
+            foreach (var type in types)
+            {
+                if (string.IsNullOrWhiteSpace(type.AssemblyQualifiedName) || usedTypes.Contains(type.AssemblyQualifiedName))
+                    continue;
+
+                var entry = RuntimeComponentTypeRegistry.CreateEntry(++nextId, type, DateTime.UtcNow.ToString("O"));
+                AddEntry(nextEntries, entry, usedIds, usedKeys, usedTypes);
+            }
+
+            manifest.Version = RuntimeComponentTypeRegistry.CURRENT_MANIFEST_VERSION;
+            manifest.Types = nextEntries.OrderBy(e => e.Id).ToList();
+            manifest.RegistryHash = RuntimeComponentTypeRegistry.CalculateRegistryHash(manifest.Types);
+
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             File.WriteAllText(path, JsonUtility.ToJson(manifest, true));
-            Debug.Log($"Saved manifest: {path} (count={manifest.Types.Count})");
+            Debug.Log($"Saved manifest: {path} (count={manifest.Types.Count}, hash={manifest.RegistryHash})");
+        }
+
+        private static Manifest CreateEmptyManifest() => new()
+        {
+            Version = RuntimeComponentTypeRegistry.CURRENT_MANIFEST_VERSION,
+            Types = new List<Entry>()
+        };
+
+        private static IReadOnlyList<Type> CollectRuntimeComponentTypes()
+        {
+            return AppDomain.CurrentDomain.GetAssemblies().SelectMany(a =>
+                {
+                    try
+                    {
+                        return a.GetTypes();
+                    }
+                    catch
+                    {
+                        return Array.Empty<Type>();
+                    }
+                })
+                .Where(t => t != null && !t.IsAbstract && typeof(GameRuntimeComponent).IsAssignableFrom(t) && typeof(GameRuntimeComponent) != t)
+                .OrderBy(RuntimeComponentTypeRegistry.GetKey)
+                .ThenBy(t => t.FullName)
+                .ToArray();
+        }
+
+        private static List<Entry> NormalizeExistingEntries(Manifest manifest)
+        {
+            var entries = manifest?.Types?.Where(e => e != null).ToList() ?? new List<Entry>();
+            var version = manifest == null || manifest.Version <= 0 ? 1 : manifest.Version;
+            if (version >= RuntimeComponentTypeRegistry.CURRENT_MANIFEST_VERSION)
+                return entries;
+
+            for (var i = 0; i < entries.Count; i++)
+                entries[i].Id = i;
+
+            return entries;
+        }
+
+        private static void AddEntry(
+            List<Entry> entries,
+            Entry entry,
+            HashSet<int> usedIds,
+            HashSet<string> usedKeys,
+            HashSet<string> usedTypes)
+        {
+            if (entry.Id < 0)
+                throw new InvalidOperationException($"Runtime component manifest entry has negative id: {entry.Id}.");
+            if (string.IsNullOrWhiteSpace(entry.Key))
+                throw new InvalidOperationException($"Runtime component manifest entry {entry.Id} has empty key.");
+            if (string.IsNullOrWhiteSpace(entry.AssemblyQualifiedName))
+                throw new InvalidOperationException($"Runtime component manifest entry {entry.Id} has empty assembly-qualified name.");
+            if (!usedIds.Add(entry.Id))
+                throw new InvalidOperationException($"Runtime component manifest has duplicate id: {entry.Id}.");
+            if (!usedKeys.Add(entry.Key))
+                throw new InvalidOperationException($"Runtime component manifest has duplicate key: {entry.Key}.");
+            if (!usedTypes.Add(entry.AssemblyQualifiedName))
+                throw new InvalidOperationException($"Runtime component manifest has duplicate type: {entry.AssemblyQualifiedName}.");
+
+            entries.Add(entry);
+        }
+
+        private static Type ResolveType(Entry entry)
+        {
+            if (entry == null)
+                return null;
+
+            if (!string.IsNullOrWhiteSpace(entry.TypeName) && !string.IsNullOrWhiteSpace(entry.AssemblyName))
+            {
+                var t = Type.GetType($"{entry.TypeName}, {entry.AssemblyName}", throwOnError: false);
+                if (t != null)
+                    return t;
+            }
+
+            if (!string.IsNullOrWhiteSpace(entry.AssemblyQualifiedName))
+            {
+                var t = Type.GetType(entry.AssemblyQualifiedName, throwOnError: false);
+                if (t != null)
+                    return t;
+            }
+
+            var fullName = ResolveFullName(entry);
+            if (string.IsNullOrWhiteSpace(fullName))
+                return null;
+
+            foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
+            {
+                if (!string.IsNullOrWhiteSpace(entry.AssemblyName) && !string.Equals(assembly.GetName().Name, entry.AssemblyName, StringComparison.Ordinal))
+                    continue;
+
+                var t = assembly.GetType(fullName, throwOnError: false);
+                if (t != null)
+                    return t;
+            }
+
+            return null;
+        }
+
+        private static string ResolveFullName(Entry entry)
+        {
+            if (!string.IsNullOrWhiteSpace(entry.TypeName))
+                return entry.TypeName.Trim();
+            if (string.IsNullOrWhiteSpace(entry.AssemblyQualifiedName))
+                return null;
+
+            return entry.AssemblyQualifiedName.Split(',')[0].Trim();
         }
     }
 }

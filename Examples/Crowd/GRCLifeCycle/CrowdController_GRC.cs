@@ -10,7 +10,7 @@ using UnityEngine.Scripting;
 
 namespace DingoGameObjectsCMS.Examples.Crowd.GRCLifeCycle
 {
-    [Serializable, Preserve]
+    [Serializable, Preserve, RuntimeComponentKey("dingo.examples.crowd.grc-lifecycle.controller")]
     public sealed class CrowdController_GRC : GameRuntimeComponent<CrowdController_GRC>
     {
         public int CrowdCount = 8;

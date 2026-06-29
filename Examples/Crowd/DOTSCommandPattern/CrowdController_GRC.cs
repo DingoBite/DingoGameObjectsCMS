@@ -7,7 +7,7 @@ using UnityEngine.Scripting;
 
 namespace DingoGameObjectsCMS.Examples.Crowd.DOTSCommandPattern
 {
-    [Serializable, Preserve]
+    [Serializable, Preserve, RuntimeComponentKey("dingo.examples.crowd.dots-command-pattern.controller")]
     public sealed class CrowdController_GRC : GameRuntimeComponent<CrowdController_GRC>
     {
         public int CrowdCount = 8;

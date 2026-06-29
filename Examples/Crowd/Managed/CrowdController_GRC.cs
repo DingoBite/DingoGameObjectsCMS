@@ -10,7 +10,7 @@ using UnityEngine.Scripting;
 
 namespace DingoGameObjectsCMS.Examples.Crowd.Managed
 {
-    [Serializable, Preserve]
+    [Serializable, Preserve, RuntimeComponentKey("dingo.examples.crowd.managed.controller")]
     public sealed class CrowdController_GRC : GameRuntimeComponent<CrowdController_GRC>
     {
         public int CrowdCount = 8;
@@ -71,7 +71,7 @@ namespace DingoGameObjectsCMS.Examples.Crowd.Managed
         }
     }
 
-    [Serializable, Preserve]
+    [Serializable, Preserve, RuntimeComponentKey("dingo.examples.crowd.managed.agent")]
     public sealed class CrowdAgent_GRC : GameRuntimeComponent<CrowdAgent_GRC>
     {
         public int Index;

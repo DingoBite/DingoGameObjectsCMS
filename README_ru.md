@@ -322,7 +322,7 @@ View-слой может подписываться на runtime-объекты 
 
 - дефолтный serializer — `JsonRuntimePayloadSerializer`
 - глобальная точка подмены — `RuntimePayloadSerialization`
-- для runtime-компонентов используется manifest type id
+- для runtime-компонентов используется manifest type id с явным компактным `Id`, стабильным `Key` и `RegistryHash`
 
 Обязательный runtime artifact:
 
@@ -335,7 +335,9 @@ Assets/StreamingAssets/runtime_component_types.json
 - сетевой репликации runtime-компонентов
 - десериализации runtime-компонентов по `compTypeId`
 
-Если вы добавили новый `GameRuntimeComponent`, manifest нужно регенерировать через `Tools/Runtime Types/Generate Manifest` или через build preprocess.
+В manifest entry поле `Id` является компактным ключом payload-а. `Key` — стабильное protocol-имя типа компонента; если компоненту нужно явное имя, добавьте `[RuntimeComponentKey("...")]` на `GameRuntimeComponent`. `RegistryHash` считается по canonical списку `(Id, Key, AssemblyName, TypeName)` и предназначен для проверки совместимости между build-ами.
+
+Во время активной разработки manifest можно регенерировать через `Tools/Runtime Types/Generate Manifest` или через build preprocess. Перед релизом относитесь к нему как к append-only protocol table: сохраняйте существующие id, осознанно резервируйте removed/renamed entries и используйте hash для multiplayer compatibility validation.
 
 ## Сетевая синхронизация
 
@@ -416,7 +418,7 @@ Assets/StreamingAssets/runtime_component_types.json
 - `SubAssetFixer`
   - пересобирает sub-assets после импорта
 - `RuntimeComponentTypeManifestGenerator`
-  - обновляет manifest runtime component type id
+  - обновляет manifest runtime component type id и registry hash
 
 Эти инструменты нужны не только для удобства редактора. Они поддерживают главный контракт системы: asset shape, versioning, serialization и runtime reconstruction должны совпадать.
 

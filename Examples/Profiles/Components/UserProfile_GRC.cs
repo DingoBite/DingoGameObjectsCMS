@@ -4,7 +4,7 @@ using UnityEngine.Scripting;
 
 namespace DingoGameObjectsCMS.Examples.Profiles.Components
 {
-    [Serializable, Preserve]
+    [Serializable, Preserve, RuntimeComponentKey("dingo.examples.profiles.user-profile")]
     public class UserProfile_GRC : GameRuntimeComponent<UserProfile_GRC>
     {
     }

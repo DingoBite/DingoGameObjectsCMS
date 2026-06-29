@@ -6,7 +6,7 @@ using UnityEngine.Scripting;
 
 namespace DingoGameObjectsCMS.Examples.Crowd.ManagedRoot
 {
-    [Serializable, Preserve]
+    [Serializable, Preserve, RuntimeComponentKey("dingo.examples.crowd.managed-root.controller")]
     public sealed class CrowdController_GRC : GameRuntimeComponent<CrowdController_GRC>
     {
         [Serializable]

@@ -317,7 +317,7 @@ Current state:
 
 - the default serializer is `JsonRuntimePayloadSerializer`
 - the global swap point is `RuntimePayloadSerialization`
-- runtime components use a manifest-based type id mapping
+- runtime components use a manifest-based type id mapping with explicit compact `Id`, stable `Key`, and `RegistryHash`
 
 Required runtime artifact:
 
@@ -330,7 +330,9 @@ It is required for:
 - network replication of runtime components;
 - deserialization of runtime components by `compTypeId`.
 
-Whenever you add a new `GameRuntimeComponent`, regenerate the manifest through `Tools/Runtime Types/Generate Manifest` or as part of build preprocessing.
+Manifest entries use `Id` as the compact payload key. `Key` is the stable protocol name for the component type; add `[RuntimeComponentKey("...")]` to a `GameRuntimeComponent` when it needs an explicit name. `RegistryHash` is calculated from the canonical `(Id, Key, AssemblyName, TypeName)` list and is intended for compatibility checks between builds.
+
+During active development the manifest can be regenerated through `Tools/Runtime Types/Generate Manifest` or as part of build preprocessing. Before release, treat it as an append-only protocol table: keep existing ids stable, reserve removed/renamed entries deliberately, and use the hash for multiplayer compatibility validation.
 
 ## Network synchronization
 
@@ -411,7 +413,7 @@ The package ships with editor tools for the asset pipeline:
 - `SubAssetFixer`
   - rebuilds sub-assets after import
 - `RuntimeComponentTypeManifestGenerator`
-  - updates the runtime component type id manifest
+  - updates the runtime component type id manifest and registry hash
 
 These tools are not just editor conveniences. They protect the main contract of the framework: asset shape, versioning, serialization, and runtime reconstruction must stay aligned.
 
