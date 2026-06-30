@@ -121,14 +121,14 @@ namespace DingoGameObjectsCMS.View
                 return;
             }
 
-            var sourceComponent = ResolveSourceComponent(componentType);
-            if (sourceComponent == null)
+            var componentViewType = ResolveComponentViewType(componentType);
+            if (componentViewType == null)
                 return;
 
-            var componentView = gameObject.AddComponent(sourceComponent.GetType()) as GameRuntimeComponentMonoBehaviour;
+            var componentView = gameObject.AddComponent(componentViewType) as GameRuntimeComponentMonoBehaviour;
             if (componentView == null)
             {
-                Debug.LogError($"Component view type '{sourceComponent.GetType().FullName}' is not a {nameof(GameRuntimeComponentMonoBehaviour)}.", this);
+                Debug.LogError($"Component view type '{componentViewType.FullName}' is not a {nameof(GameRuntimeComponentMonoBehaviour)}.", this);
                 return;
             }
 
@@ -176,12 +176,12 @@ namespace DingoGameObjectsCMS.View
             _componentIdsBuffer.Clear();
         }
 
-        private GameRuntimeComponentMonoBehaviour ResolveSourceComponent(Type componentType)
+        private Type ResolveComponentViewType(Type componentType)
         {
             if (_componentPalettePrefab != null)
-                return _componentPalettePrefab.GetComponentFor(componentType, _useFirstPaletteComponentOnMissingType, warnOnMissingType: true);
+                return _componentPalettePrefab.GetComponentFor(componentType, _useFirstPaletteComponentOnMissingType, warnOnMissingType: true)?.GetType();
 
-            return this.GetComponentFor(componentType, useFirstComponentOnMissingType: true, warnOnMissingType: false);
+            return GameRuntimeComponentMonoBehaviourExtensions.TryGetComponentViewType(componentType, out var componentViewType) ? componentViewType : null;
         }
 
         private static void UpdateComponentValue(GameRuntimeComponentMonoBehaviour componentView, GameRuntimeObject gro, uint compTypeId)

@@ -13,3 +13,9 @@
   managed objects. This has known CPU cost, and that cost is accepted for this
   project. Do not keep warning about it unless the user asks to revisit the
   performance model.
+- Do not manually inspect, reconstruct, or edit
+  `Assets/StreamingAssets/runtime_component_types.json` as a normal workflow.
+  When runtime component types change, use the Unity menu helper instead:
+  `Tools/Runtime Types/Generate Manifest` or
+  `Tools/Runtime Types/Regenerate Manifest`. Treat the manifest as generated
+  output unless the user explicitly asks to debug the manifest file itself.
