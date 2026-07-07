@@ -145,6 +145,12 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
             if (_entity == Entity.Null)
                 throw new InvalidOperationException($"GameRuntimeObject {InstanceId} in store '{StoreId}' lost its entity link.");
 
+            if (_world == null || !_world.IsCreated)
+            {
+                ecb = default;
+                return false;
+            }
+
             ecb = _world.TakeGRCEditingECB(out var ecbToken);
             if (_isEcbEntity && ecbToken != _grcEditingToken)
                 throw new InvalidOperationException($"GameRuntimeObject {InstanceId} in store '{StoreId}' is still bound to a deferred ECB entity from another editing scope.");
