@@ -28,29 +28,59 @@ namespace DingoGameObjectsCMS.View
 
         private static void BuildComponentViewTypeCache()
         {
+            var viewBaseAssembly = typeof(GameRuntimeComponentMonoBehaviour).Assembly;
+            var viewBaseAssemblyName = viewBaseAssembly.GetName().Name;
+            ScanAssembly(viewBaseAssembly);
+
             var assemblies = AppDomain.CurrentDomain.GetAssemblies();
             for (var i = 0; i < assemblies.Length; i++)
             {
                 var assembly = assemblies[i];
-                if (assembly.IsDynamic)
+                if (assembly == viewBaseAssembly || assembly.IsDynamic || !ReferencesAssembly(assembly, viewBaseAssemblyName))
                 {
                     continue;
                 }
 
-                foreach (var type in GetLoadableTypes(assembly))
+                ScanAssembly(assembly);
+            }
+        }
+
+        private static void ScanAssembly(Assembly assembly)
+        {
+            foreach (var type in GetLoadableTypes(assembly))
+            {
+                if (type == null || type.IsAbstract || type.ContainsGenericParameters || !typeof(GameRuntimeComponentMonoBehaviour).IsAssignableFrom(type))
                 {
-                    if (type == null || type.IsAbstract || type.ContainsGenericParameters || !typeof(GameRuntimeComponentMonoBehaviour).IsAssignableFrom(type))
-                    {
-                        continue;
-                    }
-
-                    if (!TryGetComponentType(type, out var componentType))
-                    {
-                        continue;
-                    }
-
-                    ComponentViewTypesByComponentType.TryAdd(componentType, type);
+                    continue;
                 }
+
+                if (!TryGetComponentType(type, out var componentType))
+                {
+                    continue;
+                }
+
+                ComponentViewTypesByComponentType.TryAdd(componentType, type);
+            }
+        }
+
+        private static bool ReferencesAssembly(Assembly assembly, string assemblyName)
+        {
+            try
+            {
+                var references = assembly.GetReferencedAssemblies();
+                for (var i = 0; i < references.Length; i++)
+                {
+                    if (string.Equals(references[i].Name, assemblyName, StringComparison.Ordinal))
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+            }
+            catch
+            {
+                return false;
             }
         }
 
