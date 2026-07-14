@@ -25,8 +25,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
         [NonSerialized, JsonIgnore] private Dictionary<uint, ComponentDirty> _componentsChanges = new();
         [NonSerialized, JsonIgnore] private Dictionary<uint, ComponentStructDirty> _structureChanges = new();
         [NonSerialized, JsonIgnore] private bool _isDestroyed;
-        [NonSerialized, JsonIgnore] private bool _isEcbEntity;
-        [NonSerialized, JsonIgnore] private int _grcEditingToken;
         [NonSerialized, JsonIgnore] private bool _hasEntityProjection;
         [NonSerialized, JsonIgnore] private bool _cacheHasRuntimeIds;
         [NonSerialized, JsonIgnore] private Entity _entity;
@@ -49,16 +47,12 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
         public void LinkToEntity(Entity entity)
         {
             _entity = entity;
-            _isEcbEntity = false;
-            _grcEditingToken = 0;
             _hasEntityProjection = true;
         }
 
         public void ClearEntityLink()
         {
             _entity = Entity.Null;
-            _isEcbEntity = false;
-            _grcEditingToken = 0;
         }
 
         public void ClearRuntimeContext()
@@ -105,20 +99,33 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
 
         public Entity CreateEntity()
         {
-            var ecb = _world.TakeGRCEditingECB(out var ecbToken);
+            if (_hasEntityProjection)
+            {
+                if (_entity == Entity.Null)
+                    throw new InvalidOperationException($"GameRuntimeObject {InstanceId} in store '{StoreId}' lost its entity link and cannot create a second projection.");
+
+                return _entity;
+            }
+
+            if (_world == null || !_world.IsCreated)
+                throw new InvalidOperationException($"GameRuntimeObject {InstanceId} in store '{StoreId}' requires a valid ECS World.");
+
+            var entityManager = _world.EntityManager;
+            _entity = entityManager.CreateEntity();
+            entityManager.AddComponentData(_entity, new AssetLink { AssetGUID = AssetGUID });
+            var source = SourceAssetGUID.isValid ? SourceAssetGUID : GUID;
+            entityManager.AddComponentData(_entity, new SourceAssetLink { AssetGUID = source });
+            if (SourceAssetGUID.isValid)
+                entityManager.AddComponent<AssetPresentationTag>(_entity);
+            entityManager.AddComponentData(_entity, new RuntimeRealm { Realm = Realm });
+            entityManager.AddComponentData(_entity, RuntimeInstance);
+            entityManager.AddComponentData(_entity, new RuntimeEntityDestroyState());
+            entityManager.AddBuffer<RuntimeChildEntity>(_entity);
 
             _hasEntityProjection = true;
-            _isEcbEntity = true;
-            _grcEditingToken = ecbToken;
-            _entity = ecb.CreateEntity();
+            _runtimeStore.LinkEntity(InstanceId, _entity);
 
-            ecb.AddComponent(_entity, new AssetLink { AssetGUID = AssetGUID });
-            var source = SourceAssetGUID.isValid ? SourceAssetGUID : GUID;
-            ecb.AddComponent(_entity, new SourceAssetLink { AssetGUID = source });
-            if (SourceAssetGUID.isValid)
-                ecb.AddComponent(_entity, new AssetPresentationTag());
-            ecb.AddComponent(_entity, new RuntimeRealm { Realm = Realm });
-            ecb.AddComponent(_entity, RuntimeInstance);
+            var ecb = _world.TakeGRCEditingECB();
             SetupEntityProjection(ecb);
             return _entity;
         }
@@ -151,10 +158,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
                 return false;
             }
 
-            ecb = _world.TakeGRCEditingECB(out var ecbToken);
-            if (_isEcbEntity && ecbToken != _grcEditingToken)
-                throw new InvalidOperationException($"GameRuntimeObject {InstanceId} in store '{StoreId}' is still bound to a deferred ECB entity from another editing scope.");
-
+            ecb = _world.TakeGRCEditingECB();
             return true;
         }
 
@@ -171,6 +175,19 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
             var projectedEntity = shouldSyncEntity ? _entity : Entity.Null;
             var hadExisting = _componentsByType.TryGetValue(keyType, out var existing) && existing != null;
             var existingWasInList = false;
+
+            if (hadExisting && ReferenceEquals(existing, component))
+            {
+                MarkComponentDirty(typeId);
+                _isDestroyed = false;
+                if (shouldSyncEntity)
+                {
+                    component.RemoveFromEntity(_runtimeStore, ecb, this, projectedEntity);
+                    component.AddForEntity(_runtimeStore, ecb, this, projectedEntity);
+                }
+
+                return;
+            }
 
             if (hadExisting)
             {
@@ -259,12 +276,17 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
             if (_isDestroyed)
                 return;
 
+            var shouldSyncEntity = TryTakeEditingEcb(out var ecb);
+            Destroy(ecb, shouldSyncEntity);
+        }
+
+        private void Destroy(EntityCommandBuffer ecb, bool shouldSyncEntity)
+        {
             _isDestroyed = true;
 
             if (_components == null)
                 return;
 
-            var shouldSyncEntity = TryTakeEditingEcb(out var ecb);
             var projectedEntity = shouldSyncEntity ? _entity : Entity.Null;
             foreach (var component in _components)
             {

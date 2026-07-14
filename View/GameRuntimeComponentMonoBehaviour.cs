@@ -1,5 +1,6 @@
 using System;
 using DingoGameObjectsCMS.RuntimeObjects.Objects;
+using DingoGameObjectsCMS.RuntimeObjects.Stores;
 using DingoUnityExtensions.UnityViewProviders.Core;
 
 namespace DingoGameObjectsCMS.View
@@ -7,6 +8,7 @@ namespace DingoGameObjectsCMS.View
     public abstract class GameRuntimeComponentMonoBehaviour : ValueContainer<GameRuntimeComponent>
     {
         public abstract Type ComponentType { get; }
+        public uint ComponentTypeId => ComponentType.GetId();
         public GameRuntimeObjectByComponentsView View { get; private set; }
         public GameRuntimeObject RuntimeObject => View != null ? View.RuntimeObject : null;
 
@@ -18,8 +20,8 @@ namespace DingoGameObjectsCMS.View
 
         public void Detach()
         {
-            OnDetach();
             UpdateValueWithoutNotify(null);
+            OnDetach();
             View = null;
         }
 

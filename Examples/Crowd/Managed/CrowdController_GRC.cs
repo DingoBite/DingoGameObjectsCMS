@@ -82,15 +82,20 @@ namespace DingoGameObjectsCMS.Examples.Crowd.Managed
 
         public override void SetupForEntity(RuntimeStore store, EntityCommandBuffer ecb, GameRuntimeObject g, Entity e)
         {
+            base.SetupForEntity(store, ecb, g, e);
             ecb.AddComponent(e, LocalTransform.FromPosition(Position));
         }
 
         public override void AddForEntity(RuntimeStore store, EntityCommandBuffer ecb, GameRuntimeObject g, Entity e)
         {
-            if (store.World.EntityManager.HasComponent<LocalTransform>(e))
-                ecb.SetComponent(e, LocalTransform.FromPosition(Position));
-            else
-                ecb.AddComponent(e, LocalTransform.FromPosition(Position));
+            base.AddForEntity(store, ecb, g, e);
+            ecb.AddComponent(e, LocalTransform.FromPosition(Position));
+        }
+
+        public override void RemoveFromEntity(RuntimeStore store, EntityCommandBuffer ecb, GameRuntimeObject g, Entity e)
+        {
+            base.RemoveFromEntity(store, ecb, g, e);
+            ecb.RemoveComponent<LocalTransform>(e);
         }
     }
 }

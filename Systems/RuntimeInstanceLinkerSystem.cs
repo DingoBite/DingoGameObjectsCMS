@@ -5,7 +5,8 @@ using Unity.Entities;
 
 namespace DingoGameObjectsCMS.Systems
 {
-    [UpdateInGroup(typeof(FixedStepSimulationSystemGroup), OrderLast = true)]
+    [UpdateInGroup(typeof(FixedStepSimulationSystemGroup), OrderFirst = true)]
+    [UpdateAfter(typeof(DestroyStaleRuntimeEntitiesSystem))]
     public partial class RuntimeInstanceLinkerSystem : SystemBase
     {
         protected override void OnUpdate()
@@ -20,6 +21,9 @@ namespace DingoGameObjectsCMS.Systems
                              .WithEntityAccess())
                 {
                     if (!instance.ValueRO.TryResolveActiveStore(realm.ValueRO.Realm, out var store))
+                        continue;
+
+                    if (store.IsEntityPendingDestroy(entity))
                         continue;
 
                     store.LinkEntity(instance.ValueRO.Id, entity);

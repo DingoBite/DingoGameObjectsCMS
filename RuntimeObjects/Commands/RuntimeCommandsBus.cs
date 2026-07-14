@@ -6,7 +6,7 @@ using DingoUnityExtensions;
 
 namespace DingoGameObjectsCMS.RuntimeObjects.Commands
 {
-    public sealed class RuntimeCommandsBus : AppModelBase
+    public class RuntimeCommandsBus : AppModelBase
     {
         public const int UPDATE_ORDER = RuntimeStore.UPDATE_ORDER - 1;
 
@@ -17,11 +17,29 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
         private bool _flushInProgress;
         private bool _rescheduleRequested;
 
+        private readonly SafeMulticast<GameRuntimeCommand> _beforeExecute = new();
+        private readonly SafeMulticast<GameRuntimeCommand> _afterExecute = new();
+        private readonly SafeMulticast<GameRuntimeCommand, Exception> _executeFailed = new();
+
         public int QueuedCount => _queue.Count;
 
-        public event Action<GameRuntimeCommand> BeforeExecute;
-        public event Action<GameRuntimeCommand> AfterExecute;
-        public event Action<GameRuntimeCommand, Exception> ExecuteFailed;
+        public event Action<GameRuntimeCommand> BeforeExecute
+        {
+            add => _beforeExecute.Subscribe(value);
+            remove => _beforeExecute.Unsubscribe(value);
+        }
+
+        public event Action<GameRuntimeCommand> AfterExecute
+        {
+            add => _afterExecute.Subscribe(value);
+            remove => _afterExecute.Unsubscribe(value);
+        }
+
+        public event Action<GameRuntimeCommand, Exception> ExecuteFailed
+        {
+            add => _executeFailed.Subscribe(value);
+            remove => _executeFailed.Unsubscribe(value);
+        }
 
         public void Enqueue(GameRuntimeCommand command)
         {
@@ -82,7 +100,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
                     if (cmd == null)
                         continue;
 
-                    BeforeExecute?.Invoke(cmd);
+                    _beforeExecute.Invoke(cmd);
 
                     try
                     {
@@ -90,10 +108,10 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
                     }
                     catch (Exception e)
                     {
-                        ExecuteFailed?.Invoke(cmd, e);
+                        _executeFailed.Invoke(cmd, e);
                     }
 
-                    AfterExecute?.Invoke(cmd);
+                    _afterExecute.Invoke(cmd);
                 }
 
                 _processing.Clear();

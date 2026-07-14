@@ -12,13 +12,25 @@ namespace DingoGameObjectsCMS.Systems
         {
             using var ecb = new EntityCommandBuffer(Allocator.Temp);
             var hasAny = false;
+            var destroyStateLookup = SystemAPI.GetComponentLookup<RuntimeEntityDestroyState>(isReadOnly: true);
 
             foreach (var (instance, realm, entity) in SystemAPI
                          .Query<RefRO<RuntimeInstance>, RefRO<RuntimeRealm>>()
                          .WithEntityAccess())
             {
-                if (instance.ValueRO.TryResolveActiveStore(realm.ValueRO.Realm, out _))
+                if (destroyStateLookup.HasComponent(entity) && destroyStateLookup[entity].Pending != 0)
                     continue;
+
+                if (instance.ValueRO.TryResolveActiveStore(realm.ValueRO.Realm, out var store)
+                    && store.IsEntityPendingDestroy(entity))
+                    continue;
+
+                if (instance.ValueRO.TryResolveActiveStore(realm.ValueRO.Realm, out store)
+                    && store.TryTakeRO(instance.ValueRO.Id, out _))
+                {
+                    if (!store.TryGetEntity(instance.ValueRO.Id, out var linkedEntity) || linkedEntity == entity)
+                        continue;
+                }
 
                 ecb.DestroyEntity(entity);
                 hasAny = true;

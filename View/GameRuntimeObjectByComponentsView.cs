@@ -10,10 +10,18 @@ namespace DingoGameObjectsCMS.View
     public abstract class GameRuntimeObjectByComponentsView : GameRuntimeObjectOperationView
     {
         [SerializeField] private GameRuntimeComponentPalettePrefab _componentPalettePrefab;
-        [SerializeField] private bool _useFirstPaletteComponentOnMissingType;
 
-        private readonly Dictionary<uint, GameRuntimeComponentMonoBehaviour> _componentViewsById = new();
+        private readonly Dictionary<uint, GameRuntimeComponentMonoBehaviour> _createdComponentViewsById = new();
+        private readonly HashSet<uint> _activeComponentIds = new();
         private readonly List<uint> _componentIdsBuffer = new();
+
+        protected override void OnAwake()
+        {
+            if (_componentPalettePrefab == null)
+                throw new InvalidOperationException($"{nameof(GameRuntimeObjectByComponentsView)} on '{name}' requires an explicit {nameof(GameRuntimeComponentPalettePrefab)} reference.");
+
+            base.OnAwake();
+        }
 
         protected override void OnGRODestroy(GameRuntimeObject value, GameRuntimeObjectOperation operation)
         {
@@ -71,9 +79,9 @@ namespace DingoGameObjectsCMS.View
             }
 
             _componentIdsBuffer.Clear();
-            foreach (var pair in _componentViewsById)
+            foreach (var componentTypeId in _activeComponentIds)
             {
-                _componentIdsBuffer.Add(pair.Key);
+                _componentIdsBuffer.Add(componentTypeId);
             }
 
             var components = gro.Components;
@@ -81,7 +89,9 @@ namespace DingoGameObjectsCMS.View
             {
                 var component = components[i];
                 if (component == null)
+                {
                     continue;
+                }
 
                 var type = component.GetType();
                 if (!RuntimeComponentTypeRegistry.TryGetId(type, out var compTypeId))
@@ -104,7 +114,7 @@ namespace DingoGameObjectsCMS.View
 
         private void AddOrUpdateComponent(GameRuntimeObject gro, uint compTypeId)
         {
-            if (_componentViewsById.ContainsKey(compTypeId))
+            if (_activeComponentIds.Contains(compTypeId))
             {
                 UpdateComponent(gro, compTypeId);
                 return;
@@ -115,31 +125,27 @@ namespace DingoGameObjectsCMS.View
 
         private void AddComponent(GameRuntimeObject gro, uint compTypeId)
         {
-            if (!RuntimeComponentTypeRegistry.TryGetType(compTypeId, out var componentType) || componentType == null)
-            {
-                Debug.LogError($"Cannot create runtime component view for unknown runtime component type id {compTypeId}.", this);
+            if (!_componentPalettePrefab.TryGetComponentViewType(compTypeId, out var componentViewType))
                 return;
+
+            if (!_createdComponentViewsById.TryGetValue(compTypeId, out var componentView) || componentView == null)
+            {
+                componentView = gameObject.AddComponent(componentViewType) as GameRuntimeComponentMonoBehaviour;
+                if (componentView == null)
+                    throw new InvalidOperationException($"Component palette '{_componentPalettePrefab.name}' maps type id {compTypeId} to '{componentViewType.FullName}', which is not a {nameof(GameRuntimeComponentMonoBehaviour)}.");
+
+                _createdComponentViewsById.Add(compTypeId, componentView);
             }
 
-            var componentViewType = ResolveComponentViewType(componentType);
-            if (componentViewType == null)
-                return;
-
-            var componentView = gameObject.AddComponent(componentViewType) as GameRuntimeComponentMonoBehaviour;
-            if (componentView == null)
-            {
-                Debug.LogError($"Component view type '{componentViewType.FullName}' is not a {nameof(GameRuntimeComponentMonoBehaviour)}.", this);
-                return;
-            }
-
+            componentView.enabled = true;
             componentView.Attach(this);
-            _componentViewsById[compTypeId] = componentView;
+            _activeComponentIds.Add(compTypeId);
             UpdateComponentValue(componentView, gro, compTypeId);
         }
 
         private void UpdateComponent(GameRuntimeObject gro, uint compTypeId)
         {
-            if (!_componentViewsById.TryGetValue(compTypeId, out var componentView) || componentView == null)
+            if (!_activeComponentIds.Contains(compTypeId) || !_createdComponentViewsById.TryGetValue(compTypeId, out var componentView) || componentView == null)
             {
                 AddComponent(gro, compTypeId);
                 return;
@@ -150,22 +156,24 @@ namespace DingoGameObjectsCMS.View
 
         private void RemoveComponent(uint compTypeId)
         {
-            if (!_componentViewsById.Remove(compTypeId, out var componentView) || componentView == null)
+            if (!_activeComponentIds.Remove(compTypeId))
                 return;
+            if (!_createdComponentViewsById.TryGetValue(compTypeId, out var componentView) || componentView == null)
+                throw new InvalidOperationException($"Active component view type id {compTypeId} has no created view on '{name}'.");
 
             componentView.Detach();
-            Destroy(componentView);
+            componentView.enabled = false;
         }
 
         private void ClearComponents()
         {
-            if (_componentViewsById.Count == 0)
+            if (_activeComponentIds.Count == 0)
                 return;
 
             _componentIdsBuffer.Clear();
-            foreach (var pair in _componentViewsById)
+            foreach (var componentTypeId in _activeComponentIds)
             {
-                _componentIdsBuffer.Add(pair.Key);
+                _componentIdsBuffer.Add(componentTypeId);
             }
 
             for (var i = 0; i < _componentIdsBuffer.Count; i++)
@@ -176,12 +184,9 @@ namespace DingoGameObjectsCMS.View
             _componentIdsBuffer.Clear();
         }
 
-        private Type ResolveComponentViewType(Type componentType)
+        protected virtual void OnDestroy()
         {
-            if (_componentPalettePrefab != null)
-                return _componentPalettePrefab.GetComponentFor(componentType, _useFirstPaletteComponentOnMissingType, warnOnMissingType: true)?.GetType();
-
-            return GameRuntimeComponentMonoBehaviourExtensions.TryGetComponentViewType(componentType, out var componentViewType) ? componentViewType : null;
+            ClearComponents();
         }
 
         private static void UpdateComponentValue(GameRuntimeComponentMonoBehaviour componentView, GameRuntimeObject gro, uint compTypeId)

@@ -101,9 +101,9 @@ namespace DingoGameObjectsCMS.View
             ResetFromStore(ResolveSpawnOptions(CollectionViewSpawnOptions.Default));
         }
 
-        public void Reset() => Reset(CollectionViewSpawnOptions.Default);
+        public void RefreshFromStore() => RefreshFromStore(CollectionViewSpawnOptions.Default);
 
-        public void Reset(CollectionViewSpawnOptions spawnOptions)
+        public void RefreshFromStore(CollectionViewSpawnOptions spawnOptions)
         {
             EnsurePool();
             ResetFromStore(ResolveSpawnOptions(spawnOptions));

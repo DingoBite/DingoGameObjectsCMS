@@ -13,6 +13,27 @@ namespace DingoGameObjectsCMS.RuntimeObjects
         public uint Epoch;
     }
 
+    [InternalBufferCapacity(0)]
+    [Serializable, Preserve]
+    public struct RuntimeChildEntity : IBufferElementData
+    {
+        public RuntimeInstance Instance;
+        public Entity Entity;
+    }
+
+    [Serializable, Preserve]
+    public struct RuntimeParentEntity : IComponentData
+    {
+        public RuntimeInstance Instance;
+        public Entity Entity;
+    }
+
+    [Serializable, Preserve]
+    public struct RuntimeEntityDestroyState : IComponentData
+    {
+        public byte Pending;
+    }
+
     [Serializable, Preserve]
     public struct RuntimeRealm : IComponentData
     {

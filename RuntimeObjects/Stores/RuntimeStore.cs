@@ -17,9 +17,27 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
         public const long STORE_ROOT_OBJECT_ID = 0;
         public const long FIRST_USER_OBJECT_ID = STORE_ROOT_OBJECT_ID + 1;
         
-        public event Action<NativeArray<RuntimeStructureDirty>> StructureChanges;
-        public event Action<NativeArray<ObjectStructDirty>> ComponentStructureChanges;
-        public event Action<NativeArray<ObjectComponentDirty>> ComponentChanges;
+        private readonly SafeMulticast<NativeArray<RuntimeStructureDirty>> _structureChangesDispatcher = new();
+        private readonly SafeMulticast<NativeArray<ObjectStructDirty>> _componentStructureChangesDispatcher = new();
+        private readonly SafeMulticast<NativeArray<ObjectComponentDirty>> _componentChangesDispatcher = new();
+
+        public event Action<NativeArray<RuntimeStructureDirty>> StructureChanges
+        {
+            add => _structureChangesDispatcher.Subscribe(value);
+            remove => _structureChangesDispatcher.Unsubscribe(value);
+        }
+
+        public event Action<NativeArray<ObjectStructDirty>> ComponentStructureChanges
+        {
+            add => _componentStructureChangesDispatcher.Subscribe(value);
+            remove => _componentStructureChangesDispatcher.Unsubscribe(value);
+        }
+
+        public event Action<NativeArray<ObjectComponentDirty>> ComponentChanges
+        {
+            add => _componentChangesDispatcher.Subscribe(value);
+            remove => _componentChangesDispatcher.Unsubscribe(value);
+        }
 
         
         public readonly FixedString32Bytes Id;
@@ -34,11 +52,15 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
 
         private readonly Dictionary<long, Entity> _entityById = new();
         private readonly Dictionary<Entity, long> _idByEntity = new();
+        private readonly HashSet<Entity> _entitiesPendingDestroy = new();
+        private readonly List<Entity> _entitiesPendingDestroyWork = new();
         private readonly Dictionary<Hash128, long> _idByGuid = new();
         private readonly HashSet<long> _seenEntityLinks = new();
 
         private readonly Dictionary<long, long> _parentByChild = new();
         private readonly Dictionary<long, List<long>> _childrenByParent = new();
+        private readonly HashSet<long> _hierarchyProjectionDirty = new();
+        private readonly List<long> _hierarchyProjectionWork = new();
 
         private readonly HashSet<long> _touched = new();
         private bool _scheduled;
@@ -79,37 +101,109 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
                 return;
 
             Retired = true;
-            _entityLinkPassActive = false;
-            _seenEntityLinks.Clear();
+            _structureChangesDispatcher.Clear();
+            _componentStructureChangesDispatcher.Clear();
+            _componentChangesDispatcher.Clear();
 
-            var objects = new List<GameRuntimeObject>(_all.V.Values);
-            foreach (var obj in objects)
+            try
             {
-                if (obj == null)
-                    continue;
+                var objects = new List<GameRuntimeObject>(_all.V.Values);
+                foreach (var obj in objects)
+                {
+                    if (obj == null)
+                        continue;
 
-                obj.Destroy();
-                obj.ClearRuntimeContext();
+                    try
+                    {
+                        obj.Destroy();
+                    }
+                    catch (Exception e)
+                    {
+                        Debug.LogException(e);
+                    }
+                }
+
+                EntityCommandBuffer? destroyBuffer = null;
+                if (_world != null && _world.IsCreated)
+                {
+                    try
+                    {
+                        // Component cleanup records its ECBs above. Creating the
+                        // destroy buffer afterwards guarantees RemoveFromEntity
+                        // commands play before the final entity destruction.
+                        destroyBuffer = _world.TakeGRCEditingECB();
+                    }
+                    catch (Exception e)
+                    {
+                        Debug.LogException(e);
+                    }
+                }
+
+                foreach (var obj in objects)
+                {
+                    if (obj == null)
+                        continue;
+
+                    try
+                    {
+                        if (destroyBuffer.HasValue && _entityById.TryGetValue(obj.InstanceId, out var entity))
+                        {
+                            var buffer = destroyBuffer.Value;
+                            ScheduleEntityDestroy(entity, buffer);
+                        }
+                    }
+                    catch (Exception e)
+                    {
+                        Debug.LogException(e);
+                    }
+                }
+
+                foreach (var obj in objects)
+                {
+                    if (obj == null)
+                        continue;
+
+                    try
+                    {
+                        obj.ClearRuntimeContext();
+                    }
+                    catch (Exception e)
+                    {
+                        Debug.LogException(e);
+                    }
+                }
             }
-
-            _entityById.Clear();
-            _idByEntity.Clear();
-            _idByGuid.Clear();
-            _parentByChild.Clear();
-            _childrenByParent.Clear();
-            _touched.Clear();
-            _cycleVisited.Clear();
-            _structureChanges.Clear();
-            _objectComponentsChanges.Clear();
-            _objectStructureChanges.Clear();
-            _scheduled = false;
-            _flushInProgress = false;
-            _rescheduleRequested = false;
-            _suppressReplicationThisFlush = false;
-            _order = 0;
-            _lastId = FIRST_USER_OBJECT_ID;
-            _parents.V.Clear();
-            _all.V.Clear();
+            finally
+            {
+                _entityLinkPassActive = false;
+                _seenEntityLinks.Clear();
+                _entityById.Clear();
+                _idByEntity.Clear();
+                _entitiesPendingDestroy.Clear();
+                _entitiesPendingDestroyWork.Clear();
+                _idByGuid.Clear();
+                _parentByChild.Clear();
+                _childrenByParent.Clear();
+                _hierarchyProjectionDirty.Clear();
+                _hierarchyProjectionWork.Clear();
+                _touched.Clear();
+                _cycleVisited.Clear();
+                _structureChanges.Clear();
+                _objectComponentsChanges.Clear();
+                _objectStructureChanges.Clear();
+                CoroutineParent.RemoveLateUpdater(this);
+                _scheduled = false;
+                _flushInProgress = false;
+                _rescheduleRequested = false;
+                _suppressReplicationThisFlush = false;
+                _order = 0;
+                _lastId = FIRST_USER_OBJECT_ID;
+                _parents.V.Clear();
+                _all.V.Clear();
+                _structureChangesDispatcher.Clear();
+                _componentStructureChangesDispatcher.Clear();
+                _componentChangesDispatcher.Clear();
+            }
         }
 
         public bool IsRuntimeInstanceActive(RuntimeInstance runtimeInstance)
@@ -183,6 +277,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
                 _lastId = id + 1;
 
             MarkTouchedUpToRoot(id);
+            MarkHierarchyProjectionDirty(id);
             return obj;
         }
 
@@ -198,6 +293,40 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
             var child = CreateDetached();
             AttachChild(parentId, child.InstanceId, insertIndex);
             return child;
+        }
+
+        public Entity CreateEntitySubtree(long rootId)
+        {
+            if (!_all.V.ContainsKey(rootId))
+                throw new InvalidOperationException($"RuntimeStore '{Id}' cannot project missing subtree root {rootId}.");
+
+            var pending = new List<long> { rootId };
+            var rootEntity = Entity.Null;
+
+            while (pending.Count > 0)
+            {
+                var lastIndex = pending.Count - 1;
+                var currentId = pending[lastIndex];
+                pending.RemoveAt(lastIndex);
+
+                if (!_all.V.TryGetValue(currentId, out var current))
+                    throw new InvalidOperationException($"RuntimeStore '{Id}' hierarchy references missing runtime object {currentId}.");
+
+                var entity = current.CreateEntity();
+                MarkHierarchyProjectionDirty(currentId);
+                if (currentId == rootId)
+                    rootEntity = entity;
+
+                if (!_childrenByParent.TryGetValue(currentId, out var children))
+                    continue;
+
+                for (var i = children.Count - 1; i >= 0; i--)
+                {
+                    pending.Add(children[i]);
+                }
+            }
+
+            return rootEntity;
         }
 
         public void PublishRootExisting(long id)
@@ -228,6 +357,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
                 _lastId = id + 1;
 
             MarkTouchedUpToRoot(id);
+            MarkHierarchyProjectionDirty(id);
             ScheduleFlush();
             return true;
         }
@@ -377,15 +507,16 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
 
         public bool Remove(long id) => Remove(id, RemoveMode.Subtree, out _);
         public bool Remove(long id, out Entity entity) => Remove(id, RemoveMode.Subtree, out entity);
-        public bool Remove(long id, RemoveMode mode, out Entity entity) => RemoveInternal(id, mode, out entity, true, null);
+        public bool Remove(long id, RemoveMode mode, out Entity entity) => RemoveInternal(id, mode, out entity, true);
 
-        public bool Remove(long id, EntityCommandBuffer ecb) => Remove(id, RemoveMode.Subtree, ecb, out _);
-        public bool Remove(long id, EntityCommandBuffer ecb, out Entity entity) => Remove(id, RemoveMode.Subtree, ecb, out entity);
-        public bool Remove(long id, RemoveMode mode, EntityCommandBuffer ecb, out Entity entity) => RemoveInternal(id, mode, out entity, true, ecb);
+        public bool Remove(long id, EntityCommandBuffer unusedEcb) => Remove(id, RemoveMode.Subtree, out _);
+        public bool Remove(long id, EntityCommandBuffer unusedEcb, out Entity entity) => Remove(id, RemoveMode.Subtree, out entity);
+        public bool Remove(long id, RemoveMode mode, EntityCommandBuffer unusedEcb, out Entity entity) => RemoveInternal(id, mode, out entity, true);
 
-        private bool RemoveInternal(long id, RemoveMode mode, out Entity entity, bool recordOp, EntityCommandBuffer? externalEcb)
+        private bool RemoveInternal(long id, RemoveMode mode, out Entity entity, bool recordOp)
         {
             var wasPublished = IsPublished(id);
+            MarkHierarchyRelationsDirty(id);
 
             if (recordOp && wasPublished)
                 RecordOp(RuntimeStructureDirty.Remove(id, mode, NextOrder()));
@@ -423,7 +554,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
                     case RemoveMode.Subtree:
                         foreach (var child in toProcess)
                         {
-                            RemoveInternal(child, RemoveMode.Subtree, out _, recordOp: false, externalEcb);
+                            RemoveInternal(child, RemoveMode.Subtree, out _, recordOp: false);
                         }
 
                         break;
@@ -456,21 +587,29 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
                 }
             }
 
-            obj.Destroy();
+            try
+            {
+                obj.Destroy();
+            }
+            catch (Exception e)
+            {
+                Debug.LogException(e);
+            }
+
             _all.V.Remove(id);
             UnregisterGuid(obj.GUID, id);
 
-            if (entity != Entity.Null)
+            if (entity != Entity.Null && _world != null && _world.IsCreated)
             {
-                if (externalEcb.HasValue)
-                {
-                    var buffer = externalEcb.Value;
-                    buffer.DestroyEntity(entity);
-                }
-                else if (_world != null && _world.IsCreated)
+                try
                 {
                     var buffer = _world.TakeGRCEditingECB();
-                    buffer.DestroyEntity(entity);
+                    ScheduleEntityDestroy(entity, buffer);
+                }
+                catch (Exception e)
+                {
+                    ClearEntityPendingDestroy(entity);
+                    Debug.LogException(e);
                 }
             }
 
@@ -533,24 +672,125 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
                 return;
 
             if (id < 0 || entity == Entity.Null)
-                return;
+                throw new InvalidOperationException($"RuntimeStore '{Id}' cannot link invalid runtime object id {id} or a null entity.");
 
-            if (_entityById.TryGetValue(id, out var existingEntity) && existingEntity != entity)
+            if (!_all.V.TryGetValue(id, out var runtimeObject))
+                throw new InvalidOperationException($"RuntimeStore '{Id}' cannot link entity {entity} to missing runtime object {id}.");
+
+            var linkChanged = !_entityById.TryGetValue(id, out var existingEntity) || existingEntity != entity;
+            if (existingEntity != Entity.Null && existingEntity != entity)
                 _idByEntity.Remove(existingEntity);
 
             if (_idByEntity.TryGetValue(entity, out var existingId) && existingId != id)
+            {
                 _entityById.Remove(existingId);
+                if (_all.V.TryGetValue(existingId, out var previouslyLinked))
+                    previouslyLinked.ClearEntityLink();
+                MarkHierarchyRelationsDirty(existingId);
+            }
 
             _entityById[id] = entity;
             _idByEntity[entity] = id;
 
             if (_entityLinkPassActive)
                 _seenEntityLinks.Add(id);
-            if (_all.V.TryGetValue(id, out var o))
-                o.LinkToEntity(entity);
+            runtimeObject.LinkToEntity(entity);
+
+            if (linkChanged)
+                MarkHierarchyRelationsDirty(id);
         }
 
         public bool TryGetEntity(long id, out Entity e) => _entityById.TryGetValue(id, out e);
+
+        public bool IsEntityPendingDestroy(Entity entity)
+        {
+            if (_entitiesPendingDestroy.Contains(entity))
+                return true;
+            if (_world == null || !_world.IsCreated)
+                return false;
+
+            var entityManager = _world.EntityManager;
+            return entityManager.Exists(entity)
+                   && entityManager.HasComponent<RuntimeEntityDestroyState>(entity)
+                   && entityManager.GetComponentData<RuntimeEntityDestroyState>(entity).Pending != 0;
+        }
+
+        private void ScheduleEntityDestroy(Entity entity, EntityCommandBuffer buffer)
+        {
+            if (!TryMarkEntityPendingDestroy(entity))
+                return;
+
+            try
+            {
+                buffer.DestroyEntity(entity);
+            }
+            catch
+            {
+                ClearEntityPendingDestroy(entity);
+                throw;
+            }
+        }
+
+        private bool TryMarkEntityPendingDestroy(Entity entity)
+        {
+            if (entity == Entity.Null)
+                return false;
+            if (_world == null || !_world.IsCreated)
+                throw new InvalidOperationException($"RuntimeStore '{Id}' cannot schedule Entity destruction without a valid ECS World.");
+
+            var entityManager = _world.EntityManager;
+            if (!entityManager.Exists(entity))
+                return false;
+            if (!entityManager.HasComponent<RuntimeEntityDestroyState>(entity))
+                throw new InvalidOperationException($"RuntimeStore '{Id}' cannot destroy Entity {entity} without {nameof(RuntimeEntityDestroyState)}.");
+
+            var state = entityManager.GetComponentData<RuntimeEntityDestroyState>(entity);
+            if (state.Pending != 0)
+            {
+                _entitiesPendingDestroy.Add(entity);
+                return false;
+            }
+
+            state.Pending = 1;
+            entityManager.SetComponentData(entity, state);
+            _entitiesPendingDestroy.Add(entity);
+            return true;
+        }
+
+        private void ClearEntityPendingDestroy(Entity entity)
+        {
+            _entitiesPendingDestroy.Remove(entity);
+            if (_world == null || !_world.IsCreated)
+                return;
+
+            var entityManager = _world.EntityManager;
+            if (!entityManager.Exists(entity) || !entityManager.HasComponent<RuntimeEntityDestroyState>(entity))
+                return;
+
+            var state = entityManager.GetComponentData<RuntimeEntityDestroyState>(entity);
+            state.Pending = 0;
+            entityManager.SetComponentData(entity, state);
+        }
+
+        public void PruneDestroyedEntities(EntityManager entityManager)
+        {
+            if (_entitiesPendingDestroy.Count == 0)
+                return;
+
+            _entitiesPendingDestroyWork.Clear();
+            foreach (var entity in _entitiesPendingDestroy)
+            {
+                if (!entityManager.Exists(entity))
+                    _entitiesPendingDestroyWork.Add(entity);
+            }
+
+            foreach (var entity in _entitiesPendingDestroyWork)
+            {
+                _entitiesPendingDestroy.Remove(entity);
+            }
+
+            _entitiesPendingDestroyWork.Clear();
+        }
 
         public bool TryTakeParentRW(long childId, out GameRuntimeObject parent)
         {
@@ -628,6 +868,9 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
 
             list.Insert(insertIndex, childId);
 
+            MarkHierarchyProjectionDirty(parentId);
+            MarkHierarchyProjectionDirty(childId);
+
             RecordOp(wasPublished ? RuntimeStructureDirty.Reparent(childId, parentId, insertIndex, NextOrder()) : RuntimeStructureDirty.Spawn(childId, parentId, insertIndex, NextOrder()));
 
             MarkTouchedUpToRoot(parentId);
@@ -665,6 +908,9 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
             if (newIndex > list.Count)
                 newIndex = list.Count;
             list.Insert(newIndex, childId);
+
+            MarkHierarchyProjectionDirty(parentId);
+            MarkHierarchyProjectionDirty(childId);
 
             RecordOp(RuntimeStructureDirty.Move(childId, parentId, newIndex, NextOrder()));
 
@@ -732,6 +978,8 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
 
             MarkTouchedUpToRoot(parentId);
             MarkTouchedUpToRoot(childId);
+            MarkHierarchyProjectionDirty(parentId);
+            MarkHierarchyProjectionDirty(childId);
             return true;
         }
 
@@ -743,7 +991,10 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
             foreach (var c in list)
             {
                 _parentByChild.Remove(c);
+                MarkHierarchyProjectionDirty(c);
             }
+
+            MarkHierarchyProjectionDirty(parentId);
         }
 
         private void AddToRoot(long id)
@@ -760,6 +1011,8 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
             var wasPublished = IsPublished(id);
 
             _parents.V[id] = obj;
+
+            MarkHierarchyProjectionDirty(id);
 
             RecordOp(wasPublished ? RuntimeStructureDirty.Reparent(id, -1, -1, NextOrder()) : RuntimeStructureDirty.Spawn(id, -1, -1, NextOrder()));
 
@@ -786,6 +1039,107 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
         }
 
         public void SetObjectTouched(long id) => MarkTouchedUpToRoot(id);
+
+        public void FlushEntityHierarchy(EntityManager entityManager)
+        {
+            if (Retired || _hierarchyProjectionDirty.Count == 0)
+                return;
+
+            _hierarchyProjectionWork.Clear();
+            foreach (var id in _hierarchyProjectionDirty)
+            {
+                _hierarchyProjectionWork.Add(id);
+            }
+
+            foreach (var id in _hierarchyProjectionWork)
+            {
+                if (!_all.V.TryGetValue(id, out var runtimeObject))
+                {
+                    _hierarchyProjectionDirty.Remove(id);
+                    continue;
+                }
+
+                if (!runtimeObject.HasEntityProjection)
+                {
+                    _hierarchyProjectionDirty.Remove(id);
+                    continue;
+                }
+
+                if (!_entityById.TryGetValue(id, out var entity) || !entityManager.Exists(entity))
+                    continue;
+
+                if (!entityManager.HasBuffer<RuntimeChildEntity>(entity))
+                    throw new InvalidOperationException($"Runtime entity for object {id} in store '{Id}' has no RuntimeChildEntity buffer.");
+
+                var childBuffer = entityManager.GetBuffer<RuntimeChildEntity>(entity);
+                childBuffer.Clear();
+
+                if (_childrenByParent.TryGetValue(id, out var children))
+                {
+                    foreach (var childId in children)
+                    {
+                        if (!_all.V.TryGetValue(childId, out var child))
+                            throw new InvalidOperationException($"RuntimeStore '{Id}' hierarchy references missing child {childId} from parent {id}.");
+
+                        if (!_entityById.TryGetValue(childId, out var childEntity) || !entityManager.Exists(childEntity))
+                            continue;
+
+                        childBuffer.Add(new RuntimeChildEntity
+                        {
+                            Instance = child.RuntimeInstance,
+                            Entity = childEntity
+                        });
+                    }
+                }
+
+                if (_parentByChild.TryGetValue(id, out var parentId)
+                    && _all.V.TryGetValue(parentId, out var parent)
+                    && _entityById.TryGetValue(parentId, out var parentEntity)
+                    && entityManager.Exists(parentEntity))
+                {
+                    var parentData = new RuntimeParentEntity
+                    {
+                        Instance = parent.RuntimeInstance,
+                        Entity = parentEntity
+                    };
+
+                    if (entityManager.HasComponent<RuntimeParentEntity>(entity))
+                        entityManager.SetComponentData(entity, parentData);
+                    else
+                        entityManager.AddComponentData(entity, parentData);
+                }
+                else if (entityManager.HasComponent<RuntimeParentEntity>(entity))
+                {
+                    entityManager.RemoveComponent<RuntimeParentEntity>(entity);
+                }
+
+                _hierarchyProjectionDirty.Remove(id);
+            }
+
+            _hierarchyProjectionWork.Clear();
+        }
+
+        private void MarkHierarchyProjectionDirty(long id)
+        {
+            if (id >= 0)
+                _hierarchyProjectionDirty.Add(id);
+        }
+
+        private void MarkHierarchyRelationsDirty(long id)
+        {
+            MarkHierarchyProjectionDirty(id);
+
+            if (_parentByChild.TryGetValue(id, out var parentId))
+                MarkHierarchyProjectionDirty(parentId);
+
+            if (!_childrenByParent.TryGetValue(id, out var children))
+                return;
+
+            foreach (var childId in children)
+            {
+                MarkHierarchyProjectionDirty(childId);
+            }
+        }
 
         private void MarkTouchedUpToRoot(long id)
         {
@@ -843,6 +1197,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
             if (!_entityById.Remove(id, out entity))
                 return false;
 
+            MarkHierarchyRelationsDirty(id);
             _idByEntity.Remove(entity);
             _seenEntityLinks.Remove(id);
 
@@ -850,21 +1205,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
                 obj.ClearEntityLink();
 
             return true;
-        }
-
-        private static void InvokeSafe<T>(Action<NativeArray<T>> action, NativeArray<T> payload) where T : struct
-        {
-            if (action == null || payload.Length == 0)
-                return;
-
-            try
-            {
-                action.Invoke(payload);
-            }
-            catch (Exception e)
-            {
-                Debug.LogException(e);
-            }
         }
 
         private void Flush()
@@ -959,13 +1299,13 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
                 }
 
                 if (emitStructure.IsCreated && emitStructure.Length > 0)
-                    InvokeSafe(StructureChanges, emitStructure.AsArray());
+                    _structureChangesDispatcher.Invoke(emitStructure.AsArray());
 
                 if (emitCompStruct.IsCreated && emitCompStruct.Length > 0)
-                    InvokeSafe(ComponentStructureChanges, emitCompStruct.AsArray());
+                    _componentStructureChangesDispatcher.Invoke(emitCompStruct.AsArray());
 
                 if (emitComp.IsCreated && emitComp.Length > 0)
-                    InvokeSafe(ComponentChanges, emitComp.AsArray());
+                    _componentChangesDispatcher.Invoke(emitComp.AsArray());
 
                 if (emitStructure.IsCreated)
                     emitStructure.Dispose();

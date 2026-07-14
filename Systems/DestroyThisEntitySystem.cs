@@ -10,20 +10,25 @@ namespace DingoGameObjectsCMS.Systems
     }
     
     [UpdateInGroup(typeof(FixedStepSimulationSystemGroup), OrderLast = true)]
+    [UpdateAfter(typeof(RuntimeHierarchyProjectionSystem))]
     public partial class DestroyThisEntitySystem : SystemBase
     {
         protected override void OnUpdate()
         {
             using var ecb = new EntityCommandBuffer(Allocator.Temp);
+            var destroyStateLookup = SystemAPI.GetComponentLookup<RuntimeEntityDestroyState>(isReadOnly: false);
             
             foreach (var (instance, realm, entity) in SystemAPI
                          .Query<RefRO<RuntimeInstance>, RefRO<RuntimeRealm>>()
                          .WithAll<DestroyThisEntityRequest>()
                          .WithEntityAccess())
             {
-                ecb.DestroyEntity(entity);
+                if (destroyStateLookup.HasComponent(entity) && destroyStateLookup[entity].Pending != 0)
+                    continue;
+
                 var store = instance.ValueRO.ResolveStore(realm.ValueRO.Realm);
-                store?.Remove(instance.ValueRO.Id, ecb);
+                if (store == null || !store.Remove(instance.ValueRO.Id, ecb))
+                    ecb.DestroyEntity(entity);
             }
             
             ecb.Playback(EntityManager);
