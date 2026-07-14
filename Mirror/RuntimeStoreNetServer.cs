@@ -1,6 +1,7 @@
 #if MIRROR
 using System;
 using System.Collections.Generic;
+using DingoGameObjectsCMS.AssetLibrary.Manifest;
 using DingoGameObjectsCMS.RuntimeObjects;
 using DingoGameObjectsCMS.RuntimeObjects.Commands;
 using DingoGameObjectsCMS.RuntimeObjects.Objects;

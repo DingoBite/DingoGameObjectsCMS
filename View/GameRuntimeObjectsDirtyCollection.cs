@@ -22,10 +22,15 @@ namespace DingoGameObjectsCMS.View
         private Pool<GameRuntimeObjectOperationView> _pool;
         private readonly Dictionary<long, ActiveEntry> _activeEntries = new();
         private readonly List<long> _orderedKeys = new();
-        private readonly List<long> _snapshotKeys = new();
-        private readonly HashSet<long> _snapshotLookup = new();
+        private readonly List<long> _sourceKeys = new();
         private readonly List<long> _removedKeys = new();
+        private RuntimeStore _store;
+        private RuntimeObjectCollectionScope _scope = RuntimeObjectCollectionScope.Parents;
         private int _entryVersion;
+
+        public RuntimeStore Store => _store;
+        public RuntimeObjectCollectionScope Scope => _scope;
+        public bool IsBound => _store != null;
 
         public IEnumerable<GameRuntimeObjectOperationView> GetOrderedViews()
         {
@@ -61,12 +66,61 @@ namespace DingoGameObjectsCMS.View
             }
         }
 
-        public void Rebuild(RuntimeStore store) => Rebuild(store, CollectionViewSpawnOptions.Default);
+        public void ConfigureRuntime(GameObject parent, GameRuntimeObjectOperationView prefab)
+        {
+            if (_pool != null || _store != null)
+                throw new InvalidOperationException($"{nameof(GameRuntimeObjectsDirtyCollection)} on '{name}' cannot be reconfigured after initialization.");
 
-        public void Rebuild(RuntimeStore store, CollectionViewSpawnOptions spawnOptions)
+            _parent = parent != null
+                ? parent
+                : throw new ArgumentNullException(nameof(parent));
+            _prefab = prefab != null
+                ? prefab
+                : throw new ArgumentNullException(nameof(prefab));
+        }
+
+        public void Bind(RuntimeStore store) => Bind(store, RuntimeObjectCollectionScope.Parents);
+
+        public void Bind(RuntimeStore store, RuntimeObjectCollectionScope scope)
+        {
+            if (store == null)
+                throw new ArgumentNullException(nameof(store));
+
+            scope.Validate();
+            EnsurePool();
+
+            if (ReferenceEquals(_store, store) && _scope.SameAs(scope))
+                return;
+
+            Unbind();
+            _store = store;
+            _scope = scope;
+            _store.StructureChanges += ApplyStructureChanges;
+            _store.ComponentStructureChanges += ApplyComponentStructureChanges;
+            _store.ComponentChanges += ApplyComponentChanges;
+            ResetFromStore(ResolveSpawnOptions(CollectionViewSpawnOptions.Default));
+        }
+
+        public void Reset() => Reset(CollectionViewSpawnOptions.Default);
+
+        public void Reset(CollectionViewSpawnOptions spawnOptions)
         {
             EnsurePool();
-            ApplySnapshot(store, ResolveSpawnOptions(spawnOptions));
+            ResetFromStore(ResolveSpawnOptions(spawnOptions));
+        }
+
+        public void Unbind()
+        {
+            if (_store == null)
+                return;
+
+            var previousStore = _store;
+            _store.StructureChanges -= ApplyStructureChanges;
+            _store.ComponentStructureChanges -= ApplyComponentStructureChanges;
+            _store.ComponentChanges -= ApplyComponentChanges;
+            _store = null;
+            _scope = RuntimeObjectCollectionScope.Parents;
+            ReleaseAll(previousStore, ResolveSpawnOptions(CollectionViewSpawnOptions.ImmediateFill));
         }
 
         public void Clear() => Clear(CollectionViewSpawnOptions.ImmediateFill);
@@ -74,50 +128,7 @@ namespace DingoGameObjectsCMS.View
         public void Clear(CollectionViewSpawnOptions spawnOptions)
         {
             EnsurePool();
-            ReleaseAll(null, ResolveSpawnOptions(spawnOptions));
-        }
-
-        public void ApplyStructureChanges(RuntimeStore store, NativeArray<RuntimeStructureDirty> changes) =>
-            ApplyStructureChanges(store, changes, CollectionViewSpawnOptions.Default);
-
-        public void ApplyStructureChanges(RuntimeStore store, NativeArray<RuntimeStructureDirty> changes, CollectionViewSpawnOptions spawnOptions)
-        {
-            EnsurePool();
-
-            var options = ResolveSpawnOptions(spawnOptions);
-            if (store == null)
-            {
-                ReleaseAll(null, options);
-                return;
-            }
-
-            if (options.FullRebuild)
-            {
-                ApplySnapshot(store, options);
-                return;
-            }
-
-            var orderDirty = false;
-            for (var i = 0; i < changes.Length; i++)
-            {
-                if (ApplyStructureChange(store, changes[i], options))
-                    orderDirty = true;
-            }
-
-            if (orderDirty)
-                ApplyActiveOrder();
-        }
-
-        public void ApplyComponentStructureChanges(RuntimeStore store, NativeArray<ObjectStructDirty> changes)
-        {
-            EnsurePool();
-            RefreshChangedEntries(store, changes);
-        }
-
-        public void ApplyComponentChanges(RuntimeStore store, NativeArray<ObjectComponentDirty> changes)
-        {
-            EnsurePool();
-            RefreshChangedEntries(store, changes);
+            ReleaseAll(_store, ResolveSpawnOptions(spawnOptions));
         }
 
         protected virtual Pool<GameRuntimeObjectOperationView> Factory(GameRuntimeObjectOperationView prefab, GameObject parent) =>
@@ -142,83 +153,107 @@ namespace DingoGameObjectsCMS.View
         protected virtual void OnBeginRelease(long key, GameRuntimeObject value, GameRuntimeObjectOperationView valueContainer) =>
             valueContainer.transform.SetAsLastSibling();
 
+        private void OnDestroy()
+        {
+            Unbind();
+        }
+
         private void EnsurePool()
         {
-            _pool ??= Factory(_prefab, _parent);
+            if (_pool != null)
+                return;
+            if (_parent == null)
+                throw new InvalidOperationException($"{nameof(GameRuntimeObjectsDirtyCollection)} on '{name}' requires a parent.");
+            if (_prefab == null)
+                throw new InvalidOperationException($"{nameof(GameRuntimeObjectsDirtyCollection)} on '{name}' requires a prefab.");
+
+            _pool = Factory(_prefab, _parent);
         }
 
-        private void ApplySnapshot(RuntimeStore store, CollectionViewSpawnOptions spawnOptions)
+        private void ResetFromStore(CollectionViewSpawnOptions spawnOptions)
         {
-            if (store == null)
-            {
-                ReleaseAll(null, spawnOptions);
+            ReleaseAll(_store, spawnOptions);
+            if (_store == null)
                 return;
-            }
 
-            var parents = store.Parents.V;
-            if (parents == null || parents.Count == 0)
+            _sourceKeys.Clear();
+            CollectSourceKeys(_sourceKeys);
+
+            for (var i = 0; i < _sourceKeys.Count; i++)
             {
-                ReleaseAll(store, spawnOptions);
-                return;
-            }
-
-            if (spawnOptions.FullRebuild)
-                ReleaseAll(store, spawnOptions);
-
-            _snapshotKeys.Clear();
-            _snapshotLookup.Clear();
-
-            foreach (var pair in parents)
-            {
-                if (!ShouldInclude(pair.Key, pair.Value))
+                var key = _sourceKeys[i];
+                if (!TryTakeScopedValue(key, out var value))
                     continue;
 
-                _snapshotKeys.Add(pair.Key);
-                _snapshotLookup.Add(pair.Key);
+                UpsertEntry(key, GameRuntimeObjectOperation.Snapshot(_store, key, null, value), spawnOptions);
             }
 
-            if (_snapshotKeys.Count == 0)
-            {
-                ReleaseAll(store, spawnOptions);
-                return;
-            }
-
-            SortKeys(_snapshotKeys);
-
-            if (_activeEntries.Count > 0)
-            {
-                _removedKeys.Clear();
-                foreach (var key in _activeEntries.Keys)
-                {
-                    if (!_snapshotLookup.Contains(key))
-                        _removedKeys.Add(key);
-                }
-
-                for (var i = 0; i < _removedKeys.Count; i++)
-                    ReleaseKey(store, _removedKeys[i], spawnOptions);
-                _removedKeys.Clear();
-            }
-
-            _orderedKeys.Clear();
-            for (var i = 0; i < _snapshotKeys.Count; i++)
-            {
-                var key = _snapshotKeys[i];
-                _orderedKeys.Add(key);
-
-                if (!parents.TryGetValue(key, out var value))
-                    continue;
-
-                var previousValue = _activeEntries.TryGetValue(key, out var activeEntry) ? activeEntry.Value : null;
-                var operation = GameRuntimeObjectOperation.Snapshot(store, key, previousValue, value);
-                UpsertEntry(key, operation, spawnOptions);
-            }
-
-            ApplyActiveOrder();
-            _snapshotKeys.Clear();
-            _snapshotLookup.Clear();
+            _sourceKeys.Clear();
+            SyncActiveOrder();
         }
 
-        private bool ApplyStructureChange(RuntimeStore store, RuntimeStructureDirty dirty, CollectionViewSpawnOptions spawnOptions)
+        private void ApplyStructureChanges(NativeArray<RuntimeStructureDirty> changes)
+        {
+            if (_store == null || changes.Length == 0)
+                return;
+
+            var spawnOptions = ResolveSpawnOptions(CollectionViewSpawnOptions.Default);
+            if (spawnOptions.FullRebuild)
+            {
+                ResetFromStore(spawnOptions);
+                return;
+            }
+
+            var orderDirty = false;
+            for (var i = 0; i < changes.Length; i++)
+            {
+                if (ApplyStructureChange(changes[i], spawnOptions))
+                    orderDirty = true;
+            }
+
+            if (orderDirty)
+                SyncActiveOrder();
+        }
+
+        private void ApplyComponentStructureChanges(NativeArray<ObjectStructDirty> changes)
+        {
+            if (_store == null || changes.Length == 0 || _activeEntries.Count == 0)
+                return;
+
+            for (var i = 0; i < changes.Length; i++)
+            {
+                var dirty = changes[i];
+                if (!_activeEntries.TryGetValue(dirty.Id, out var activeEntry))
+                    continue;
+                if (!TryTakeScopedValue(dirty.Id, out var value))
+                    continue;
+
+                var operation = GameRuntimeObjectOperation.ComponentStructure(_store, dirty, activeEntry.Value, value);
+                activeEntry.Value = value;
+                ApplyOperation(activeEntry.Container, operation);
+            }
+        }
+
+        private void ApplyComponentChanges(NativeArray<ObjectComponentDirty> changes)
+        {
+            if (_store == null || changes.Length == 0 || _activeEntries.Count == 0)
+                return;
+
+            for (var i = 0; i < changes.Length; i++)
+            {
+                var dirty = changes[i];
+                if (!_activeEntries.TryGetValue(dirty.Id, out var activeEntry))
+                    continue;
+                if (!TryTakeScopedValue(dirty.Id, out var value))
+                    continue;
+
+                var operation = GameRuntimeObjectOperation.Component(_store, dirty, activeEntry.Value, value);
+                activeEntry.Value = value;
+                ApplyOperation(activeEntry.Container, operation);
+            }
+        }
+
+        private bool ApplyStructureChange(RuntimeStructureDirty dirty, CollectionViewSpawnOptions spawnOptions)
         {
             if (dirty.Id == RuntimeStore.STORE_ROOT_OBJECT_ID)
                 return false;
@@ -228,72 +263,79 @@ namespace DingoGameObjectsCMS.View
                 if (!_activeEntries.ContainsKey(dirty.Id))
                     return false;
 
-                ReleaseKey(store, dirty.Id, spawnOptions);
+                ReleaseKey(_store, dirty.Id, spawnOptions);
                 return true;
             }
 
-            if (!TryTakeVisible(store, dirty.Id, out var value))
+            if (!TryTakeScopedValue(dirty.Id, out var value))
             {
                 if (!_activeEntries.ContainsKey(dirty.Id))
                     return false;
 
-                ReleaseKey(store, dirty.Id, spawnOptions);
+                ReleaseKey(_store, dirty.Id, spawnOptions);
                 return true;
             }
 
             var previousValue = _activeEntries.TryGetValue(dirty.Id, out var activeEntry) ? activeEntry.Value : null;
-            var operation = GameRuntimeObjectOperation.Structure(store, dirty, previousValue, value);
-            UpsertEntry(dirty.Id, operation, spawnOptions);
-            EnsureOrderedKey(dirty.Id);
+            UpsertEntry(dirty.Id, GameRuntimeObjectOperation.Structure(_store, dirty, previousValue, value), spawnOptions);
             return true;
         }
 
-        private void RefreshChangedEntries(RuntimeStore store, NativeArray<ObjectStructDirty> changes)
+        private void CollectSourceKeys(List<long> target)
         {
-            if (store == null || changes.Length == 0 || _activeEntries.Count == 0)
-                return;
-
-            for (var i = 0; i < changes.Length; i++)
+            switch (_scope.Kind)
             {
-                var dirty = changes[i];
-                if (!_activeEntries.TryGetValue(dirty.Id, out var activeEntry))
-                    continue;
-                if (!TryTakeVisible(store, dirty.Id, out var value))
-                    continue;
+                case RuntimeObjectCollectionScopeKind.Parents:
+                    foreach (var pair in _store.Parents.V)
+                    {
+                        if (ShouldInclude(pair.Key, pair.Value))
+                            target.Add(pair.Key);
+                    }
 
-                var operation = GameRuntimeObjectOperation.ComponentStructure(store, dirty, activeEntry.Value, value);
-                activeEntry.Value = value;
-                ApplyOperation(activeEntry.Container, operation);
+                    SortKeys(target);
+                    break;
+
+                case RuntimeObjectCollectionScopeKind.DirectChildren:
+                    if (!_store.TryTakeChildren(_scope.ParentId, out var children))
+                        return;
+
+                    for (var i = 0; i < children.Count; i++)
+                    {
+                        var childId = children[i];
+                        if (_store.TryTakeRO(childId, out var value) && ShouldInclude(childId, value))
+                            target.Add(childId);
+                    }
+
+                    break;
+
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(_scope), _scope.Kind, null);
             }
         }
 
-        private void RefreshChangedEntries(RuntimeStore store, NativeArray<ObjectComponentDirty> changes)
-        {
-            if (store == null || changes.Length == 0 || _activeEntries.Count == 0)
-                return;
-
-            for (var i = 0; i < changes.Length; i++)
-            {
-                var dirty = changes[i];
-                if (!_activeEntries.TryGetValue(dirty.Id, out var activeEntry))
-                    continue;
-                if (!TryTakeVisible(store, dirty.Id, out var value))
-                    continue;
-
-                var operation = GameRuntimeObjectOperation.Component(store, dirty, activeEntry.Value, value);
-                activeEntry.Value = value;
-                ApplyOperation(activeEntry.Container, operation);
-            }
-        }
-
-        private bool TryTakeVisible(RuntimeStore store, long id, out GameRuntimeObject value)
+        private bool TryTakeScopedValue(long id, out GameRuntimeObject value)
         {
             value = null;
-            if (store == null)
+            if (_store == null)
                 return false;
 
-            if (!store.Parents.V.TryGetValue(id, out value))
-                return false;
+            switch (_scope.Kind)
+            {
+                case RuntimeObjectCollectionScopeKind.Parents:
+                    if (!_store.Parents.V.TryGetValue(id, out value))
+                        return false;
+                    break;
+
+                case RuntimeObjectCollectionScopeKind.DirectChildren:
+                    if (!_store.TryTakeParentRO(id, out var parent) || parent == null || parent.InstanceId != _scope.ParentId)
+                        return false;
+                    if (!_store.TryTakeRO(id, out value))
+                        return false;
+                    break;
+
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(_scope), _scope.Kind, null);
+            }
 
             return ShouldInclude(id, value);
         }
@@ -318,8 +360,45 @@ namespace DingoGameObjectsCMS.View
                 Container = valueContainer,
             };
 
-            EnsureOrderedKey(key);
             _ = FinalizePullAsync(key, version, operation.Value, valueContainer, spawnOptions);
+        }
+
+        private void SyncActiveOrder()
+        {
+            _orderedKeys.Clear();
+
+            switch (_scope.Kind)
+            {
+                case RuntimeObjectCollectionScopeKind.Parents:
+                    _sourceKeys.Clear();
+                    foreach (var key in _activeEntries.Keys)
+                    {
+                        _sourceKeys.Add(key);
+                    }
+
+                    SortKeys(_sourceKeys);
+                    _orderedKeys.AddRange(_sourceKeys);
+                    _sourceKeys.Clear();
+                    break;
+
+                case RuntimeObjectCollectionScopeKind.DirectChildren:
+                    if (_store != null && _store.TryTakeChildren(_scope.ParentId, out var children))
+                    {
+                        for (var i = 0; i < children.Count; i++)
+                        {
+                            var childId = children[i];
+                            if (_activeEntries.ContainsKey(childId))
+                                _orderedKeys.Add(childId);
+                        }
+                    }
+
+                    break;
+
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(_scope), _scope.Kind, null);
+            }
+
+            ApplyActiveOrder();
         }
 
         private void ReleaseAll(RuntimeStore store, CollectionViewSpawnOptions spawnOptions)
@@ -330,10 +409,14 @@ namespace DingoGameObjectsCMS.View
 
             _removedKeys.Clear();
             foreach (var key in _activeEntries.Keys)
+            {
                 _removedKeys.Add(key);
+            }
 
             for (var i = 0; i < _removedKeys.Count; i++)
+            {
                 ReleaseKey(store, _removedKeys[i], spawnOptions);
+            }
 
             _removedKeys.Clear();
         }
@@ -373,7 +456,7 @@ namespace DingoGameObjectsCMS.View
                 if (!ReferenceEquals(activeEntry.Container, valueContainer))
                     return;
 
-                ApplyActiveOrder();
+                SyncActiveOrder();
             }
             catch (Exception e)
             {
@@ -398,38 +481,11 @@ namespace DingoGameObjectsCMS.View
             _pool.PushElement(valueContainer);
         }
 
-        private void EnsureOrderedKey(long key)
-        {
-            var currentIndex = _orderedKeys.IndexOf(key);
-            if (currentIndex >= 0)
-                _orderedKeys.RemoveAt(currentIndex);
-
-            var insertIndex = FindInsertIndex(key);
-            _orderedKeys.Insert(insertIndex, key);
-        }
-
         private void RemoveOrderedKey(long key)
         {
             var currentIndex = _orderedKeys.IndexOf(key);
             if (currentIndex >= 0)
                 _orderedKeys.RemoveAt(currentIndex);
-        }
-
-        private int FindInsertIndex(long key)
-        {
-            var min = 0;
-            var max = _orderedKeys.Count;
-
-            while (min < max)
-            {
-                var mid = min + ((max - min) / 2);
-                if (CompareKeys(_orderedKeys[mid], key) < 0)
-                    min = mid + 1;
-                else
-                    max = mid;
-            }
-
-            return min;
         }
 
         private void ApplyActiveOrder()
@@ -453,7 +509,7 @@ namespace DingoGameObjectsCMS.View
             return new CollectionViewSpawnOptions(immediate: sourceOptions.Immediate, fullRebuild: _fullRebuildOnChange || sourceOptions.FullRebuild);
         }
 
-        private sealed class ActiveEntry
+        private class ActiveEntry
         {
             public int Version;
             public GameRuntimeObject Value;

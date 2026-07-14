@@ -47,12 +47,12 @@ namespace DingoGameObjectsCMS.Mirror
 
     public static partial class RuntimeReplicationFilter
     {
-        public static bool ShouldReplicateObject(GameRuntimeObject obj, ReplicationMask mask, NetworkConnectionToClient connection = null, int replicationProfileId = 0)
+        public static bool ShouldReplicateObject(GameRuntimeObject obj, ReplicationMask mask, NetworkConnectionToClient connection, int replicationProfileId = 0)
         {
             return ShouldReplicateObject(obj, mask, connection != null ? connection.connectionId : -1, replicationProfileId);
         }
 
-        public static bool ShouldReplicateComponent(GameRuntimeObject owner, GameRuntimeComponent component, ReplicationMask mask, NetworkConnectionToClient connection = null, int replicationProfileId = 0)
+        public static bool ShouldReplicateComponent(GameRuntimeObject owner, GameRuntimeComponent component, ReplicationMask mask, NetworkConnectionToClient connection, int replicationProfileId = 0)
         {
             return ShouldReplicateComponent(owner, component, mask, connection != null ? connection.connectionId : -1, replicationProfileId);
         }
@@ -62,7 +62,7 @@ namespace DingoGameObjectsCMS.Mirror
     {
         public static RuntimeStoreSnapshot BuildSnapshot(
             RuntimeStore store,
-            NetworkConnectionToClient connection = null,
+            NetworkConnectionToClient connection,
             int replicationProfileId = 0,
             IRuntimePayloadSerializer serializer = null)
         {
