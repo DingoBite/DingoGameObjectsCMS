@@ -9,6 +9,7 @@ namespace DingoGameObjectsCMS.View
     {
         private readonly Dictionary<uint, Type> _componentViewTypesById = new();
         private bool _cacheBuilt;
+        private ulong _registryInitializationVersion;
 
         public bool TryGetComponentViewType(uint componentTypeId, out Type componentViewType)
         {
@@ -18,10 +19,10 @@ namespace DingoGameObjectsCMS.View
 
         private void EnsureCache()
         {
-            if (_cacheBuilt)
-                return;
             if (!RuntimeComponentTypeRegistry.IsInitialized)
                 throw new InvalidOperationException($"{nameof(GameRuntimeComponentPalettePrefab)} '{name}' cannot build its mapping before {nameof(RuntimeComponentTypeRegistry)} is initialized.");
+            if (_cacheBuilt && _registryInitializationVersion == RuntimeComponentTypeRegistry.InitializationVersion)
+                return;
 
             _componentViewTypesById.Clear();
             var componentViews = GetComponents<GameRuntimeComponentMonoBehaviour>();
@@ -40,6 +41,7 @@ namespace DingoGameObjectsCMS.View
                 _componentViewTypesById.Add(componentTypeId, componentView.GetType());
             }
 
+            _registryInitializationVersion = RuntimeComponentTypeRegistry.InitializationVersion;
             _cacheBuilt = true;
         }
     }

@@ -43,6 +43,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
         private static readonly Dictionary<uint, Type> _typeById = new();
 
         public static bool IsInitialized { get; private set; }
+        public static ulong InitializationVersion { get; private set; }
         public static int Count => _typeById.Count;
         public static string RegistryHash { get; private set; }
         public static IReadOnlyList<Type> TypesById => _typesById;
@@ -247,6 +248,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
 
             RegistryHash = calculatedHash;
             IsInitialized = true;
+            InitializationVersion++;
         }
 
         private static List<Entry> NormalizeEntries(Manifest manifest)
