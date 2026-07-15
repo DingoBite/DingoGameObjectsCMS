@@ -31,7 +31,12 @@ namespace DingoGameObjectsCMS.Modding
         public bool TryGet(GameAssetKey key, out GameAssetScriptableObject asset)
         {
             if (_cache.TryGetValue(key, out asset))
-                return asset != null;
+            {
+                if (asset != null)
+                    return true;
+
+                _cache.Remove(key);
+            }
 
             if (!_byKey.TryGetValue(key, out var entry))
             {

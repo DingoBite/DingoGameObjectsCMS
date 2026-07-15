@@ -1,4 +1,5 @@
 using DingoGameObjectsCMS;
+using DingoGameObjectsCMS.AssetLibrary;
 using DingoGameObjectsCMS.AssetLibrary.Manifest;
 using UnityEditor;
 
@@ -18,6 +19,7 @@ namespace DingoGameObjectsCMS.Editor
             if (state != PlayModeStateChange.ExitingEditMode && state != PlayModeStateChange.ExitingPlayMode)
                 return;
 
+            GameAssetLibraryManifest.ClearRuntimeCaches();
             GameAssetLibraryLocks.ClearAll(StoreRealm.Server);
             GameAssetLibraryLocks.ClearAll(StoreRealm.Client);
         }

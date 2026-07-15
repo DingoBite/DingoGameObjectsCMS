@@ -50,6 +50,12 @@ namespace DingoGameObjectsCMS.AssetLibrary
 
         public bool ExternalOverridesBuiltIn => true;
 
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        private static void ResetOnSubsystemRegistration()
+        {
+            ClearRuntimeCaches();
+        }
+
         public static GameAssetLibraryManifest GetNoCheck()
         {
             return Instance;
