@@ -217,21 +217,42 @@ namespace DingoGameObjectsCMS.View
 
         private void ApplyComponentStructureChanges(NativeArray<ObjectStructDirty> changes)
         {
-            if (_store == null || changes.Length == 0 || _activeEntries.Count == 0)
+            if (_store == null || changes.Length == 0)
                 return;
 
+            var spawnOptions = ResolveSpawnOptions(CollectionViewSpawnOptions.Default);
+            var orderDirty = false;
             for (var i = 0; i < changes.Length; i++)
             {
                 var dirty = changes[i];
-                if (!_activeEntries.TryGetValue(dirty.Id, out var activeEntry))
+                var hasActiveEntry = _activeEntries.TryGetValue(dirty.Id, out var activeEntry);
+                var isIncluded = TryTakeScopedValue(dirty.Id, out var value);
+
+                if (hasActiveEntry && !isIncluded)
+                {
+                    ReleaseKey(_store, dirty.Id, spawnOptions);
+                    orderDirty = true;
                     continue;
-                if (!TryTakeScopedValue(dirty.Id, out var value))
+                }
+                if (!hasActiveEntry && isIncluded)
+                {
+                    UpsertEntry(
+                        dirty.Id,
+                        GameRuntimeObjectOperation.ComponentStructure(_store, dirty, null, value),
+                        spawnOptions);
+                    orderDirty = true;
+                    continue;
+                }
+                if (!hasActiveEntry)
                     continue;
 
                 var operation = GameRuntimeObjectOperation.ComponentStructure(_store, dirty, activeEntry.Value, value);
                 activeEntry.Value = value;
                 ApplyOperation(activeEntry.Container, operation);
             }
+
+            if (orderDirty)
+                SyncActiveOrder();
         }
 
         private void ApplyComponentChanges(NativeArray<ObjectComponentDirty> changes)
