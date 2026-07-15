@@ -19,6 +19,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
         public int Version;
         public string RegistryHash;
         public List<Entry> Types;
+        public List<int> ReservedIds;
     }
 
     [Serializable, Preserve]
@@ -154,6 +155,11 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
 
         public static string CalculateRegistryHash(IEnumerable<Entry> entries)
         {
+            return CalculateRegistryHash(entries, null);
+        }
+
+        public static string CalculateRegistryHash(IEnumerable<Entry> entries, IEnumerable<int> reservedIds)
+        {
             var builder = new StringBuilder();
             foreach (var entry in entries.Where(e => e != null).OrderBy(e => e.Id))
             {
@@ -166,6 +172,13 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
                     .Append('|')
                     .Append(NormalizeHashPart(entry.TypeName))
                     .Append('\n');
+            }
+            if (reservedIds != null)
+            {
+                foreach (var reservedId in reservedIds.Distinct().OrderBy(id => id))
+                {
+                    builder.Append(reservedId).Append("|<reserved>\n");
+                }
             }
 
             using var sha = SHA256.Create();
@@ -184,7 +197,18 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
             _typeById.Clear();
 
             var ordered = NormalizeEntries(manifest);
-            var calculatedHash = CalculateRegistryHash(ordered);
+            var reservedIds = manifest.ReservedIds ?? new List<int>();
+            var reservedIdSet = new HashSet<int>();
+            for (var i = 0; i < reservedIds.Count; i++)
+            {
+                var reservedId = reservedIds[i];
+                if (reservedId < 0)
+                    throw new InvalidOperationException($"Runtime component registry has negative reserved id: {reservedId}.");
+                if (!reservedIdSet.Add(reservedId))
+                    throw new InvalidOperationException($"Runtime component registry has duplicate reserved id: {reservedId}.");
+            }
+
+            var calculatedHash = CalculateRegistryHash(ordered, reservedIdSet);
             if (!string.IsNullOrWhiteSpace(manifest.RegistryHash) && !string.Equals(manifest.RegistryHash, calculatedHash, StringComparison.Ordinal))
                 throw new InvalidOperationException($"Runtime component registry hash mismatch. Manifest={manifest.RegistryHash}, calculated={calculatedHash}.");
 
@@ -195,6 +219,8 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
             {
                 if (e.Id < 0)
                     throw new InvalidOperationException($"Runtime component registry entry has negative id: {e.Id}.");
+                if (reservedIdSet.Contains(e.Id))
+                    throw new InvalidOperationException($"Runtime component registry id {e.Id} is both active and reserved.");
                 if (string.IsNullOrWhiteSpace(e.Key))
                     throw new InvalidOperationException($"Runtime component registry entry {e.Id} has empty key.");
                 if (string.IsNullOrWhiteSpace(e.TypeName) && string.IsNullOrWhiteSpace(e.AssemblyQualifiedName))

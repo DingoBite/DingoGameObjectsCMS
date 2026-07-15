@@ -2,16 +2,20 @@ using System;
 using System.Collections.Generic;
 using DingoGameObjectsCMS.AssetObjects;
 using DingoGameObjectsCMS.RuntimeObjects;
+using DingoGameObjectsCMS.RuntimeObjects.Overrides;
 
 namespace DingoGameObjectsCMS.AssetLibrary
 {
     public static class GameAssetLibraryLockBuilder
     {
-        public static GameAssetLibraryLock Build()
+        public static GameAssetLibraryLock Build(GameAssetTemplateCache templateCache)
         {
+            if (templateCache == null)
+                throw new ArgumentNullException(nameof(templateCache));
+
             var assetLock = new GameAssetLibraryLock();
 
-            foreach (var mod in GameAssetLibraryManifest.CollectLoadedModManifests())
+            foreach (var mod in GameAssetLibraryManifest.CollectImmutableModManifests())
             {
                 if (mod == null)
                     continue;
@@ -19,38 +23,73 @@ namespace DingoGameObjectsCMS.AssetLibrary
                 assetLock.SetMod(new GameAssetLibraryLockMod(mod.Mod, mod.ManifestVersion, mod.GeneratedUtc));
             }
 
-            foreach (var request in GameAssetLibraryManifest.CollectIdentityRequests())
+            foreach (var asset in GameAssetLibraryManifest.CollectImmutableAssets().Values)
             {
-                if (!GameAssetLibraryManifest.TryResolve(request, out var asset) || asset == null)
-                    continue;
+                if (asset is not GameAsset gameAsset)
+                    throw new InvalidOperationException($"Asset '{asset.Key}' is not a {nameof(GameAsset)}.");
 
-                assetLock.Set(request, new GameAssetLibraryLockEntry(asset.Key, asset.GUID));
+                AddResolvedEntry(assetLock, templateCache, gameAsset.Key, gameAsset);
             }
 
-            return assetLock;
+            foreach (var request in GameAssetLibraryManifest.CollectImmutableIdentityRequests())
+            {
+                if (!GameAssetLibraryManifest.TryResolveImmutable(request, out var asset) || asset == null)
+                    continue;
+
+                if (asset is not GameAsset gameAsset)
+                    throw new InvalidOperationException($"Asset '{asset.Key}' is not a {nameof(GameAsset)}.");
+
+                AddResolvedEntry(assetLock, templateCache, request, gameAsset);
+            }
+
+            return assetLock.Seal();
+        }
+
+        private static void AddResolvedEntry(
+            GameAssetLibraryLock assetLock,
+            GameAssetTemplateCache templateCache,
+            GameAssetKey request,
+            GameAsset gameAsset)
+        {
+            var blueprint = templateCache.GetOrCreate(new GameAssetReference(request), gameAsset);
+            assetLock.Set(request, new GameAssetLibraryLockEntry(
+                gameAsset.Key,
+                gameAsset.GUID,
+                blueprint.Asset.MaterializedContentHash));
         }
 
         public static bool TryResolve(GameAssetKey key, GameAssetLibraryLock assetLock, out GameAssetScriptableObject asset)
         {
             asset = null;
 
-            if (!IsLatestVersionRequest(key))
-                return GameAssetLibraryManifest.TryResolve(key, out asset);
-
             if (assetLock == null)
-                return GameAssetLibraryManifest.TryResolve(key, out asset);
+                return false;
+
+            if (assetLock.FormatVersion != GameAssetLibraryLock.CURRENT_FORMAT_VERSION)
+                return false;
 
             if (!assetLock.TryGet(key, out var entry) || entry == null)
                 return false;
 
-            if (entry.ResolvedGuid.isValid && GameAssetLibraryManifest.TryResolveGuid(entry.ResolvedGuid, out asset))
-                return true;
+            if (!entry.ResolvedGuid.isValid
+                || string.IsNullOrWhiteSpace(entry.ResolvedKey.Version)
+                || string.IsNullOrWhiteSpace(entry.MaterializedContentHash))
+                return false;
 
-            if (GameAssetLibraryManifest.TryResolve(entry.ResolvedKey, out asset))
-                return true;
+            if (!IsLatestVersionRequest(key) && !KeysEqual(key, entry.ResolvedKey))
+                return false;
 
-            asset = null;
-            return false;
+            if (!GameAssetLibraryManifest.TryResolveImmutableGuid(entry.ResolvedGuid, out var byGuid) || byGuid == null)
+                return false;
+
+            if (!GameAssetLibraryManifest.TryResolveImmutable(entry.ResolvedKey, out var byKey) || byKey == null)
+                return false;
+
+            if (byGuid.GUID != byKey.GUID || byGuid.GUID != entry.ResolvedGuid || !KeysEqual(byGuid.Key, entry.ResolvedKey))
+                return false;
+
+            asset = byGuid;
+            return true;
         }
 
         public static GameAssetLibraryLockReport CompareWithCurrentLibrary(GameAssetLibraryLock assetLock)
@@ -70,10 +109,21 @@ namespace DingoGameObjectsCMS.AssetLibrary
                 var entry = kv.Value;
                 var request = BuildIdentityRequest(entry.ResolvedKey);
 
-                var hasCurrentIdentity = GameAssetLibraryManifest.TryResolve(request, out var currentIdentityAsset);
+                if (string.IsNullOrWhiteSpace(entry.MaterializedContentHash))
+                {
+                    report.Issues.Add(new GameAssetLibraryLockIssue
+                    {
+                        Kind = GameAssetLibraryLockIssueKinds.MISSING_CONTENT_HASH,
+                        Identity = identity,
+                        LockedResolvedKey = entry.ResolvedKey,
+                        LockedResolvedGuid = entry.ResolvedGuid,
+                    });
+                }
+
+                var hasCurrentIdentity = GameAssetLibraryManifest.TryResolveImmutable(request, out var currentIdentityAsset);
                 GameAssetScriptableObject currentGuidAsset = null;
-                var hasCurrentGuid = entry.ResolvedGuid.isValid && GameAssetLibraryManifest.TryResolveGuid(entry.ResolvedGuid, out currentGuidAsset);
-                var hasCurrentResolvedKey = GameAssetLibraryManifest.TryResolve(entry.ResolvedKey, out var currentResolvedKeyAsset);
+                var hasCurrentGuid = entry.ResolvedGuid.isValid && GameAssetLibraryManifest.TryResolveImmutableGuid(entry.ResolvedGuid, out currentGuidAsset);
+                var hasCurrentResolvedKey = GameAssetLibraryManifest.TryResolveImmutable(entry.ResolvedKey, out var currentResolvedKeyAsset);
 
                 if (!hasCurrentIdentity)
                 {
@@ -172,7 +222,7 @@ namespace DingoGameObjectsCMS.AssetLibrary
         private static Dictionary<string, GameAssetLibraryLockMod> BuildCurrentModIndex()
         {
             var mods = new Dictionary<string, GameAssetLibraryLockMod>(StringComparer.Ordinal);
-            foreach (var mod in GameAssetLibraryManifest.CollectLoadedModManifests())
+            foreach (var mod in GameAssetLibraryManifest.CollectImmutableModManifests())
             {
                 if (mod == null)
                     continue;

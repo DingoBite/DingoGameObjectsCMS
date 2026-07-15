@@ -4,7 +4,6 @@ using DingoGameObjectsCMS.AssetObjects;
 using DingoGameObjectsCMS.RuntimeObjects;
 using DingoGameObjectsCMS.Stores;
 using Unity.Collections;
-using UnityEditor;
 using UnityEngine;
 
 namespace DingoGameObjectsCMS.AssetLibrary.Manifest
@@ -23,21 +22,6 @@ namespace DingoGameObjectsCMS.AssetLibrary.Manifest
         {
             ResetState();
         }
-
-#if UNITY_EDITOR
-        [InitializeOnLoadMethod]
-        private static void InstallPlayModeReset()
-        {
-            EditorApplication.playModeStateChanged -= OnPlayModeStateChanged;
-            EditorApplication.playModeStateChanged += OnPlayModeStateChanged;
-        }
-
-        private static void OnPlayModeStateChanged(PlayModeStateChange state)
-        {
-            if (state == PlayModeStateChange.ExitingEditMode || state == PlayModeStateChange.ExitingPlayMode)
-                ResetState();
-        }
-#endif
 
         public static void Set(FixedString32Bytes lockName, GameAssetLibraryLock assetLock)
         {

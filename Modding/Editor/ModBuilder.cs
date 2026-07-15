@@ -161,7 +161,8 @@ namespace DingoGameObjectsCMS.Modding.Editor
 
             CopyAllFilesExceptMetaAndExportedAssets(modRoot, dstModRootAbs, exportAssetPaths);
             ExportAssetsToJson(modRoot, dstModRootAbs, exportItems);
-            WriteManifest(dstModRootAbs, modName, exportItems);
+            var contentRevision = AssetDatabase.GetAssetDependencyHash(modRoot).ToString();
+            WriteManifest(dstModRootAbs, modName, exportItems, contentRevision);
 
             Debug.Log($"Mod build complete: {dstModRootAbs}");
         }
@@ -218,12 +219,18 @@ namespace DingoGameObjectsCMS.Modding.Editor
             }
         }
 
-        private static void WriteManifest(string dstModRootAbs, string modName, List<ExportItem> items)
+        private static void WriteManifest(
+            string dstModRootAbs,
+            string modName,
+            List<ExportItem> items,
+            string contentRevision)
         {
             var m = new ModManifest
             {
                 Mod = modName,
-                GeneratedUtc = DateTime.UtcNow.ToString("O"),
+                // Kept in the legacy field for format stability. A content
+                // revision makes built-in package generation deterministic.
+                GeneratedUtc = $"content:{contentRevision}",
                 ManifestVersion = 1,
                 Assets = items.Select(it => new ModManifestEntry
                 {

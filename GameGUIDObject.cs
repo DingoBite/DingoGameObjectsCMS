@@ -13,5 +13,13 @@ namespace DingoGameObjectsCMS
         
         [JsonIgnore]
         public Hash128 GUID => _guid;
+
+        public void SetGuidRequired(Hash128 guid)
+        {
+            if (!guid.isValid)
+                throw new ArgumentException("Game object GUID must be valid.", nameof(guid));
+
+            _guid = guid;
+        }
     }
 }

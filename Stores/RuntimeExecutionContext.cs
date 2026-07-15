@@ -1,12 +1,9 @@
+using System;
 using System.Collections.Generic;
 using Bind;
-using DingoGameObjectsCMS.Mirror;
 using DingoGameObjectsCMS.RuntimeObjects.Stores;
 using Unity.Collections;
 using UnityEngine;
-#if UNITY_EDITOR
-using UnityEditor;
-#endif
 
 namespace DingoGameObjectsCMS.Stores
 {
@@ -39,13 +36,13 @@ namespace DingoGameObjectsCMS.Stores
         }
     }
 
-    public static class RuntimeExecutionContext
+    public static partial class RuntimeExecutionContext
     {
         private static readonly Bind<RuntimeExecutionState> _state = new();
         private static readonly Bind<RuntimeExecutionPhase> _phase = new();
         private static readonly Bind<IReadOnlyDictionary<FixedString32Bytes, RuntimeStore>> _activeStores = new();
 
-        private static RuntimeNetRole _networkRole;
+        private static RuntimeExecutionRole _executionRole;
         private static bool _replicaReady;
 
         public static IReadonlyBind<RuntimeExecutionState> State => _state;
@@ -71,37 +68,26 @@ namespace DingoGameObjectsCMS.Stores
             ResetState();
         }
 
-#if UNITY_EDITOR
-        [InitializeOnLoadMethod]
-        private static void InstallPlayModeReset()
-        {
-            EditorApplication.playModeStateChanged -= OnPlayModeStateChanged;
-            EditorApplication.playModeStateChanged += OnPlayModeStateChanged;
-        }
-
-        private static void OnPlayModeStateChanged(PlayModeStateChange state)
-        {
-            if (state == PlayModeStateChange.ExitingEditMode || state == PlayModeStateChange.ExitingPlayMode)
-                ResetState();
-        }
-#endif
-
         public static void ResetState()
         {
-            _networkRole = RuntimeNetRole.Offline;
+            _executionRole = RuntimeExecutionRole.OfflineAuthoritative;
             _replicaReady = false;
             RefreshState();
         }
 
-        public static void SetNetworkRole(RuntimeNetRole role)
+        public static void SetRole(RuntimeExecutionRole role)
         {
-            _networkRole = role;
+            ValidateRole(role);
+            if (_executionRole != role)
+                _replicaReady = false;
+
+            _executionRole = role;
             RefreshState();
         }
 
         public static void SetReplicaReady(bool ready)
         {
-            _replicaReady = ready;
+            _replicaReady = _executionRole == RuntimeExecutionRole.ClientReplica && ready;
             RefreshState();
         }
 
@@ -135,7 +121,7 @@ namespace DingoGameObjectsCMS.Stores
 
         private static void RefreshState()
         {
-            var phase = ResolvePhase(_networkRole, _replicaReady);
+            var phase = ResolvePhase(_executionRole, _replicaReady);
             var stableRole = ResolveStableRole(phase);
             var readRealm = ResolveReadRealm(phase);
             var writeRealm = ResolveWriteRealm(phase);
@@ -150,15 +136,30 @@ namespace DingoGameObjectsCMS.Stores
             _activeStores.V = activeStores;
         }
 
-        private static RuntimeExecutionPhase ResolvePhase(RuntimeNetRole role, bool replicaReady)
+        private static RuntimeExecutionPhase ResolvePhase(RuntimeExecutionRole role, bool replicaReady)
         {
             return role switch
             {
-                RuntimeNetRole.Server => RuntimeExecutionPhase.ServerAuthoritative,
-                RuntimeNetRole.Host => RuntimeExecutionPhase.HostAuthoritative,
-                RuntimeNetRole.Client => replicaReady ? RuntimeExecutionPhase.ClientReplicaReady : RuntimeExecutionPhase.ClientConnectingReplica,
-                _ => RuntimeExecutionPhase.OfflineAuthoritative,
+                RuntimeExecutionRole.OfflineAuthoritative => RuntimeExecutionPhase.OfflineAuthoritative,
+                RuntimeExecutionRole.ServerAuthoritative => RuntimeExecutionPhase.ServerAuthoritative,
+                RuntimeExecutionRole.HostAuthoritative => RuntimeExecutionPhase.HostAuthoritative,
+                RuntimeExecutionRole.ClientReplica => replicaReady ? RuntimeExecutionPhase.ClientReplicaReady : RuntimeExecutionPhase.ClientConnectingReplica,
+                _ => throw new ArgumentOutOfRangeException(nameof(role), role, "Unknown runtime execution role."),
             };
+        }
+
+        private static void ValidateRole(RuntimeExecutionRole role)
+        {
+            switch (role)
+            {
+                case RuntimeExecutionRole.OfflineAuthoritative:
+                case RuntimeExecutionRole.ServerAuthoritative:
+                case RuntimeExecutionRole.HostAuthoritative:
+                case RuntimeExecutionRole.ClientReplica:
+                    return;
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(role), role, "Unknown runtime execution role.");
+            }
         }
 
         private static RuntimeExecutionRole ResolveStableRole(RuntimeExecutionPhase phase)

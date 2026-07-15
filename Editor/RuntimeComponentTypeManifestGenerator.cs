@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using DingoGameObjectsCMS.RuntimeObjects.Commands;
 using DingoGameObjectsCMS.RuntimeObjects.Objects;
 using DingoGameObjectsCMS.RuntimeObjects.Stores;
 using UnityEditor;
@@ -24,8 +25,6 @@ namespace DingoGameObjectsCMS.Editor
         [MenuItem("Tools/Runtime Types/Regenerate Manifest")]
         public static void Regenerate()
         {
-            if (File.Exists(ManifestPath))
-                File.Delete(ManifestPath);
             Generate();
         }
         
@@ -37,7 +36,8 @@ namespace DingoGameObjectsCMS.Editor
 
             var types = CollectRuntimeComponentTypes();
             var entries = NormalizeExistingEntries(manifest);
-            var usedIds = new HashSet<int>();
+            var reservedIds = NormalizeReservedIds(manifest);
+            var usedIds = new HashSet<int>(reservedIds);
             var usedKeys = new HashSet<string>(StringComparer.Ordinal);
             var usedTypes = new HashSet<string>(StringComparer.Ordinal);
             var nextId = -1;
@@ -46,8 +46,13 @@ namespace DingoGameObjectsCMS.Editor
             foreach (var entry in entries.OrderBy(e => e.Id))
             {
                 var type = ResolveType(entry);
-                if (type == null)
+                if (type == null || !IsRuntimeComponentType(type))
+                {
+                    if (!reservedIds.Add(entry.Id))
+                        throw new InvalidOperationException($"Runtime component id {entry.Id} is already reserved.");
+                    usedIds.Add(entry.Id);
                     continue;
+                }
 
                 var nextEntry = RuntimeComponentTypeRegistry.CreateEntry(entry.Id, type, entry.CreatedAt);
                 AddEntry(nextEntries, nextEntry, usedIds, usedKeys, usedTypes);
@@ -66,22 +71,26 @@ namespace DingoGameObjectsCMS.Editor
 
             manifest.Version = RuntimeComponentTypeRegistry.CURRENT_MANIFEST_VERSION;
             manifest.Types = nextEntries.OrderBy(e => e.Id).ToList();
-            manifest.RegistryHash = RuntimeComponentTypeRegistry.CalculateRegistryHash(manifest.Types);
+            manifest.ReservedIds = reservedIds.OrderBy(id => id).ToList();
+            manifest.RegistryHash = RuntimeComponentTypeRegistry.CalculateRegistryHash(manifest.Types, manifest.ReservedIds);
 
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             File.WriteAllText(path, JsonUtility.ToJson(manifest, true));
-            Debug.Log($"Saved manifest: {path} (count={manifest.Types.Count}, hash={manifest.RegistryHash})");
+            Debug.Log($"Saved manifest: {path} (count={manifest.Types.Count}, reserved={manifest.ReservedIds.Count}, hash={manifest.RegistryHash})");
         }
 
         private static Manifest CreateEmptyManifest() => new()
         {
             Version = RuntimeComponentTypeRegistry.CURRENT_MANIFEST_VERSION,
-            Types = new List<Entry>()
+            Types = new List<Entry>(),
+            ReservedIds = new List<int>(),
         };
 
         private static IReadOnlyList<Type> CollectRuntimeComponentTypes()
         {
-            return AppDomain.CurrentDomain.GetAssemblies().SelectMany(a =>
+            return AppDomain.CurrentDomain.GetAssemblies()
+                .Where(IsPlayerRuntimeAssembly)
+                .SelectMany(a =>
                 {
                     try
                     {
@@ -92,10 +101,51 @@ namespace DingoGameObjectsCMS.Editor
                         return Array.Empty<Type>();
                     }
                 })
-                .Where(t => t != null && !t.IsAbstract && typeof(GameRuntimeComponent).IsAssignableFrom(t) && typeof(GameRuntimeComponent) != t)
+                .Where(IsRuntimeComponentType)
                 .OrderBy(RuntimeComponentTypeRegistry.GetKey)
                 .ThenBy(t => t.FullName)
                 .ToArray();
+        }
+
+        private static bool IsRuntimeComponentType(Type type)
+        {
+            if (type == null || type.IsAbstract || type == typeof(GameRuntimeComponent))
+                return false;
+            if (!typeof(GameRuntimeComponent).IsAssignableFrom(type))
+                return false;
+            if (typeof(ICommandLogic).IsAssignableFrom(type))
+                return false;
+            if (!IsPlayerRuntimeAssembly(type.Assembly))
+                return false;
+            return !ContainsNamespaceSegment(type.Namespace, "Editor")
+                   && !ContainsNamespaceSegment(type.Namespace, "Tests")
+                   && !ContainsNamespaceSegment(type.Namespace, "Examples")
+                   && !ContainsNamespaceSegment(type.Namespace, "Samples");
+        }
+
+        private static bool IsPlayerRuntimeAssembly(System.Reflection.Assembly assembly)
+        {
+            if (assembly == null || assembly.IsDynamic)
+                return false;
+            var name = assembly.GetName().Name;
+            if (string.IsNullOrWhiteSpace(name))
+                return false;
+            return !name.EndsWith("-Editor", StringComparison.OrdinalIgnoreCase)
+                   && !name.EndsWith(".Editor", StringComparison.OrdinalIgnoreCase)
+                   && name.IndexOf("Test", StringComparison.OrdinalIgnoreCase) < 0;
+        }
+
+        private static bool ContainsNamespaceSegment(string value, string segment)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return false;
+            var parts = value.Split('.');
+            for (var i = 0; i < parts.Length; i++)
+            {
+                if (string.Equals(parts[i], segment, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+            return false;
         }
 
         private static List<Entry> NormalizeExistingEntries(Manifest manifest)
@@ -109,6 +159,20 @@ namespace DingoGameObjectsCMS.Editor
                 entries[i].Id = i;
 
             return entries;
+        }
+
+        private static HashSet<int> NormalizeReservedIds(Manifest manifest)
+        {
+            var source = manifest?.ReservedIds ?? new List<int>();
+            var result = new HashSet<int>();
+            for (var i = 0; i < source.Count; i++)
+            {
+                if (source[i] < 0)
+                    throw new InvalidOperationException($"Runtime component manifest has negative reserved id: {source[i]}.");
+                if (!result.Add(source[i]))
+                    throw new InvalidOperationException($"Runtime component manifest has duplicate reserved id: {source[i]}.");
+            }
+            return result;
         }
 
         private static void AddEntry(

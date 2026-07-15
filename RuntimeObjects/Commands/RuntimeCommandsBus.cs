@@ -1,11 +1,14 @@
 using System;
 using System.Collections.Generic;
 using DingoGameObjectsCMS.RuntimeObjects.Stores;
+using DingoGameObjectsCMS.Stores;
 using DingoProjectAppStructure.Core.Model;
 using DingoUnityExtensions;
 
 namespace DingoGameObjectsCMS.RuntimeObjects.Commands
 {
+    public delegate void RuntimeCommandOutboundDispatcher(GameRuntimeCommand command, in RuntimeExecutionState authority);
+
     public class RuntimeCommandsBus : AppModelBase
     {
         public const int UPDATE_ORDER = RuntimeStore.UPDATE_ORDER - 1;
@@ -20,8 +23,15 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
         private readonly SafeMulticast<GameRuntimeCommand> _beforeExecute = new();
         private readonly SafeMulticast<GameRuntimeCommand> _afterExecute = new();
         private readonly SafeMulticast<GameRuntimeCommand, Exception> _executeFailed = new();
+        private RuntimeCommandOutboundDispatcher _outboundDispatcher;
 
         public int QueuedCount => _queue.Count;
+        public bool HasOutboundDispatcher => _outboundDispatcher != null;
+
+        public RuntimeCommandsBus(RuntimeCommandOutboundDispatcher outboundDispatcher = null)
+        {
+            _outboundDispatcher = outboundDispatcher;
+        }
 
         public event Action<GameRuntimeCommand> BeforeExecute
         {
@@ -39,6 +49,40 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
         {
             add => _executeFailed.Subscribe(value);
             remove => _executeFailed.Unsubscribe(value);
+        }
+
+        public void SetOutboundDispatcher(RuntimeCommandOutboundDispatcher outboundDispatcher)
+        {
+            _outboundDispatcher = outboundDispatcher ?? throw new ArgumentNullException(nameof(outboundDispatcher));
+        }
+
+        public void ClearOutboundDispatcher()
+        {
+            _outboundDispatcher = null;
+        }
+
+        public void Dispatch(GameRuntimeCommand command, in RuntimeExecutionState authority)
+        {
+            if (command == null)
+                throw new ArgumentNullException(nameof(command));
+
+            switch (authority.StableRole)
+            {
+                case RuntimeExecutionRole.OfflineAuthoritative:
+                case RuntimeExecutionRole.ServerAuthoritative:
+                case RuntimeExecutionRole.HostAuthoritative:
+                    Enqueue(command);
+                    return;
+                case RuntimeExecutionRole.ClientReplica:
+                    var outboundDispatcher = _outboundDispatcher;
+                    if (outboundDispatcher == null)
+                        throw new InvalidOperationException($"{nameof(RuntimeCommandsBus)} requires an outbound dispatcher for remote-client commands.");
+
+                    outboundDispatcher(command, in authority);
+                    return;
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(authority), authority.StableRole, "Unknown runtime command authority role.");
+            }
         }
 
         public void Enqueue(GameRuntimeCommand command)

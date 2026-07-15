@@ -51,7 +51,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
                 return;
 
             var keyType = typeof(T);
-            var typeId = keyType.GetId();
 
             if (_componentsByType.TryGetValue(keyType, out var existing) && existing != null)
             {
@@ -67,7 +66,8 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
             }
 
             _componentsByType[keyType] = component;
-            _componentsById[typeId] = component;
+            if (RuntimeComponentTypeRegistry.TryGetId(keyType, out var typeId))
+                _componentsById[typeId] = component;
         }
 
         public void Remove<T>() where T : GameRuntimeComponent
@@ -75,8 +75,8 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
             if (_componentsByType.Remove(typeof(T), out var c))
                 _components.Remove(c);
 
-            var typeId = typeof(T).GetId();
-            _componentsById.Remove(typeId);
+            if (RuntimeComponentTypeRegistry.TryGetId(typeof(T), out var typeId))
+                _componentsById.Remove(typeId);
         }
 
         private void EnsureCache()
@@ -96,9 +96,9 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
                     continue;
 
                 var type = c.GetType();
-                var id = type.GetId();
                 _componentsByType[type] = c;
-                _componentsById[id] = c;
+                if (RuntimeComponentTypeRegistry.TryGetId(type, out var id))
+                    _componentsById[id] = c;
             }
         }
 
@@ -108,4 +108,3 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
         void ISerializationCallbackReceiver.OnAfterDeserialize() => RebuildCache();
     }
 }
-

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Runtime.Serialization;
 using DingoGameObjectsCMS.RuntimeObjects.Stores;
+using DingoGameObjectsCMS.RuntimeObjects.Overrides;
 using Newtonsoft.Json;
 using Unity.Entities;
 using UnityEngine;
@@ -16,6 +17,9 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
         public GameAssetKey Key;
         public Hash128 AssetGUID;
         public Hash128 SourceAssetGUID;
+
+        [SerializeField, JsonProperty("Origin")]
+        private RuntimeObjectOrigin _origin;
 
         [SerializeReference, JsonProperty("Components", ItemTypeNameHandling = TypeNameHandling.Auto)]
         private List<GameRuntimeComponent> _components = new();
@@ -37,6 +41,17 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
         [JsonIgnore] public IReadOnlyList<GameRuntimeComponent> Components => _components;
         [JsonIgnore] public bool HasEntityProjection => _hasEntityProjection;
         [JsonIgnore] public RuntimeInstance RuntimeInstance => new() { Id = InstanceId, StoreId = StoreId, Epoch = _runtimeStore?.Epoch ?? 0u };
+        [JsonIgnore] public RuntimeObjectOrigin Origin => _origin;
+
+        public void SetOrigin(RuntimeObjectOrigin origin)
+        {
+            if (!origin.InstanceGuid.isValid)
+                throw new ArgumentException("Runtime object origin requires a valid instance GUID.", nameof(origin));
+            if (!origin.Asset.AssetGuid.isValid)
+                throw new ArgumentException("Runtime object origin requires a valid asset GUID.", nameof(origin));
+
+            _origin = origin;
+        }
 
         public void LinkRuntimeContext(RuntimeStore runtimeStore, World world)
         {

@@ -1,7 +1,10 @@
 using System;
 using System.Collections.Generic;
 using Bind;
+using DingoGameObjectsCMS.AssetLibrary;
 using DingoGameObjectsCMS.RuntimeObjects.Objects;
+using DingoGameObjectsCMS.RuntimeObjects.Overrides;
+using DingoGameObjectsCMS.Stores;
 using DingoProjectAppStructure.Core.Model;
 using DingoUnityExtensions;
 using Unity.Collections;
@@ -20,6 +23,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
         private readonly SafeMulticast<NativeArray<RuntimeStructureDirty>> _structureChangesDispatcher = new();
         private readonly SafeMulticast<NativeArray<ObjectStructDirty>> _componentStructureChangesDispatcher = new();
         private readonly SafeMulticast<NativeArray<ObjectComponentDirty>> _componentChangesDispatcher = new();
+        private readonly SafeMulticast<RuntimeStoreCommittedBatch> _committedBatchDispatcher = new();
 
         public event Action<NativeArray<RuntimeStructureDirty>> StructureChanges
         {
@@ -37,6 +41,12 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
         {
             add => _componentChangesDispatcher.Subscribe(value);
             remove => _componentChangesDispatcher.Unsubscribe(value);
+        }
+
+        public event Action<RuntimeStoreCommittedBatch> CommittedBatch
+        {
+            add => _committedBatchDispatcher.Subscribe(value);
+            remove => _committedBatchDispatcher.Unsubscribe(value);
         }
 
         
@@ -63,15 +73,19 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
         private readonly List<long> _hierarchyProjectionWork = new();
 
         private readonly HashSet<long> _touched = new();
+        private readonly HashSet<PresentationComponentDirtyKey> _presentationComponentChanges = new();
         private bool _scheduled;
         private bool _flushInProgress;
         private bool _rescheduleRequested;
         private bool _suppressReplicationThisFlush;
+        private ulong _netApplyTargetRevision;
+        private bool _netApplyRevisionCommitted;
+        private bool _netApplyScopeActive;
         private bool _entityLinkPassActive;
 
         private readonly HashSet<long> _cycleVisited = new();
 
-        private readonly List<RuntimeStructureDirty> _structureChanges = new();
+        private readonly List<RuntimeStoreStructureChange> _structureChanges = new();
         private readonly List<ObjectComponentDirty> _objectComponentsChanges = new();
         private readonly List<ObjectStructDirty> _objectStructureChanges = new();
         
@@ -80,6 +94,8 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
         public bool ReplicationSuppressed => _suppressReplicationThisFlush;
         public World World => _world;
         public uint Epoch { get; private set; }
+        public uint StoreGeneration { get; private set; }
+        public ulong StoreRevision { get; private set; }
         public bool Retired { get; private set; }
         
         public RuntimeStore(FixedString32Bytes id, StoreRealm realm, World world)
@@ -89,10 +105,49 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
             LinkWorld(world);
         }
 
-        internal void AdoptSlotEpoch(uint epoch)
+        internal void AdoptSlot(uint epoch, uint storeGeneration)
         {
+            if (epoch == 0)
+                throw new ArgumentOutOfRangeException(nameof(epoch));
+            if (storeGeneration == 0)
+                throw new ArgumentOutOfRangeException(nameof(storeGeneration));
+
             Epoch = epoch;
+            StoreGeneration = storeGeneration;
+            StoreRevision = 0;
             Retired = false;
+        }
+
+        internal void FinalizeReplicaBaseline(ulong storeRevision)
+        {
+            if (Realm != StoreRealm.Client)
+                throw new InvalidOperationException($"RuntimeStore '{Id}' can finalize a replica baseline only in the client realm.");
+            if (Retired || StoreGeneration == 0 || Epoch == 0)
+                throw new InvalidOperationException($"RuntimeStore '{Id}' must adopt a live replica slot before baseline finalization.");
+            if (_flushInProgress)
+                throw new InvalidOperationException($"RuntimeStore '{Id}' cannot finalize a baseline while a flush is in progress.");
+
+            // Baseline construction is staging work, not a local mutation
+            // batch. The fully built store becomes observable only when the
+            // registry swaps it in, so no dirty stream is emitted here.
+            foreach (var runtimeObject in _all.V.Values)
+                runtimeObject?.ClearDirty();
+            _structureChanges.Clear();
+            _objectComponentsChanges.Clear();
+            _objectStructureChanges.Clear();
+            _touched.Clear();
+            _presentationComponentChanges.Clear();
+            _order = 0;
+            StoreRevision = storeRevision;
+            _suppressReplicationThisFlush = false;
+            _netApplyTargetRevision = 0;
+            _netApplyRevisionCommitted = false;
+            _netApplyScopeActive = false;
+            _rescheduleRequested = false;
+            _scheduled = false;
+            CoroutineParent.RemoveLateUpdater(this);
+            _all.V = _all.V;
+            _parents.V = _parents.V;
         }
 
         internal void Retire()
@@ -104,6 +159,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
             _structureChangesDispatcher.Clear();
             _componentStructureChangesDispatcher.Clear();
             _componentChangesDispatcher.Clear();
+            _committedBatchDispatcher.Clear();
 
             try
             {
@@ -191,11 +247,15 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
                 _structureChanges.Clear();
                 _objectComponentsChanges.Clear();
                 _objectStructureChanges.Clear();
+                _presentationComponentChanges.Clear();
                 CoroutineParent.RemoveLateUpdater(this);
                 _scheduled = false;
                 _flushInProgress = false;
                 _rescheduleRequested = false;
                 _suppressReplicationThisFlush = false;
+                _netApplyTargetRevision = 0;
+                _netApplyRevisionCommitted = false;
+                _netApplyScopeActive = false;
                 _order = 0;
                 _lastId = FIRST_USER_OBJECT_ID;
                 _parents.V.Clear();
@@ -203,6 +263,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
                 _structureChangesDispatcher.Clear();
                 _componentStructureChangesDispatcher.Clear();
                 _componentChangesDispatcher.Clear();
+                _committedBatchDispatcher.Clear();
             }
         }
 
@@ -281,8 +342,72 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
             return obj;
         }
 
+        private bool RequiresExactGameAssetOrigin =>
+            Realm == StoreRealm.Server
+            && !Retired
+            && RuntimeStores.GetNetDir(Id) == StoreNetDir.S2C
+            && RuntimeStores.TryGetRuntimeStore(Id, StoreRealm.Server, out var active)
+            && ReferenceEquals(active, this);
+
+        private static bool HasExactGameAssetOrigin(GameRuntimeObject runtimeObject)
+        {
+            if (runtimeObject == null || !runtimeObject.GUID.isValid)
+                return false;
+
+            var origin = runtimeObject.Origin;
+            return origin.InstanceGuid.isValid
+                   && origin.InstanceGuid == runtimeObject.GUID
+                   && origin.Asset.AssetGuid.isValid
+                   && !string.IsNullOrWhiteSpace(origin.Asset.ExactKey.Version)
+                   && !string.IsNullOrWhiteSpace(origin.Asset.MaterializedContentHash);
+        }
+
+        private static InvalidOperationException MissingGameAssetOrigin(
+            FixedString32Bytes storeId,
+            long objectId,
+            string operation)
+        {
+            return new InvalidOperationException(
+                $"RuntimeStore '{storeId}' cannot {operation} runtime object {objectId} in an authoritative S2C store without an exact GA origin. " +
+                "Use RuntimeStore.Spawn(...) with a concrete GA, or use the explicit Empty GA for an intentionally empty object.");
+        }
+
+        private void EnsureExactGameAssetOrigin(GameRuntimeObject runtimeObject, string operation)
+        {
+            if (runtimeObject == null
+                || runtimeObject.InstanceId == STORE_ROOT_OBJECT_ID
+                || !RequiresExactGameAssetOrigin)
+            {
+                return;
+            }
+
+            if (!HasExactGameAssetOrigin(runtimeObject))
+                throw MissingGameAssetOrigin(Id, runtimeObject.InstanceId, operation);
+        }
+
+        private void EnsureOriginlessCreationAllowed(string operation)
+        {
+            if (RequiresExactGameAssetOrigin)
+                throw MissingGameAssetOrigin(Id, _lastId, operation);
+        }
+
+        internal void ValidateGameAssetOriginsForS2CRegistration()
+        {
+            if (Realm != StoreRealm.Server)
+                return;
+
+            foreach (var pair in _all.V)
+            {
+                if (pair.Key == STORE_ROOT_OBJECT_ID)
+                    continue;
+                if (!HasExactGameAssetOrigin(pair.Value))
+                    throw MissingGameAssetOrigin(Id, pair.Key, "register");
+            }
+        }
+
         public GameRuntimeObject Create()
         {
+            EnsureOriginlessCreationAllowed("create");
             var obj = CreateDetached();
             AddToRoot(obj.InstanceId);
             return obj;
@@ -290,9 +415,94 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
 
         public GameRuntimeObject CreateChild(long parentId, int insertIndex = -1)
         {
+            EnsureOriginlessCreationAllowed("create child");
             var child = CreateDetached();
             AttachChild(parentId, child.InstanceId, insertIndex);
             return child;
+        }
+
+        public GameRuntimeObject Spawn(
+            GameAssetInstance instance,
+            GameAssetLibraryLock assetLock,
+            GameAssetTemplateCache templateCache,
+            long? parentId = null,
+            int insertIndex = -1)
+        {
+            return Spawn(_lastId, instance, assetLock, templateCache, null, parentId, insertIndex);
+        }
+
+        public GameRuntimeObject Spawn(
+            GameAssetInstance instance,
+            GameAssetLibraryLock assetLock,
+            GameAssetTemplateCache templateCache,
+            RuntimePatchCodecContext patchContext,
+            long? parentId = null,
+            int insertIndex = -1)
+        {
+            return Spawn(_lastId, instance, assetLock, templateCache, patchContext, parentId, insertIndex);
+        }
+
+        public GameRuntimeObject Spawn(
+            long objectId,
+            GameAssetInstance instance,
+            GameAssetLibraryLock assetLock,
+            GameAssetTemplateCache templateCache,
+            long? parentId = null,
+            int insertIndex = -1)
+        {
+            return Spawn(objectId, instance, assetLock, templateCache, null, parentId, insertIndex);
+        }
+
+        public GameRuntimeObject Spawn(
+            long objectId,
+            GameAssetInstance instance,
+            GameAssetLibraryLock assetLock,
+            GameAssetTemplateCache templateCache,
+            RuntimePatchCodecContext patchContext,
+            long? parentId = null,
+            int insertIndex = -1)
+        {
+            if (Retired)
+                throw new InvalidOperationException($"RuntimeStore '{Id}' cannot spawn into a retired generation.");
+            if (objectId < FIRST_USER_OBJECT_ID)
+                throw new InvalidOperationException($"RuntimeStore '{Id}' cannot spawn reserved runtime object id {objectId}.");
+            if (_all.V.ContainsKey(objectId) || _entityById.ContainsKey(objectId))
+                throw new InvalidOperationException($"RuntimeStore '{Id}' already contains runtime object id {objectId}.");
+            if (parentId.HasValue && !_all.V.ContainsKey(parentId.Value))
+                throw new InvalidOperationException($"RuntimeStore '{Id}' cannot spawn runtime object {objectId} under missing parent {parentId.Value}.");
+            if (templateCache == null)
+                throw new ArgumentNullException(nameof(templateCache));
+
+            if (parentId.HasValue)
+                EnsureExactGameAssetOrigin(_all.V[parentId.Value], "attach child to");
+
+            // Materialization and patch validation happen before the object is
+            // observable through the store. A failed baseline or patch cannot
+            // publish a partially initialized GRO.
+            var runtimeObject = patchContext == null
+                ? templateCache.Materialize(instance, assetLock)
+                : templateCache.Materialize(instance, assetLock, patchContext);
+            runtimeObject.InstanceId = objectId;
+            EnsureExactGameAssetOrigin(runtimeObject, "spawn");
+
+            if (!TryRegisterExternalObject(runtimeObject))
+                throw new InvalidOperationException($"RuntimeStore '{Id}' could not register runtime object {objectId} with guid {runtimeObject.GUID}.");
+
+            try
+            {
+                var published = parentId.HasValue
+                    ? AttachChild(parentId.Value, objectId, insertIndex)
+                    : PublishMaterializedRoot(objectId);
+                if (!published)
+                    throw new InvalidOperationException($"RuntimeStore '{Id}' could not publish materialized runtime object {objectId}.");
+            }
+            catch
+            {
+                RollbackUnpublishedRegistration(runtimeObject);
+                throw;
+            }
+
+            return runtimeObject;
         }
 
         public Entity CreateEntitySubtree(long rootId)
@@ -336,8 +546,20 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
 
         public bool TryAddExternalObject(GameRuntimeObject value)
         {
+            return TryRegisterExternalObject(value);
+        }
+
+        private bool TryRegisterExternalObject(GameRuntimeObject value)
+        {
             if (value == null || value.InstanceId < 0)
                 return false;
+
+            if (value.InstanceId != STORE_ROOT_OBJECT_ID
+                && RequiresExactGameAssetOrigin
+                && !HasExactGameAssetOrigin(value))
+            {
+                return false;
+            }
 
             var id = value.InstanceId;
             var world = RequireWorld();
@@ -359,6 +581,32 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
             MarkTouchedUpToRoot(id);
             MarkHierarchyProjectionDirty(id);
             ScheduleFlush();
+            return true;
+        }
+
+        private void RollbackUnpublishedRegistration(GameRuntimeObject runtimeObject)
+        {
+            if (runtimeObject == null
+                || IsPublished(runtimeObject.InstanceId)
+                || !_all.V.TryGetValue(runtimeObject.InstanceId, out var registered)
+                || !ReferenceEquals(registered, runtimeObject))
+            {
+                return;
+            }
+
+            _all.V.Remove(runtimeObject.InstanceId);
+            UnregisterGuid(runtimeObject.GUID, runtimeObject.InstanceId);
+            _touched.Remove(runtimeObject.InstanceId);
+            _hierarchyProjectionDirty.Remove(runtimeObject.InstanceId);
+            runtimeObject.ClearRuntimeContext();
+        }
+
+        private bool PublishMaterializedRoot(long id)
+        {
+            if (!_all.V.ContainsKey(id))
+                return false;
+
+            AddToRoot(id);
             return true;
         }
 
@@ -460,6 +708,33 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
             return TrySetDirty(runtimeInstance, typeof(T).GetId());
         }
 
+        /// <summary>
+        /// Publishes a component refresh for a client replica without recording an
+        /// authoritative store mutation. This is reserved for presentation state
+        /// projected from transient replica ECS data, such as interpolated motion.
+        /// </summary>
+        public bool TrySetReplicaPresentationDirty<T>(RuntimeInstance runtimeInstance)
+            where T : GameRuntimeComponent
+        {
+            return TrySetReplicaPresentationDirty(runtimeInstance, typeof(T).GetId());
+        }
+
+        public bool TrySetReplicaPresentationDirty(RuntimeInstance runtimeInstance, uint compTypeId)
+        {
+            if (Realm != StoreRealm.Client || !IsRuntimeInstanceActive(runtimeInstance))
+                return false;
+
+            if (!_all.V.TryGetValue(runtimeInstance.Id, out var obj)
+                || !obj.TryGetById(compTypeId, out _))
+            {
+                return false;
+            }
+
+            _presentationComponentChanges.Add(new PresentationComponentDirtyKey(runtimeInstance.Id, compTypeId));
+            ScheduleFlush();
+            return true;
+        }
+
         public void SetDirty(RuntimeInstance runtimeInstance, uint compTypeId)
         {
             if (!runtimeInstance.StoreId.Equals(Id))
@@ -516,10 +791,12 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
         private bool RemoveInternal(long id, RemoveMode mode, out Entity entity, bool recordOp)
         {
             var wasPublished = IsPublished(id);
+            var objectGuid = TakeObjectGuid(id);
+            TakeStructurePosition(id, out var oldParentId, out var oldIndex);
             MarkHierarchyRelationsDirty(id);
 
             if (recordOp && wasPublished)
-                RecordOp(RuntimeStructureDirty.Remove(id, mode, NextOrder()));
+                RecordOp(RuntimeStoreStructureChange.Remove(id, objectGuid, oldParentId, oldIndex, mode, NextOrder()));
 
             _parents.V.Remove(id);
             entity = Entity.Null;
@@ -536,18 +813,13 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
 
             TryGetEntity(id, out entity);
 
-            var hadParent = _parentByChild.TryGetValue(id, out var parentId);
+            var hadParent = oldParentId != RuntimeStoreStructureChange.NO_PARENT_ID;
+            var parentId = oldParentId;
             DetachChildInternal(id);
 
             if (_childrenByParent.TryGetValue(id, out var children) && children.Count > 0)
             {
                 var toProcess = new List<long>(children);
-                _childrenByParent.Remove(id);
-
-                foreach (var child in toProcess)
-                {
-                    _parentByChild.Remove(child);
-                }
 
                 switch (mode)
                 {
@@ -562,7 +834,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
                     case RemoveMode.NodeOnly_DetachChildrenToRoot:
                         foreach (var child in toProcess)
                         {
-                            AddToRoot(child);
+                            DetachChild(child);
                         }
 
                         break;
@@ -578,7 +850,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
                     case RemoveMode.NodeOnly_ReparentChildrenToParent:
                         foreach (var child in toProcess)
                         {
-                            AddToRoot(child);
+                            DetachChild(child);
                         }
 
                         break;
@@ -832,17 +1104,22 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
             if (parentId == childId)
                 return false;
 
-            if (!_all.V.ContainsKey(parentId) || !_all.V.ContainsKey(childId))
+            if (!_all.V.TryGetValue(parentId, out var parent) || !_all.V.TryGetValue(childId, out var child))
                 return false;
+
+            EnsureExactGameAssetOrigin(parent, "attach child to");
+            EnsureExactGameAssetOrigin(child, "attach");
 
             if (WouldCreateCycle(parentId, childId))
                 return false;
 
             var wasPublished = IsPublished(childId);
+            var objectGuid = TakeObjectGuid(childId);
+            TakeStructurePosition(childId, out var oldParentId, out var oldIndex);
 
             _parents.V.Remove(childId);
 
-            if (_parentByChild.TryGetValue(childId, out var oldParentId))
+            if (_parentByChild.ContainsKey(childId))
             {
                 if (oldParentId == parentId)
                 {
@@ -871,7 +1148,9 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
             MarkHierarchyProjectionDirty(parentId);
             MarkHierarchyProjectionDirty(childId);
 
-            RecordOp(wasPublished ? RuntimeStructureDirty.Reparent(childId, parentId, insertIndex, NextOrder()) : RuntimeStructureDirty.Spawn(childId, parentId, insertIndex, NextOrder()));
+            RecordOp(wasPublished
+                ? RuntimeStoreStructureChange.Reparent(childId, objectGuid, oldParentId, oldIndex, parentId, insertIndex, NextOrder())
+                : RuntimeStoreStructureChange.Spawn(childId, objectGuid, parentId, insertIndex, NextOrder()));
 
             MarkTouchedUpToRoot(parentId);
             ScheduleFlush();
@@ -880,10 +1159,17 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
 
         public bool DetachChild(long childId)
         {
+            if (!_all.V.TryGetValue(childId, out var child))
+                return false;
+
+            EnsureExactGameAssetOrigin(child, "detach");
+
+            var wasPublished = IsPublished(childId);
+            TakeStructurePosition(childId, out var oldParentId, out var oldIndex);
             if (!DetachChildInternal(childId))
                 return false;
 
-            AddToRoot(childId);
+            AddToRoot(childId, oldParentId, oldIndex, wasPublished);
             return true;
         }
 
@@ -895,6 +1181,12 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
             var oldIndex = list.IndexOf(childId);
             if (oldIndex < 0)
                 return false;
+
+            if (!_all.V.TryGetValue(parentId, out var parent) || !_all.V.TryGetValue(childId, out var child))
+                return false;
+
+            EnsureExactGameAssetOrigin(parent, "move child under");
+            EnsureExactGameAssetOrigin(child, "move");
 
             if (newIndex < 0)
                 newIndex = 0;
@@ -912,7 +1204,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
             MarkHierarchyProjectionDirty(parentId);
             MarkHierarchyProjectionDirty(childId);
 
-            RecordOp(RuntimeStructureDirty.Move(childId, parentId, newIndex, NextOrder()));
+            RecordOp(RuntimeStoreStructureChange.Move(childId, TakeObjectGuid(childId), parentId, oldIndex, newIndex, NextOrder()));
 
             MarkTouchedUpToRoot(parentId);
             ScheduleFlush();
@@ -921,21 +1213,87 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
 
         public void BeginNetApply()
         {
+            if (StoreRevision == ulong.MaxValue)
+                throw new InvalidOperationException($"RuntimeStore '{Id}' exhausted its revision range.");
+            BeginNetApply(StoreRevision + 1);
+        }
+
+        public void BeginNetApply(ulong authoritativeRevision)
+        {
+            if (_netApplyScopeActive)
+                throw new InvalidOperationException($"RuntimeStore '{Id}' already has an active network apply scope.");
+            if (authoritativeRevision <= StoreRevision)
+                throw new ArgumentOutOfRangeException(nameof(authoritativeRevision), "Network apply revision must advance the active store revision.");
+
+            _netApplyScopeActive = true;
+            _netApplyTargetRevision = authoritativeRevision;
+            _netApplyRevisionCommitted = false;
             _suppressReplicationThisFlush = true;
             ScheduleFlush();
+        }
+
+        public void BeginNetProjectionApply(ulong authoritativeRevision)
+        {
+            if (_netApplyScopeActive)
+                throw new InvalidOperationException($"RuntimeStore '{Id}' already has an active network apply scope.");
+            if (authoritativeRevision < StoreRevision)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(authoritativeRevision),
+                    "Network projection apply cannot move the active store revision backwards.");
+            }
+
+            _netApplyScopeActive = true;
+            _netApplyTargetRevision = authoritativeRevision;
+            _netApplyRevisionCommitted = false;
+            _suppressReplicationThisFlush = true;
+            ScheduleFlush();
+        }
+
+        public void CommitNetApply()
+        {
+            if (!_netApplyScopeActive)
+                throw new InvalidOperationException($"RuntimeStore '{Id}' has no active network apply scope.");
+            StoreRevision = _netApplyTargetRevision;
+            _netApplyRevisionCommitted = true;
+
+            // Reliable envelopes can be delivered back-to-back in one Mirror
+            // update (and initial-baseline deltas are drained synchronously).
+            // Complete this transaction now so the next envelope observes a
+            // closed scope and the committed revision. Flush still publishes
+            // exactly one dirty/committed batch for this envelope and its
+            // finally block owns resetting all net-apply state.
+            Flush();
         }
 
         public void AbortNetApply()
         {
             _suppressReplicationThisFlush = false;
+            _netApplyTargetRevision = 0;
+            _netApplyRevisionCommitted = false;
+            _netApplyScopeActive = false;
         }
 
         private bool IsPublished(long id) => _parents.V.ContainsKey(id) || _parentByChild.ContainsKey(id);
 
-        private void RecordOp(in RuntimeStructureDirty op)
+        private void RecordOp(in RuntimeStoreStructureChange op)
         {
             _structureChanges.Add(op);
             ScheduleFlush();
+        }
+
+        private Hash128 TakeObjectGuid(long id) => _all.V.TryGetValue(id, out var runtimeObject) ? runtimeObject.GUID : default;
+
+        private void TakeStructurePosition(long id, out long parentId, out int index)
+        {
+            if (!_parentByChild.TryGetValue(id, out parentId))
+            {
+                parentId = RuntimeStoreStructureChange.NO_PARENT_ID;
+                index = RuntimeStoreStructureChange.NO_INDEX;
+                return;
+            }
+
+            index = _childrenByParent.TryGetValue(parentId, out var children) ? children.IndexOf(id) : RuntimeStoreStructureChange.NO_INDEX;
         }
 
         private bool WouldCreateCycle(long newParentId, long childId)
@@ -997,10 +1355,12 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
             MarkHierarchyProjectionDirty(parentId);
         }
 
-        private void AddToRoot(long id)
+        private void AddToRoot(long id, long oldParentId = RuntimeStoreStructureChange.NO_PARENT_ID, int oldIndex = RuntimeStoreStructureChange.NO_INDEX, bool wasPublishedBefore = false)
         {
             if (!_all.V.TryGetValue(id, out var obj))
                 return;
+
+            EnsureExactGameAssetOrigin(obj, "publish");
 
             if (_parents.V.ContainsKey(id))
             {
@@ -1008,13 +1368,15 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
                 return;
             }
 
-            var wasPublished = IsPublished(id);
+            var wasPublished = wasPublishedBefore || IsPublished(id);
 
             _parents.V[id] = obj;
 
             MarkHierarchyProjectionDirty(id);
 
-            RecordOp(wasPublished ? RuntimeStructureDirty.Reparent(id, -1, -1, NextOrder()) : RuntimeStructureDirty.Spawn(id, -1, -1, NextOrder()));
+            RecordOp(wasPublished
+                ? RuntimeStoreStructureChange.Reparent(id, obj.GUID, oldParentId, oldIndex, RuntimeStoreStructureChange.NO_PARENT_ID, RuntimeStoreStructureChange.NO_INDEX, NextOrder())
+                : RuntimeStoreStructureChange.Spawn(id, obj.GUID, RuntimeStoreStructureChange.NO_PARENT_ID, RuntimeStoreStructureChange.NO_INDEX, NextOrder()));
 
             MarkTouchedUpToRoot(id);
             ScheduleFlush();
@@ -1212,22 +1574,28 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
             _flushInProgress = true;
             try
             {
+                var replicationSuppressed = _suppressReplicationThisFlush;
                 _all.V = _all.V;
                 _parents.V = _parents.V;
 
                 NativeList<RuntimeStructureDirty> emitStructure = default;
+                NativeList<RuntimeStoreStructureChange> emitCommittedStructure = default;
                 if (_structureChanges.Count > 0)
                 {
                     emitStructure = new NativeList<RuntimeStructureDirty>(_structureChanges.Count, Allocator.Temp);
+                    emitCommittedStructure = new NativeList<RuntimeStoreStructureChange>(_structureChanges.Count, Allocator.Temp);
                     foreach (var c in _structureChanges)
                     {
-                        emitStructure.Add(c);
+                        emitStructure.Add(c.ToRuntimeStructureDirty());
+                        emitCommittedStructure.Add(c);
                     }
 
                     _structureChanges.Clear();
 
                     if (emitStructure.Length > 1)
                         emitStructure.AsArray().Sort(new RuntimeStructureDirtyComparer());
+                    if (emitCommittedStructure.Length > 1)
+                        emitCommittedStructure.AsArray().Sort(new RuntimeStoreStructureChangeComparer());
                 }
 
                 NativeList<long> touchedIds = default;
@@ -1246,11 +1614,19 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
 
                 NativeList<ObjectStructDirty> emitCompStruct = default;
                 NativeList<ObjectComponentDirty> emitComp = default;
+                NativeList<ObjectComponentDirty> emitCommittedComp = default;
+
+                if ((touchedIds.IsCreated && touchedIds.Length > 0) || _presentationComponentChanges.Count > 0)
+                {
+                    var capacity = (touchedIds.IsCreated ? touchedIds.Length * 2 : 0)
+                                   + _presentationComponentChanges.Count;
+                    emitComp = new NativeList<ObjectComponentDirty>(capacity, Allocator.Temp);
+                }
 
                 if (touchedIds.IsCreated && touchedIds.Length > 0)
                 {
                     emitCompStruct = new NativeList<ObjectStructDirty>(touchedIds.Length * 2, Allocator.Temp);
-                    emitComp = new NativeList<ObjectComponentDirty>(touchedIds.Length * 2, Allocator.Temp);
+                    emitCommittedComp = new NativeList<ObjectComponentDirty>(touchedIds.Length * 2, Allocator.Temp);
 
                     foreach (var id in touchedIds)
                     {
@@ -1281,7 +1657,10 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
                                 if (structChanges != null && structChanges.TryGetValue(compTypeId, out var sd) && sd.Kind == CompStructOpKind.Remove)
                                     continue;
 
-                                emitComp.Add(new ObjectComponentDirty(id, kv.Value));
+                                var dirty = new ObjectComponentDirty(id, kv.Value);
+                                emitComp.Add(dirty);
+                                emitCommittedComp.Add(dirty);
+                                _presentationComponentChanges.Remove(new PresentationComponentDirtyKey(id, compTypeId));
                             }
 
                             hadAny = true;
@@ -1294,8 +1673,49 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
                     if (emitCompStruct.Length > 1)
                         emitCompStruct.AsArray().Sort(new ObjectStructDirtyComparer());
 
-                    if (emitComp.Length > 1)
-                        emitComp.AsArray().Sort(new ObjectComponentDirtyComparer());
+                }
+
+                if (_presentationComponentChanges.Count > 0)
+                {
+                    foreach (var dirty in _presentationComponentChanges)
+                    {
+                        if (!_all.V.TryGetValue(dirty.ObjectId, out var obj)
+                            || !obj.TryGetById(dirty.ComponentTypeId, out _))
+                        {
+                            continue;
+                        }
+
+                        emitComp.Add(new ObjectComponentDirty(
+                            dirty.ObjectId,
+                            new ComponentDirty(dirty.ComponentTypeId)));
+                    }
+
+                    _presentationComponentChanges.Clear();
+                }
+
+                if (emitComp.IsCreated && emitComp.Length > 1)
+                    emitComp.AsArray().Sort(new ObjectComponentDirtyComparer());
+
+                if (emitCommittedComp.IsCreated && emitCommittedComp.Length > 1)
+                    emitCommittedComp.AsArray().Sort(new ObjectComponentDirtyComparer());
+
+                var hasMutationBatch = (emitCommittedStructure.IsCreated && emitCommittedStructure.Length > 0)
+                    || (emitCompStruct.IsCreated && emitCompStruct.Length > 0)
+                    || (emitCommittedComp.IsCreated && emitCommittedComp.Length > 0);
+                if (hasMutationBatch)
+                {
+                    if (_netApplyScopeActive)
+                    {
+                        if (!_netApplyRevisionCommitted)
+                            StoreRevision = _netApplyTargetRevision;
+                    }
+                    else
+                    {
+                        if (StoreRevision == ulong.MaxValue)
+                            throw new InvalidOperationException($"RuntimeStore '{Id}' generation {StoreGeneration} exhausted its revision range.");
+
+                        StoreRevision++;
+                    }
                 }
 
                 if (emitStructure.IsCreated && emitStructure.Length > 0)
@@ -1307,20 +1727,40 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
                 if (emitComp.IsCreated && emitComp.Length > 0)
                     _componentChangesDispatcher.Invoke(emitComp.AsArray());
 
+                if (hasMutationBatch)
+                {
+                    _committedBatchDispatcher.Invoke(new RuntimeStoreCommittedBatch(
+                        Id,
+                        Realm,
+                        StoreGeneration,
+                        StoreRevision,
+                        replicationSuppressed,
+                        emitCommittedStructure.IsCreated ? emitCommittedStructure.AsArray() : default,
+                        emitCompStruct.IsCreated ? emitCompStruct.AsArray() : default,
+                        emitCommittedComp.IsCreated ? emitCommittedComp.AsArray() : default));
+                }
+
                 if (emitStructure.IsCreated)
                     emitStructure.Dispose();
+                if (emitCommittedStructure.IsCreated)
+                    emitCommittedStructure.Dispose();
                 if (touchedIds.IsCreated)
                     touchedIds.Dispose();
                 if (emitCompStruct.IsCreated)
                     emitCompStruct.Dispose();
                 if (emitComp.IsCreated)
                     emitComp.Dispose();
+                if (emitCommittedComp.IsCreated)
+                    emitCommittedComp.Dispose();
             }
             finally
             {
                 _flushInProgress = false;
 
                 _suppressReplicationThisFlush = false;
+                _netApplyTargetRevision = 0;
+                _netApplyRevisionCommitted = false;
+                _netApplyScopeActive = false;
 
                 var needReschedule = _rescheduleRequested;
                 _rescheduleRequested = false;
@@ -1330,6 +1770,36 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
 
                 if (needReschedule)
                     ScheduleFlush();
+            }
+        }
+
+        private readonly struct PresentationComponentDirtyKey : IEquatable<PresentationComponentDirtyKey>
+        {
+            public readonly long ObjectId;
+            public readonly uint ComponentTypeId;
+
+            public PresentationComponentDirtyKey(long objectId, uint componentTypeId)
+            {
+                ObjectId = objectId;
+                ComponentTypeId = componentTypeId;
+            }
+
+            public bool Equals(PresentationComponentDirtyKey other)
+            {
+                return ObjectId == other.ObjectId && ComponentTypeId == other.ComponentTypeId;
+            }
+
+            public override bool Equals(object obj)
+            {
+                return obj is PresentationComponentDirtyKey other && Equals(other);
+            }
+
+            public override int GetHashCode()
+            {
+                unchecked
+                {
+                    return (ObjectId.GetHashCode() * 397) ^ (int)ComponentTypeId;
+                }
             }
         }
     }

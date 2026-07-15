@@ -42,6 +42,9 @@ namespace DingoGameObjectsCMS.AssetLibrary
         private readonly Dictionary<GameAssetKey, ExternalLocator> _byKey = new(new GameAssetKeyComparer());
         private readonly Dictionary<Hash128, ExternalLocator> _byGuid = new();
         private readonly List<ModPackage> _packages = new();
+        private readonly Dictionary<GameAssetKey, ExternalLocator> _immutableByKey = new(new GameAssetKeyComparer());
+        private readonly Dictionary<Hash128, ExternalLocator> _immutableByGuid = new();
+        private readonly List<ModPackage> _immutablePackages = new();
 
         private bool _runtimeCacheBuilt;
 
@@ -85,6 +88,16 @@ namespace DingoGameObjectsCMS.AssetLibrary
             return Instance.TryResolveGuidInternal(guid, out asset);
         }
 
+        public static bool TryResolveImmutable(GameAssetKey key, out GameAssetScriptableObject asset)
+        {
+            return Instance.TryResolveImmutableInternal(key, out asset);
+        }
+
+        public static bool TryResolveImmutableGuid(Hash128 guid, out GameAssetScriptableObject asset)
+        {
+            return Instance.TryResolveImmutableGuidInternal(guid, out asset);
+        }
+
         public static Dictionary<Hash128, GameAssetScriptableObject> CollectAllAssets(bool includeExternal)
         {
             return Instance.CollectAllAssetsInternal(includeExternal);
@@ -98,6 +111,21 @@ namespace DingoGameObjectsCMS.AssetLibrary
         public static List<ModManifest> CollectLoadedModManifests()
         {
             return Instance.CollectLoadedModManifestsInternal();
+        }
+
+        public static Dictionary<Hash128, GameAssetScriptableObject> CollectImmutableAssets()
+        {
+            return Instance.CollectAllAssetsInternal(includeExternal: false);
+        }
+
+        public static List<GameAssetKey> CollectImmutableIdentityRequests()
+        {
+            return Instance.CollectIdentityRequestsInternal(immutableOnly: true);
+        }
+
+        public static List<ModManifest> CollectImmutableModManifests()
+        {
+            return Instance.CollectLoadedModManifestsInternal(immutableOnly: true);
         }
 
         public void RebuildRuntimeCache()
@@ -136,6 +164,32 @@ namespace DingoGameObjectsCMS.AssetLibrary
             return locator.Package.TryGet(locator.Key, out asset);
         }
 
+        private bool TryResolveImmutableInternal(GameAssetKey key, out GameAssetScriptableObject asset)
+        {
+            asset = null;
+            EnsureRuntimeCacheSync();
+
+            if (!TryGetLocator(key, _immutableByKey, out var locator))
+                return false;
+
+            return locator.Package.TryGet(locator.Key, out asset);
+        }
+
+        private bool TryResolveImmutableGuidInternal(Hash128 guid, out GameAssetScriptableObject asset)
+        {
+            asset = null;
+            EnsureRuntimeCacheSync();
+
+            ExternalLocator locator;
+            lock (_cacheLock)
+            {
+                if (!_immutableByGuid.TryGetValue(guid, out locator))
+                    return false;
+            }
+
+            return locator.Package.TryGet(locator.Key, out asset);
+        }
+
         private Dictionary<Hash128, GameAssetScriptableObject> CollectAllAssetsInternal(bool includeExternal)
         {
             EnsureRuntimeCacheSync();
@@ -143,9 +197,7 @@ namespace DingoGameObjectsCMS.AssetLibrary
             List<ExternalLocator> locators;
             lock (_cacheLock)
             {
-                locators = _byKey.Values
-                    .Where(locator => includeExternal || locator.IsBase)
-                    .ToList();
+                locators = (includeExternal ? _byKey : _immutableByKey).Values.ToList();
             }
 
             var result = new Dictionary<Hash128, GameAssetScriptableObject>();
@@ -158,7 +210,7 @@ namespace DingoGameObjectsCMS.AssetLibrary
             return result;
         }
 
-        private List<GameAssetKey> CollectIdentityRequestsInternal()
+        private List<GameAssetKey> CollectIdentityRequestsInternal(bool immutableOnly = false)
         {
             EnsureRuntimeCacheSync();
 
@@ -166,7 +218,8 @@ namespace DingoGameObjectsCMS.AssetLibrary
             var seen = new HashSet<string>(StringComparer.Ordinal);
             lock (_cacheLock)
             {
-                foreach (var key in _byKey.Keys)
+                var keys = immutableOnly ? _immutableByKey.Keys : _byKey.Keys;
+                foreach (var key in keys)
                 {
                     if (seen.Add(GameAssetIdentityKey.Normalize(key)))
                         result.Add(new GameAssetKey(key.Mod, key.Type, key.Key, string.Empty));
@@ -176,13 +229,13 @@ namespace DingoGameObjectsCMS.AssetLibrary
             return result;
         }
 
-        private List<ModManifest> CollectLoadedModManifestsInternal()
+        private List<ModManifest> CollectLoadedModManifestsInternal(bool immutableOnly = false)
         {
             EnsureRuntimeCacheSync();
 
             lock (_cacheLock)
             {
-                return _packages
+                return (immutableOnly ? _immutablePackages : _packages)
                     .Where(package => package?.Manifest != null)
                     .Select(package => package.Manifest)
                     .ToList();
@@ -205,10 +258,22 @@ namespace DingoGameObjectsCMS.AssetLibrary
             var packages = new List<ModPackage>();
             var byKey = new Dictionary<GameAssetKey, ExternalLocator>(new GameAssetKeyComparer());
             var byGuid = new Dictionary<Hash128, ExternalLocator>();
+            var immutablePackages = new List<ModPackage>();
+            var immutableByKey = new Dictionary<GameAssetKey, ExternalLocator>(new GameAssetKeyComparer());
+            var immutableByGuid = new Dictionary<Hash128, ExternalLocator>();
 
             var mounts = BuildModRootSnapshot();
             for (var i = 0; i < mounts.Count; i++)
-                TryMountModRoot(mounts[i], packages, byKey, byGuid);
+            {
+                TryMountModRoot(
+                    mounts[i],
+                    packages,
+                    byKey,
+                    byGuid,
+                    immutablePackages,
+                    immutableByKey,
+                    immutableByGuid);
+            }
 
             lock (_cacheLock)
             {
@@ -220,6 +285,14 @@ namespace DingoGameObjectsCMS.AssetLibrary
                 _byGuid.Clear();
                 foreach (var kv in byGuid)
                     _byGuid[kv.Key] = kv.Value;
+                _immutablePackages.Clear();
+                _immutablePackages.AddRange(immutablePackages);
+                _immutableByKey.Clear();
+                foreach (var kv in immutableByKey)
+                    _immutableByKey[kv.Key] = kv.Value;
+                _immutableByGuid.Clear();
+                foreach (var kv in immutableByGuid)
+                    _immutableByGuid[kv.Key] = kv.Value;
                 _runtimeCacheBuilt = true;
             }
         }
@@ -231,31 +304,59 @@ namespace DingoGameObjectsCMS.AssetLibrary
                 _packages.Clear();
                 _byKey.Clear();
                 _byGuid.Clear();
+                _immutablePackages.Clear();
+                _immutableByKey.Clear();
+                _immutableByGuid.Clear();
                 _runtimeCacheBuilt = false;
             }
         }
 
         private static List<MountInfo> BuildModRootSnapshot()
         {
+            var result = new List<MountInfo>();
+            var order = 0;
+
+            // The built-in package is an immutable part of the player. Runtime
+            // code never falls back to live Unity assets or an inline GRO.
+            var builtInAssetsRoot = Path.Combine(
+                Application.streamingAssetsPath,
+                GameAssetModPathPolicy.DEFAULT_ASSETS_ROOT_SUB_PATH);
+            var builtInBaseRoot = Path.Combine(builtInAssetsRoot, BASE_MOD);
+            result.Add(new MountInfo(builtInBaseRoot, BASE_MOD, priority: 0, order: order++, isBuiltIn: true));
+
+            if (Directory.Exists(builtInAssetsRoot))
+            {
+                var builtInDirectories = Directory.GetDirectories(builtInAssetsRoot)
+                    .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+                for (var i = 0; i < builtInDirectories.Length; i++)
+                {
+                    var mod = Path.GetFileName(builtInDirectories[i]);
+                    if (string.Equals(mod, BASE_MOD, StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    result.Add(new MountInfo(builtInDirectories[i], mod, priority: 0, order: order++, isBuiltIn: true));
+                }
+            }
+
             var assetsRoot = GameAssetModPathPolicy.GetAssetsRootPath();
             Directory.CreateDirectory(assetsRoot);
 
-            var result = new List<MountInfo>();
-            var baseRoot = Path.Combine(assetsRoot, BASE_MOD);
-            result.Add(new MountInfo(baseRoot, BASE_MOD, priority: 0, order: 0));
+            // A persisted base package is an explicit external override of the
+            // immutable built-in package, not a missing-content fallback.
+            var externalBaseRoot = Path.Combine(assetsRoot, BASE_MOD);
+            result.Add(new MountInfo(externalBaseRoot, BASE_MOD, priority: 100, order: order++, isBuiltIn: false));
 
             var directories = Directory.GetDirectories(assetsRoot)
                 .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
                 .ToArray();
 
-            var order = 1;
             for (var i = 0; i < directories.Length; i++)
             {
                 var mod = Path.GetFileName(directories[i]);
                 if (string.Equals(mod, BASE_MOD, StringComparison.OrdinalIgnoreCase))
                     continue;
 
-                result.Add(new MountInfo(directories[i], mod, priority: 100, order));
+                result.Add(new MountInfo(directories[i], mod, priority: 200, order, isBuiltIn: false));
                 order++;
             }
 
@@ -266,7 +367,10 @@ namespace DingoGameObjectsCMS.AssetLibrary
             MountInfo mount,
             List<ModPackage> packages,
             Dictionary<GameAssetKey, ExternalLocator> byKey,
-            Dictionary<Hash128, ExternalLocator> byGuid)
+            Dictionary<Hash128, ExternalLocator> byGuid,
+            List<ModPackage> immutablePackages,
+            Dictionary<GameAssetKey, ExternalLocator> immutableByKey,
+            Dictionary<Hash128, ExternalLocator> immutableByGuid)
         {
             try
             {
@@ -278,10 +382,17 @@ namespace DingoGameObjectsCMS.AssetLibrary
                 var manifest = JsonConvert.DeserializeObject<ModManifest>(manifestJson, GameAssetJson.Settings);
                 if (manifest == null)
                     return;
+                if (!string.Equals(manifest.Mod, mount.Mod, StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new InvalidDataException(
+                        $"GameAsset manifest '{manifestPath}' declares mod '{manifest.Mod}' but is mounted as '{mount.Mod}'.");
+                }
 
                 manifest.Assets ??= new List<ModManifestEntry>();
                 var package = new ModPackage(mount.ModRootAbs, manifest);
                 packages.Add(package);
+                if (mount.IsBuiltIn)
+                    immutablePackages.Add(package);
 
                 for (var i = 0; i < manifest.Assets.Count; i++)
                 {
@@ -289,11 +400,18 @@ namespace DingoGameObjectsCMS.AssetLibrary
                     if (entry == null)
                         continue;
 
-                    var locator = new ExternalLocator(package, entry.Key, mount.IsBase, mount.Priority, mount.Order);
+                    var locator = new ExternalLocator(package, entry.Key, mount.Priority, mount.Order);
                     UpsertKey(byKey, locator);
 
                     if (entry.GUID.isValid)
                         UpsertGuid(byGuid, entry.GUID, locator);
+
+                    if (!mount.IsBuiltIn)
+                        continue;
+
+                    UpsertKey(immutableByKey, locator);
+                    if (entry.GUID.isValid)
+                        UpsertGuid(immutableByGuid, entry.GUID, locator);
                 }
             }
             catch (Exception ex)
@@ -304,17 +422,25 @@ namespace DingoGameObjectsCMS.AssetLibrary
 
         private bool TryGetLocator(GameAssetKey key, out ExternalLocator locator)
         {
+            return TryGetLocator(key, _byKey, out locator);
+        }
+
+        private bool TryGetLocator(
+            GameAssetKey key,
+            Dictionary<GameAssetKey, ExternalLocator> source,
+            out ExternalLocator locator)
+        {
             EnsureRuntimeCacheSync();
 
             lock (_cacheLock)
             {
                 if (!IsLatestVersionRequest(key))
-                    return _byKey.TryGetValue(key, out locator);
+                    return source.TryGetValue(key, out locator);
 
                 var found = false;
                 var bestVersion = string.Empty;
                 locator = default;
-                foreach (var kv in _byKey)
+                foreach (var kv in source)
                 {
                     if (!MatchesIdentity(kv.Key, key))
                         continue;
@@ -396,14 +522,15 @@ namespace DingoGameObjectsCMS.AssetLibrary
             public readonly string Mod;
             public readonly int Priority;
             public readonly int Order;
-            public bool IsBase => string.Equals(Mod, BASE_MOD, StringComparison.OrdinalIgnoreCase);
+            public readonly bool IsBuiltIn;
 
-            public MountInfo(string modRootAbs, string mod, int priority, int order)
+            public MountInfo(string modRootAbs, string mod, int priority, int order, bool isBuiltIn)
             {
                 ModRootAbs = modRootAbs;
                 Mod = mod;
                 Priority = priority;
                 Order = order;
+                IsBuiltIn = isBuiltIn;
             }
         }
 
@@ -411,15 +538,13 @@ namespace DingoGameObjectsCMS.AssetLibrary
         {
             public readonly ModPackage Package;
             public readonly GameAssetKey Key;
-            public readonly bool IsBase;
             public readonly int Priority;
             public readonly int Order;
 
-            public ExternalLocator(ModPackage package, GameAssetKey key, bool isBase, int priority, int order)
+            public ExternalLocator(ModPackage package, GameAssetKey key, int priority, int order)
             {
                 Package = package;
                 Key = key;
-                IsBase = isBase;
                 Priority = priority;
                 Order = order;
             }
