@@ -97,6 +97,11 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
                     writer.WriteBytes(component.Payload);
                     return;
 
+                case ComponentPatchKind.AddPresence:
+                    if (component.Payload != null || (component.Fields?.Count ?? 0) != 0)
+                        throw new InvalidOperationException($"Component {component.ComponentTypeId} presence add cannot contain payload or fields.");
+                    return;
+
                 case ComponentPatchKind.Remove:
                     if (component.Payload != null || (component.Fields?.Count ?? 0) != 0)
                         throw new InvalidOperationException($"Component {component.ComponentTypeId} remove cannot contain payload or fields.");
@@ -131,6 +136,9 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
                     result.Payload = reader.ReadBytes();
                     if (result.Payload == null)
                         throw new FormatException($"Component {componentTypeId} {kind} has a null payload.");
+                    return result;
+
+                case ComponentPatchKind.AddPresence:
                     return result;
 
                 case ComponentPatchKind.Remove:

@@ -176,17 +176,24 @@ namespace DingoGameObjectsCMS.Mirror.V2
         private readonly RuntimeSessionAssetCatalog _assetCatalog;
         private readonly GameAssetLibraryLock _assetLock;
         private readonly GameAssetTemplateCache _templateCache;
+        private readonly RuntimeReplicationPolicyRegistry _replicationPolicies;
+        private readonly RuntimeInboundNetworkPatchPolicyValidator _inboundPatchValidator;
 
+        // Test-double hook only. Subclasses using it must override resolve,
+        // validation and spawn; base Spawn fails closed without policies.
         protected RuntimeReplicaBaselineSpawnFactory() { }
 
         public RuntimeReplicaBaselineSpawnFactory(
             RuntimeSessionAssetCatalog assetCatalog,
             GameAssetLibraryLock assetLock,
-            GameAssetTemplateCache templateCache)
+            GameAssetTemplateCache templateCache,
+            RuntimeReplicationPolicyRegistry replicationPolicies)
         {
             _assetCatalog = assetCatalog ?? throw new ArgumentNullException(nameof(assetCatalog));
             _assetLock = assetLock ?? throw new ArgumentNullException(nameof(assetLock));
             _templateCache = templateCache ?? throw new ArgumentNullException(nameof(templateCache));
+            _replicationPolicies = replicationPolicies ?? throw new ArgumentNullException(nameof(replicationPolicies));
+            _inboundPatchValidator = new RuntimeInboundNetworkPatchPolicyValidator(replicationPolicies);
         }
 
         public virtual ResolvedGameAssetReference ResolveRequiredAsset(uint assetNetId)
@@ -194,6 +201,22 @@ namespace DingoGameObjectsCMS.Mirror.V2
             if (_assetCatalog == null)
                 throw new InvalidOperationException("Replica baseline spawn factory has no session asset catalog.");
             return _assetCatalog.GetRequired(assetNetId);
+        }
+
+        public virtual void ValidateInboundSpawn(
+            long objectId,
+            RuntimeObjectPatch patch,
+            in ResolvedGameAssetReference resolvedAsset)
+        {
+            if (objectId <= RuntimeStore.STORE_ROOT_OBJECT_ID)
+                throw new ArgumentOutOfRangeException(nameof(objectId));
+            if (_assetLock == null || _templateCache == null || _inboundPatchValidator == null)
+                throw new InvalidOperationException("Replica baseline spawn factory has no inbound patch validation dependencies.");
+
+            var blueprint = _templateCache.ResolveStrict(
+                new GameAssetReference(resolvedAsset.ExactKey),
+                _assetLock);
+            _inboundPatchValidator.ValidateSpawn(patch, blueprint.ComponentTypeIds);
         }
 
         public virtual GameRuntimeObject Spawn(
@@ -206,19 +229,22 @@ namespace DingoGameObjectsCMS.Mirror.V2
                 throw new ArgumentNullException(nameof(store));
             if (spawn == null)
                 throw new ArgumentNullException(nameof(spawn));
-            if (_assetLock == null || _templateCache == null)
+            if (_assetLock == null || _templateCache == null || _replicationPolicies == null)
                 throw new InvalidOperationException("Replica baseline spawn factory has no GameAsset materialization dependencies.");
 
             var instance = new GameAssetInstance(
                 spawn.InstanceGuid,
                 new GameAssetReference(resolvedAsset.ExactKey),
                 spawn.Overrides);
-            var runtimeObject = store.Spawn(
+            var runtimeObject = store.SpawnProjected(
                 spawn.ObjectId,
                 instance,
                 _assetLock,
                 _templateCache,
-                networkPatchContext);
+                networkPatchContext,
+                componentTypeId => RuntimeComponentVisibilityProjection.GetPatchProjectionMode(
+                    _replicationPolicies,
+                    componentTypeId));
             ValidateMaterializedOrigin(runtimeObject, resolvedAsset);
             return runtimeObject;
         }
@@ -415,8 +441,13 @@ namespace DingoGameObjectsCMS.Mirror.V2
             var objectIds = new long[decoded.Spawns.Count];
             for (var i = 0; i < decoded.Spawns.Count; i++)
             {
-                resolvedAssets[i] = _spawnFactory.ResolveRequiredAsset(decoded.Spawns[i].AssetNetId);
-                objectIds[i] = decoded.Spawns[i].ObjectId;
+                var spawn = decoded.Spawns[i];
+                resolvedAssets[i] = _spawnFactory.ResolveRequiredAsset(spawn.AssetNetId);
+                _spawnFactory.ValidateInboundSpawn(
+                    spawn.ObjectId,
+                    spawn.Overrides,
+                    resolvedAssets[i]);
+                objectIds[i] = spawn.ObjectId;
             }
 
             RuntimeStore stagingStore = null;

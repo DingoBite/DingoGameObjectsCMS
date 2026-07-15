@@ -264,7 +264,7 @@ namespace DingoGameObjectsCMS.Mirror
             NetworkClient.UnregisterHandler<RtBaselineChunk>();
             NetworkClient.UnregisterHandler<RtStoreDelta>();
             NetworkClient.UnregisterHandler<RtCommandResult>();
-            NetworkClient.UnregisterHandler<RtMotionState>();
+            NetworkClient.UnregisterHandler<RtStateStreamFrame>();
         }
     }
 }

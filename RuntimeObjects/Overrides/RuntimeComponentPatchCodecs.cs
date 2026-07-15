@@ -4,6 +4,20 @@ using DingoGameObjectsCMS.RuntimeObjects.Objects;
 
 namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
 {
+    public enum RuntimeComponentPatchProjectionMode : byte
+    {
+        // Materializes the baseline and delegates value comparison/encoding to
+        // the generated component codec.
+        SemanticDiff = 1,
+
+        // Compares component type-id membership only. Codec value methods are
+        // deliberately outside this path.
+        StructuralPresence = 2,
+
+        // Removes an inherited baseline component and omits runtime-only data.
+        Excluded = 3,
+    }
+
     public abstract class RuntimeComponentPatchCodec
     {
         public readonly uint ComponentTypeId;
@@ -75,6 +89,11 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
                         throw new InvalidOperationException($"Component {ComponentTypeId} add patch requires an absent baseline component.");
                     return DecodeCanonical(patch.Payload, context);
 
+                case ComponentPatchKind.AddPresence:
+                    if (baseline != null)
+                        throw new InvalidOperationException($"Component {ComponentTypeId} presence add requires an absent baseline component.");
+                    return CreateDefault();
+
                 case ComponentPatchKind.Remove:
                     if (baseline == null)
                         throw new InvalidOperationException($"Component {ComponentTypeId} remove patch requires a baseline component.");
@@ -139,6 +158,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
         }
 
         public abstract GameRuntimeComponent Clone(GameRuntimeComponent value);
+        public abstract GameRuntimeComponent CreateDefault();
         protected abstract void WriteCanonical(
             CanonicalPatchBinaryWriter writer,
             GameRuntimeComponent value,
@@ -212,6 +232,11 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
                         throw new InvalidOperationException($"Component {patch.ComponentTypeId} {patch.Kind} patch requires one canonical payload and no field patches.");
                     return;
 
+                case ComponentPatchKind.AddPresence:
+                    if (patch.Payload != null || fieldCount != 0)
+                        throw new InvalidOperationException($"Component {patch.ComponentTypeId} presence add cannot contain payload data.");
+                    return;
+
                 case ComponentPatchKind.Remove:
                     if (patch.Payload != null || fieldCount != 0)
                         throw new InvalidOperationException($"Component {patch.ComponentTypeId} remove patch cannot contain payload data.");
@@ -247,7 +272,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
         }
     }
 
-    public abstract class RuntimeComponentPatchCodec<T> : RuntimeComponentPatchCodec where T : GameRuntimeComponent
+    public abstract class RuntimeComponentPatchCodec<T> : RuntimeComponentPatchCodec where T : GameRuntimeComponent, new()
     {
         public override Type ComponentRuntimeType => typeof(T);
 
@@ -256,6 +281,11 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
         public override GameRuntimeComponent Clone(GameRuntimeComponent value)
         {
             return CloneTyped(RequireTyped(value));
+        }
+
+        public override GameRuntimeComponent CreateDefault()
+        {
+            return new T();
         }
 
         protected override void WriteCanonical(
@@ -431,6 +461,135 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
             return result;
         }
 
+        public RuntimeObjectPatch BuildProjectedPatch(
+            IReadOnlyCollection<uint> baselineComponentTypeIds,
+            IReadOnlyDictionary<uint, GameRuntimeComponent> current,
+            Func<uint, GameRuntimeComponent> materializeBaseline,
+            Func<uint, RuntimeComponentPatchProjectionMode> selectMode)
+        {
+            if (baselineComponentTypeIds == null)
+                throw new ArgumentNullException(nameof(baselineComponentTypeIds));
+            if (materializeBaseline == null)
+                throw new ArgumentNullException(nameof(materializeBaseline));
+            if (selectMode == null)
+                throw new ArgumentNullException(nameof(selectMode));
+
+            var baselinePresence = new HashSet<uint>();
+            foreach (var componentTypeId in baselineComponentTypeIds)
+            {
+                if (!baselinePresence.Add(componentTypeId))
+                    throw new InvalidOperationException($"Projected baseline contains duplicate component type id {componentTypeId}.");
+            }
+
+            var currentPresence = new HashSet<uint>();
+            if (current != null)
+            {
+                foreach (var pair in current)
+                {
+                    currentPresence.Add(pair.Key);
+                }
+            }
+
+            var componentTypeIds = new HashSet<uint>(baselinePresence);
+            componentTypeIds.UnionWith(currentPresence);
+            var orderedComponentTypeIds = new List<uint>(componentTypeIds);
+            orderedComponentTypeIds.Sort();
+
+            var result = new RuntimeObjectPatch(_registry.SchemaHash);
+            for (var i = 0; i < orderedComponentTypeIds.Count; i++)
+            {
+                var componentTypeId = orderedComponentTypeIds[i];
+                var hasBaseline = baselinePresence.Contains(componentTypeId);
+                var hasCurrent = currentPresence.Contains(componentTypeId);
+                var codec = _registry.Get(componentTypeId);
+                var mode = selectMode(componentTypeId);
+                switch (mode)
+                {
+                    case RuntimeComponentPatchProjectionMode.SemanticDiff:
+                        var baselineComponent = hasBaseline
+                            ? materializeBaseline(componentTypeId)
+                            : null;
+                        if (hasBaseline && baselineComponent == null)
+                        {
+                            throw new InvalidOperationException(
+                                $"Projected baseline materializer returned null for component {componentTypeId}.");
+                        }
+                        TryGetComponent(current, componentTypeId, out var currentComponent);
+                        var componentPatch = codec.BuildPatch(baselineComponent, currentComponent, _context);
+                        if (componentPatch != null)
+                            result.Components.Add(componentPatch);
+                        break;
+
+                    case RuntimeComponentPatchProjectionMode.StructuralPresence:
+                        AppendStructuralPresenceChange(
+                            result,
+                            componentTypeId,
+                            codec.ComponentTypeKey,
+                            hasBaseline,
+                            hasCurrent);
+                        break;
+
+                    case RuntimeComponentPatchProjectionMode.Excluded:
+                        if (hasBaseline)
+                        {
+                            result.Components.Add(new ComponentPatch(
+                                componentTypeId,
+                                codec.ComponentTypeKey,
+                                ComponentPatchKind.Remove));
+                        }
+                        break;
+
+                    default:
+                        throw new ArgumentOutOfRangeException(
+                            nameof(selectMode),
+                            mode,
+                            $"Component {componentTypeId} has no supported patch projection mode.");
+                }
+            }
+
+            return result;
+        }
+
+        public void AppendStructuralPresenceChanges(
+            RuntimeObjectPatch target,
+            IReadOnlyCollection<uint> previous,
+            IReadOnlyCollection<uint> current)
+        {
+            if (target == null)
+                throw new ArgumentNullException(nameof(target));
+            if (!string.Equals(target.SchemaHash, _registry.SchemaHash, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    $"Runtime object patch schema hash '{target.SchemaHash}' does not match registry '{_registry.SchemaHash}'.");
+            }
+            if (target.Representation != RuntimeObjectPatchRepresentation.RuntimeBinary)
+            {
+                throw new InvalidOperationException(
+                    $"Structural presence projection requires {RuntimeObjectPatchRepresentation.RuntimeBinary}, received {target.Representation}.");
+            }
+            if (target.Components == null)
+                throw new InvalidOperationException("Runtime object patch has no component collection.");
+
+            var previousSet = previous == null ? new HashSet<uint>() : new HashSet<uint>(previous);
+            var currentSet = current == null ? new HashSet<uint>() : new HashSet<uint>(current);
+            var componentTypeIds = new HashSet<uint>(previousSet);
+            componentTypeIds.UnionWith(currentSet);
+            var orderedComponentTypeIds = new List<uint>(componentTypeIds);
+            orderedComponentTypeIds.Sort();
+            for (var i = 0; i < orderedComponentTypeIds.Count; i++)
+            {
+                var componentTypeId = orderedComponentTypeIds[i];
+                AppendStructuralPresenceChange(
+                    target,
+                    componentTypeId,
+                    _registry.Get(componentTypeId).ComponentTypeKey,
+                    previousSet.Contains(componentTypeId),
+                    currentSet.Contains(componentTypeId));
+            }
+
+            NormalizeComponents(target.Components);
+        }
+
         public Dictionary<uint, GameRuntimeComponent> ApplyPatch(
             IReadOnlyDictionary<uint, GameRuntimeComponent> baseline,
             RuntimeObjectPatch patch)
@@ -468,6 +627,97 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
             return result;
         }
 
+        /// <summary>
+        /// Applies a lane-projected runtime patch without cloning components
+        /// that the patch does not touch. The caller therefore owns every
+        /// baseline value passed here: fresh GA materialization owns decoded
+        /// instances, while replica delta staging commits only patched ids.
+        /// Structural-presence lanes never enter semantic codec operations.
+        /// </summary>
+        public Dictionary<uint, GameRuntimeComponent> ApplyProjectedPatch(
+            IReadOnlyDictionary<uint, GameRuntimeComponent> baseline,
+            RuntimeObjectPatch patch,
+            Func<uint, RuntimeComponentPatchProjectionMode> selectMode)
+        {
+            if (patch == null)
+                throw new ArgumentNullException(nameof(patch));
+            if (selectMode == null)
+                throw new ArgumentNullException(nameof(selectMode));
+            if (!string.Equals(patch.SchemaHash, _registry.SchemaHash, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    $"Runtime object patch schema hash '{patch.SchemaHash}' does not match registry '{_registry.SchemaHash}'.");
+            }
+            if (patch.Representation != RuntimeObjectPatchRepresentation.RuntimeBinary)
+            {
+                throw new InvalidOperationException(
+                    $"Projected patch apply requires {RuntimeObjectPatchRepresentation.RuntimeBinary}, received {patch.Representation}.");
+            }
+
+            var result = new Dictionary<uint, GameRuntimeComponent>();
+            if (baseline != null)
+            {
+                foreach (var pair in baseline)
+                {
+                    ValidateComponentValue(_registry.Get(pair.Key), pair.Value, "projected baseline");
+                    result.Add(pair.Key, pair.Value);
+                }
+            }
+
+            var componentPatches = patch.Components == null
+                ? new List<ComponentPatch>()
+                : new List<ComponentPatch>(patch.Components);
+            NormalizeComponents(componentPatches);
+            for (var i = 0; i < componentPatches.Count; i++)
+            {
+                var componentPatch = componentPatches[i];
+                var codec = _registry.Get(componentPatch.ComponentTypeId);
+                ValidatePatchIdentity(codec, componentPatch);
+                result.TryGetValue(componentPatch.ComponentTypeId, out var baselineComponent);
+
+                switch (selectMode(componentPatch.ComponentTypeId))
+                {
+                    case RuntimeComponentPatchProjectionMode.SemanticDiff:
+                        if (componentPatch.Kind == ComponentPatchKind.AddPresence)
+                        {
+                            throw new InvalidOperationException(
+                                $"Semantic component {componentPatch.ComponentTypeId} cannot use payloadless AddPresence.");
+                        }
+
+                        // Custom codecs may mutate their input. Clone only this
+                        // affected reliable component so detached validation
+                        // cannot mutate the live replica.
+                        var semanticBaseline = componentPatch.Kind == ComponentPatchKind.Custom
+                            && baselineComponent != null
+                                ? codec.Clone(baselineComponent)
+                                : baselineComponent;
+                        var semanticValue = codec.ApplyPatch(semanticBaseline, componentPatch, _context);
+                        SetProjectedValue(result, codec, semanticValue);
+                        break;
+
+                    case RuntimeComponentPatchProjectionMode.StructuralPresence:
+                        ApplyStructuralPresence(result, codec, baselineComponent, componentPatch);
+                        break;
+
+                    case RuntimeComponentPatchProjectionMode.Excluded:
+                        RequirePayloadlessKind(componentPatch, ComponentPatchKind.Remove, "Excluded");
+                        if (baselineComponent == null)
+                        {
+                            throw new InvalidOperationException(
+                                $"Excluded component {componentPatch.ComponentTypeId} remove requires a present baseline component.");
+                        }
+                        result.Remove(componentPatch.ComponentTypeId);
+                        break;
+
+                    default:
+                        throw new InvalidOperationException(
+                            $"Component {componentPatch.ComponentTypeId} has no supported projected apply mode.");
+                }
+            }
+
+            return result;
+        }
+
         private static List<uint> CollectTypeIds(
             IReadOnlyDictionary<uint, GameRuntimeComponent> baseline,
             IReadOnlyDictionary<uint, GameRuntimeComponent> current)
@@ -502,6 +752,114 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
                 return true;
             component = null;
             return false;
+        }
+
+        private static void ApplyStructuralPresence(
+            Dictionary<uint, GameRuntimeComponent> target,
+            RuntimeComponentPatchCodec codec,
+            GameRuntimeComponent baseline,
+            ComponentPatch patch)
+        {
+            switch (patch.Kind)
+            {
+                case ComponentPatchKind.AddPresence:
+                    RequirePayloadlessKind(patch, ComponentPatchKind.AddPresence, "Structural-presence");
+                    if (baseline != null)
+                    {
+                        throw new InvalidOperationException(
+                            $"Structural-presence component {patch.ComponentTypeId} add requires an absent baseline component.");
+                    }
+                    SetProjectedValue(target, codec, codec.CreateDefault());
+                    return;
+
+                case ComponentPatchKind.Remove:
+                    RequirePayloadlessKind(patch, ComponentPatchKind.Remove, "Structural-presence");
+                    if (baseline == null)
+                    {
+                        throw new InvalidOperationException(
+                            $"Structural-presence component {patch.ComponentTypeId} remove requires a present baseline component.");
+                    }
+                    target.Remove(patch.ComponentTypeId);
+                    return;
+
+                default:
+                    throw new InvalidOperationException(
+                        $"Structural-presence component {patch.ComponentTypeId} cannot apply {patch.Kind}; only AddPresence and Remove are allowed.");
+            }
+        }
+
+        private static void SetProjectedValue(
+            Dictionary<uint, GameRuntimeComponent> target,
+            RuntimeComponentPatchCodec codec,
+            GameRuntimeComponent value)
+        {
+            if (value == null)
+            {
+                target.Remove(codec.ComponentTypeId);
+                return;
+            }
+
+            ValidateComponentValue(codec, value, "projected result");
+            target[codec.ComponentTypeId] = value;
+        }
+
+        private static void ValidateComponentValue(
+            RuntimeComponentPatchCodec codec,
+            GameRuntimeComponent value,
+            string source)
+        {
+            if (value == null)
+                throw new InvalidOperationException($"Component {codec.ComponentTypeId} has a null {source} value.");
+            if (!codec.ComponentRuntimeType.IsInstanceOfType(value))
+            {
+                throw new InvalidOperationException(
+                    $"Component {codec.ComponentTypeId} expected {codec.ComponentRuntimeType.FullName}, " +
+                    $"but {source} contains {value.GetType().FullName}.");
+            }
+        }
+
+        private static void ValidatePatchIdentity(
+            RuntimeComponentPatchCodec codec,
+            ComponentPatch patch)
+        {
+            if (patch.ComponentTypeId != codec.ComponentTypeId
+                || !string.Equals(patch.ComponentTypeKey, codec.ComponentTypeKey, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    $"Component patch {patch.ComponentTypeId}/'{patch.ComponentTypeKey}' does not match codec " +
+                    $"{codec.ComponentTypeId}/'{codec.ComponentTypeKey}'.");
+            }
+        }
+
+        private static void RequirePayloadlessKind(
+            ComponentPatch patch,
+            ComponentPatchKind requiredKind,
+            string lane)
+        {
+            if (patch.Kind != requiredKind
+                || patch.Payload != null
+                || patch.CanonicalJson != null
+                || (patch.Fields?.Count ?? 0) != 0)
+            {
+                throw new InvalidOperationException(
+                    $"{lane} component {patch.ComponentTypeId} requires payloadless {requiredKind}.");
+            }
+        }
+
+        private static void AppendStructuralPresenceChange(
+            RuntimeObjectPatch target,
+            uint componentTypeId,
+            string componentTypeKey,
+            bool hadPrevious,
+            bool hasCurrent)
+        {
+            if (hadPrevious == hasCurrent)
+                return;
+
+            target.Components.Add(new ComponentPatch(
+                componentTypeId,
+                componentTypeKey,
+                hasCurrent ? ComponentPatchKind.AddPresence : ComponentPatchKind.Remove));
         }
 
         private static void NormalizeComponents(List<ComponentPatch> components)

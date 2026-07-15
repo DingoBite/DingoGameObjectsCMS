@@ -154,6 +154,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
         private static void ValidateComponentKind(ComponentPatchKind kind)
         {
             if (kind != ComponentPatchKind.Add
+                && kind != ComponentPatchKind.AddPresence
                 && kind != ComponentPatchKind.Remove
                 && kind != ComponentPatchKind.Fields
                 && kind != ComponentPatchKind.Custom)
@@ -177,6 +178,11 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
                 case ComponentPatchKind.Custom:
                     if (component.Payload == null || fieldCount != 0)
                         throw new FormatException($"Component {component.ComponentTypeId} {component.Kind} patch requires one canonical payload and no field patches.");
+                    return;
+
+                case ComponentPatchKind.AddPresence:
+                    if (component.Payload != null || fieldCount != 0)
+                        throw new FormatException($"Component {component.ComponentTypeId} presence add cannot contain payload data.");
                     return;
 
                 case ComponentPatchKind.Remove:

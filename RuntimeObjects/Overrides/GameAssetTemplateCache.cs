@@ -41,15 +41,30 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
             var result = new Dictionary<uint, GameRuntimeComponent>(_componentPayloads.Count);
             foreach (var componentTypeId in _componentTypeIds)
             {
-                var component = registry.Get(componentTypeId).DecodeCanonical(_componentPayloads[componentTypeId], context);
-                if (component == null)
-                    throw new InvalidOperationException($"Patch codec '{componentTypeId}' decoded a null baseline component.");
-                if (!RuntimeComponentTypeRegistry.TryGetId(component.GetType(), out var decodedTypeId) || decodedTypeId != componentTypeId)
-                    throw new InvalidOperationException($"Patch codec '{componentTypeId}' decoded component '{component.GetType().FullName}' with mismatched runtime type id '{decodedTypeId}'.");
-                result.Add(componentTypeId, component);
+                result.Add(componentTypeId, DecodeComponent(componentTypeId, registry, context));
             }
 
             return result;
+        }
+
+        internal GameRuntimeComponent DecodeComponent(
+            uint componentTypeId,
+            RuntimePatchCodecRegistry registry,
+            RuntimePatchCodecContext context)
+        {
+            if (!_componentPayloads.TryGetValue(componentTypeId, out var payload))
+                throw new InvalidOperationException($"GameAsset baseline has no component {componentTypeId} to materialize.");
+
+            var component = registry.Get(componentTypeId).DecodeCanonical(payload, context);
+            if (component == null)
+                throw new InvalidOperationException($"Patch codec '{componentTypeId}' decoded a null baseline component.");
+            if (!RuntimeComponentTypeRegistry.TryGetId(component.GetType(), out var decodedTypeId) || decodedTypeId != componentTypeId)
+            {
+                throw new InvalidOperationException(
+                    $"Patch codec '{componentTypeId}' decoded component '{component.GetType().FullName}' with mismatched runtime type id '{decodedTypeId}'.");
+            }
+
+            return component;
         }
     }
 
@@ -162,19 +177,45 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
                 components = patchEngine.ApplyPatch(components, runtimePatch);
             }
 
-            var runtimeObject = new GameRuntimeObject
-            {
-                Key = blueprint.Asset.ExactKey,
-                AssetGUID = blueprint.Asset.AssetGuid,
-                SourceAssetGUID = blueprint.SourceAssetGuid,
-            };
-            runtimeObject.SetGuidRequired(instance.InstanceGuid);
-            runtimeObject.SetOrigin(new RuntimeObjectOrigin(blueprint.Asset, instance.InstanceGuid));
+            return CreateRuntimeObject(instance, blueprint, components);
+        }
 
-            foreach (var pair in components.OrderBy(pair => pair.Key))
-                runtimeObject.AddOrReplaceById(pair.Key, pair.Value);
-            runtimeObject.ClearDirty();
-            return runtimeObject;
+        /// <summary>
+        /// Materializes an already validated runtime-binary projection. Unlike
+        /// authored local overrides, this path applies only the component lanes
+        /// selected by the caller and never semantic-clones untouched values.
+        /// </summary>
+        public GameRuntimeObject MaterializeProjected(
+            GameAssetInstance instance,
+            GameAssetLibraryLock assetLock,
+            RuntimePatchCodecContext patchContext,
+            Func<uint, RuntimeComponentPatchProjectionMode> selectMode)
+        {
+            if (patchContext == null)
+                throw new ArgumentNullException(nameof(patchContext));
+            if (selectMode == null)
+                throw new ArgumentNullException(nameof(selectMode));
+            if (!instance.InstanceGuid.isValid)
+                throw new InvalidOperationException("GameAsset instance requires a stable InstanceGuid.");
+
+            var blueprint = ResolveStrict(instance.Asset, assetLock);
+            var components = blueprint.DecodeComponents(_registry, _context);
+            if (instance.Patch != null)
+            {
+                if (instance.Patch.Representation != RuntimeObjectPatchRepresentation.RuntimeBinary)
+                {
+                    throw new InvalidOperationException(
+                        $"Projected materialization requires {RuntimeObjectPatchRepresentation.RuntimeBinary}, " +
+                        $"received {instance.Patch.Representation}.");
+                }
+
+                var patchEngine = ReferenceEquals(patchContext, _context)
+                    ? _patchEngine
+                    : new RuntimeObjectPatchEngine(_registry, patchContext);
+                components = patchEngine.ApplyProjectedPatch(components, instance.Patch, selectMode);
+            }
+
+            return CreateRuntimeObject(instance, blueprint, components);
         }
 
         public RuntimeObjectPatch BuildOverrides(
@@ -182,8 +223,23 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
             GameAssetLibraryLock assetLock,
             RuntimePatchCodecContext patchContext = null)
         {
+            return BuildProjectedOverrides(
+                runtimeObject,
+                assetLock,
+                patchContext,
+                _ => RuntimeComponentPatchProjectionMode.SemanticDiff);
+        }
+
+        public RuntimeObjectPatch BuildProjectedOverrides(
+            GameRuntimeObject runtimeObject,
+            GameAssetLibraryLock assetLock,
+            RuntimePatchCodecContext patchContext,
+            Func<uint, RuntimeComponentPatchProjectionMode> selectMode)
+        {
             if (runtimeObject == null)
                 throw new ArgumentNullException(nameof(runtimeObject));
+            if (selectMode == null)
+                throw new ArgumentNullException(nameof(selectMode));
             var origin = runtimeObject.Origin;
             if (!origin.InstanceGuid.isValid || origin.InstanceGuid != runtimeObject.GUID)
                 throw new InvalidOperationException($"Runtime object {runtimeObject.InstanceId} has no valid GA instance origin.");
@@ -201,7 +257,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
                 throw new InvalidOperationException($"Runtime object {runtimeObject.InstanceId} origin no longer matches its immutable GA blueprint.");
             }
 
-            var baseline = blueprint.DecodeComponents(_registry, _context);
             var current = new Dictionary<uint, GameRuntimeComponent>();
             var components = runtimeObject.Components;
             for (var i = 0; i < components.Count; i++)
@@ -218,10 +273,34 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
             var engine = ReferenceEquals(context, _context)
                 ? _patchEngine
                 : new RuntimeObjectPatchEngine(_registry, context);
-            return engine.BuildPatch(baseline, current);
+            return engine.BuildProjectedPatch(
+                blueprint.ComponentTypeIds,
+                current,
+                componentTypeId => blueprint.DecodeComponent(componentTypeId, _registry, _context),
+                selectMode);
         }
 
         public void Clear() => _byAssetGuid.Clear();
+
+        private static GameRuntimeObject CreateRuntimeObject(
+            GameAssetInstance instance,
+            GameAssetTemplateBlueprint blueprint,
+            IReadOnlyDictionary<uint, GameRuntimeComponent> components)
+        {
+            var runtimeObject = new GameRuntimeObject
+            {
+                Key = blueprint.Asset.ExactKey,
+                AssetGUID = blueprint.Asset.AssetGuid,
+                SourceAssetGUID = blueprint.SourceAssetGuid,
+            };
+            runtimeObject.SetGuidRequired(instance.InstanceGuid);
+            runtimeObject.SetOrigin(new RuntimeObjectOrigin(blueprint.Asset, instance.InstanceGuid));
+
+            foreach (var pair in components.OrderBy(pair => pair.Key))
+                runtimeObject.AddOrReplaceById(pair.Key, pair.Value);
+            runtimeObject.ClearDirty();
+            return runtimeObject;
+        }
 
         private string CalculateContentHash(
             GameAssetKey exactKey,

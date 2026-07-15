@@ -94,6 +94,12 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
         Remove = 2,
         Fields = 3,
         Custom = 4,
+        /// <summary>
+        /// Adds only component presence. The receiver creates the component
+        /// with its default value; semantic state must arrive through the
+        /// component's typed hot-state stream.
+        /// </summary>
+        AddPresence = 5,
     }
 
     public enum FieldPatchKind : byte

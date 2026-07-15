@@ -12,7 +12,7 @@ namespace DingoGameObjectsCMS.Mirror.V2
         public readonly Action<int, RuntimeBaselineChunk> BaselineChunk;
         public readonly Action<int, RuntimeClientDeltaEnvelope> Delta;
         public readonly Action<int, RuntimeCommandResult> CommandResult;
-        public readonly Action<int, RtMotionStateData> Motion;
+        public readonly Action<int, RtStateStreamFrameData> StateStream;
         public readonly RuntimeReliableDeltaTransportBudgetCheck ReliableDeltaFitsTransport;
 
         public RuntimeProtocolV2ServerOutput(
@@ -22,7 +22,7 @@ namespace DingoGameObjectsCMS.Mirror.V2
             Action<int, RuntimeClientDeltaEnvelope> delta,
             Action<int, RuntimeCommandResult> commandResult,
             RuntimeReliableDeltaTransportBudgetCheck reliableDeltaFitsTransport,
-            Action<int, RtMotionStateData> motion = null)
+            Action<int, RtStateStreamFrameData> stateStream = null)
         {
             Manifest = manifest ?? throw new ArgumentNullException(nameof(manifest));
             Reject = reject ?? throw new ArgumentNullException(nameof(reject));
@@ -31,7 +31,7 @@ namespace DingoGameObjectsCMS.Mirror.V2
             CommandResult = commandResult ?? throw new ArgumentNullException(nameof(commandResult));
             ReliableDeltaFitsTransport = reliableDeltaFitsTransport
                                          ?? throw new ArgumentNullException(nameof(reliableDeltaFitsTransport));
-            Motion = motion ?? ((connectionId, value) => { });
+            StateStream = stateStream ?? ((connectionId, value) => { });
         }
     }
 
@@ -45,7 +45,8 @@ namespace DingoGameObjectsCMS.Mirror.V2
         private readonly RuntimeServerStoreProjection _projection;
         private readonly RuntimeStoreBaselineCodec _baselineCodec;
         private readonly RuntimeStoreDeltaCodec _deltaCodec;
-        private readonly RuntimeMotionFrameCodec _motionCodec = new();
+        private readonly RuntimeStateStreamFrameCodec _stateStreamCodec = new();
+        private readonly RuntimeNetworkTelemetry _telemetry;
         private readonly Dictionary<int, ConnectionState> _connections = new();
         private readonly Dictionary<NetStoreRef, StoreState> _stores = new();
         private ulong _nextSessionId;
@@ -54,6 +55,7 @@ namespace DingoGameObjectsCMS.Mirror.V2
 
         public int ConnectionCount => _connections.Count;
         public bool IsSessionInvalidated => _sessionInvalidated;
+        public RuntimeNetworkTelemetry Telemetry => _telemetry;
         public event Action<int, ulong> ConnectionReady;
         public event Action<int> ConnectionInvalidated;
         public event Action<int, NetStoreRef, RuntimeConnectionStoreReplicationState> BaselineStarted;
@@ -62,7 +64,8 @@ namespace DingoGameObjectsCMS.Mirror.V2
         public RuntimeProtocolV2ServerCoordinator(
             RuntimeProtocolV2Context context,
             RuntimeProtocolV2ServerOutput output,
-            ulong firstSessionId = 1)
+            ulong firstSessionId = 1,
+            RuntimeNetworkTelemetry telemetry = null)
         {
             _context = context ?? throw new ArgumentNullException(nameof(context));
             _output = output ?? throw new ArgumentNullException(nameof(output));
@@ -72,6 +75,7 @@ namespace DingoGameObjectsCMS.Mirror.V2
                 throw new ArgumentOutOfRangeException(nameof(firstSessionId));
 
             _nextSessionId = firstSessionId;
+            _telemetry = telemetry ?? new RuntimeNetworkTelemetry();
             _projection = new RuntimeServerStoreProjection(context);
             _baselineCodec = new RuntimeStoreBaselineCodec(context.PatchCodecs);
             _deltaCodec = new RuntimeStoreDeltaCodec(context.PatchCodecs);
@@ -105,8 +109,21 @@ namespace DingoGameObjectsCMS.Mirror.V2
         {
             if (!_connections.Remove(connectionId))
                 return;
+            _telemetry.RemoveConnection(connectionId);
             _context.CommandRegistry?.RemoveConnection(connectionId);
             ConnectionRemoved?.Invoke(connectionId);
+        }
+
+        public RuntimeNetworkTelemetrySnapshot CaptureTelemetry(bool resetWindow = false)
+        {
+            return _telemetry.Capture(resetWindow);
+        }
+
+        public RuntimeNetworkTelemetrySnapshot CaptureTelemetry(
+            double windowSeconds,
+            bool resetWindow = false)
+        {
+            return _telemetry.Capture(windowSeconds, resetWindow);
         }
 
         public bool TryGetConnectionStoreState(
@@ -188,109 +205,104 @@ namespace DingoGameObjectsCMS.Mirror.V2
             return result;
         }
 
-        public RuntimeSessionHandshakeResult SendMotion(int connectionId, in RtMotionStateData value)
+        public RuntimeSessionHandshakeResult SendStateStream(int connectionId, in RtStateStreamFrameData value)
         {
             ThrowIfDisposed();
             var connection = GetConnection(connectionId);
-            var authorization = Authorize(connection, value.SessionId, value.Store);
-            if (!authorization.Accepted)
-                return authorization;
-            if (value.Payload == null || value.Payload.Length == 0 || value.Payload.Length > RuntimeMotionProtocol.MAX_PAYLOAD_BYTES)
-                return RuntimeSessionHandshakeResult.Reject(RuntimeProtocolRejectCode.InvalidEnvelope, "Motion payload size is invalid.");
-            if (!connection.Stores.TryGetValue(value.Store, out var storeState))
-                return RuntimeSessionHandshakeResult.Reject(RuntimeProtocolRejectCode.InvalidStore, $"Motion references unknown store '{value.Store}'.");
+            var resolution = ResolveStateStreamSend(
+                connection,
+                value.SessionId,
+                value.Store,
+                value.StreamTypeId,
+                out var storeState,
+                out var profile);
+            if (!resolution.Accepted)
+                return resolution;
+            if (value.Payload == null || value.Payload.Length == 0 || value.Payload.Length > RuntimeStateStreamProtocol.MAX_PAYLOAD_BYTES)
+                return RuntimeSessionHandshakeResult.Reject(RuntimeProtocolRejectCode.InvalidEnvelope, "State stream payload size is invalid.");
 
-            RuntimeMotionFrame frame;
+            RuntimeStateStreamFrame frame;
             try
             {
-                frame = _motionCodec.Decode(value.Payload);
+                frame = DecodeStateStreamPayload(value.Payload);
             }
             catch (Exception exception) when (exception is FormatException || exception is ArgumentException)
             {
                 return RuntimeSessionHandshakeResult.Reject(RuntimeProtocolRejectCode.InvalidEnvelope, exception.Message);
             }
-            if (frame.Store != value.Store || frame.SimulationTick != value.SimulationTick)
-                return RuntimeSessionHandshakeResult.Reject(RuntimeProtocolRejectCode.InvalidEnvelope, "Motion wire header does not match its canonical payload.");
-            for (var i = 0; i < frame.Samples.Count; i++)
+            if (frame == null
+                || frame.Store != value.Store
+                || frame.StreamTypeId != value.StreamTypeId
+                || frame.Sequence != value.Sequence
+                || frame.SimulationTick != value.SimulationTick)
             {
-                var sample = frame.Samples[i];
-                if (!storeState.Replication.IsAcknowledged(sample.Object))
-                {
-                    return RuntimeSessionHandshakeResult.Reject(
-                        RuntimeProtocolRejectCode.InvalidEnvelope,
-                        $"Motion object '{sample.Object}' is not in ACKed connection membership.");
-                }
-                if (!TryValidateMotionComponents(sample, out var detail))
-                {
-                    return RuntimeSessionHandshakeResult.Reject(
-                        RuntimeProtocolRejectCode.InvalidEnvelope,
-                        detail);
-                }
+                return RuntimeSessionHandshakeResult.Reject(
+                    RuntimeProtocolRejectCode.InvalidEnvelope,
+                    "State stream wire header does not match its packed payload.");
             }
 
-            _output.Motion(connectionId, value);
-            return RuntimeSessionHandshakeResult.Success();
+            var validation = ValidateStateStreamFrame(value.Store, storeState, profile, frame);
+            return validation.Accepted
+                ? PublishStateStream(connectionId, value)
+                : validation;
         }
 
-        private bool TryValidateMotionComponents(in RuntimeMotionSample sample, out string detail)
+        public RuntimeSessionHandshakeResult SendStateStream(
+            int connectionId,
+            RuntimeStateStreamFrame frame)
         {
-            for (var i = 0; i < sample.Components.Count; i++)
-            {
-                var component = sample.Components[i];
-                try
-                {
-                    var policy = _context.ReplicationPolicies.GetRequired(component.ComponentTypeId);
-                    if (policy != RuntimeReplicationPolicy.UnreliableState)
-                    {
-                        detail = $"Motion component type id {component.ComponentTypeId} on object '{sample.Object}' "
-                                 + $"uses {policy} instead of {RuntimeReplicationPolicy.UnreliableState}.";
-                        return false;
-                    }
+            ThrowIfDisposed();
+            if (frame == null)
+                throw new ArgumentNullException(nameof(frame));
+            var connection = GetConnection(connectionId);
+            var sessionId = connection.Handshake?.SessionId ?? 0;
+            var resolution = ResolveStateStreamSend(
+                connection,
+                sessionId,
+                frame.Store,
+                frame.StreamTypeId,
+                out var storeState,
+                out var profile);
+            if (!resolution.Accepted)
+                return resolution;
 
-                    var codec = _context.PatchCodecs.Get(component.ComponentTypeId);
-                    var decoded = codec.DecodeCanonical(
-                        component.CanonicalState,
-                        RuntimeMotionPatchCodecContext.Instance);
-                    var canonical = codec.EncodeCanonical(
-                        decoded,
-                        RuntimeMotionPatchCodecContext.Instance);
-                    if (!ByteArraysEqual(component.CanonicalState, canonical))
-                    {
-                        detail = $"Motion component type id {component.ComponentTypeId} on object '{sample.Object}' "
-                                 + "is not encoded canonically.";
-                        return false;
-                    }
-                }
-                catch (Exception exception) when (
-                    exception is FormatException
-                    || exception is ArgumentException
-                    || exception is InvalidOperationException
-                    || exception is KeyNotFoundException
-                    || exception is OverflowException)
-                {
-                    detail = $"Motion component type id {component.ComponentTypeId} on object '{sample.Object}' is invalid: "
-                             + exception.Message;
-                    return false;
-                }
+            var encodeMeasure = RuntimeNetworkEncodeMeasure.Begin();
+            RuntimeSessionHandshakeResult validation;
+            byte[] payload = null;
+            try
+            {
+                validation = ValidateStateStreamFrame(frame.Store, storeState, profile, frame);
+                if (validation.Accepted)
+                    payload = EncodeStateStreamFrame(frame);
+            }
+            catch (Exception exception) when (exception is FormatException
+                                              || exception is ArgumentException
+                                              || exception is InvalidOperationException
+                                              || exception is OverflowException)
+            {
+                validation = RuntimeSessionHandshakeResult.Reject(
+                    RuntimeProtocolRejectCode.InvalidEnvelope,
+                    exception.Message);
+            }
+            finally
+            {
+                _telemetry.RecordEncode(
+                    RuntimeNetworkStreamKey.HotState(frame.StreamTypeId),
+                    encodeMeasure.Complete());
             }
 
-            detail = null;
-            return true;
-        }
+            if (!validation.Accepted)
+                return validation;
+            if (payload == null || payload.Length == 0 || payload.Length > RuntimeStateStreamProtocol.MAX_PAYLOAD_BYTES)
+                return RuntimeSessionHandshakeResult.Reject(RuntimeProtocolRejectCode.InvalidEnvelope, "State stream payload size is invalid.");
 
-        private static bool ByteArraysEqual(byte[] first, byte[] second)
-        {
-            if (ReferenceEquals(first, second))
-                return true;
-            if (first == null || second == null || first.Length != second.Length)
-                return false;
-            for (var i = 0; i < first.Length; i++)
-            {
-                if (first[i] != second[i])
-                    return false;
-            }
-
-            return true;
+            return PublishStateStream(connectionId, new RtStateStreamFrameData(
+                sessionId,
+                frame.Store,
+                frame.StreamTypeId,
+                frame.Sequence,
+                frame.SimulationTick,
+                payload));
         }
 
         public RuntimeSessionHandshakeResult ReceiveAck(int connectionId, in RtStoreAckData ack)
@@ -308,6 +320,7 @@ namespace DingoGameObjectsCMS.Mirror.V2
                 || result == RuntimeConnectionAckResult.Duplicate
                 || result == RuntimeConnectionAckResult.Stale)
             {
+                _telemetry.ObserveConnectionStore(connectionId, storeState.Replication);
                 return RuntimeSessionHandshakeResult.Success();
             }
 
@@ -326,6 +339,8 @@ namespace DingoGameObjectsCMS.Mirror.V2
             {
                 return Reject(connectionId, RuntimeProtocolRejectCode.InvalidStore, $"Resync references unknown store '{request.Store}'.");
             }
+
+            _telemetry.RecordResync();
 
             if (request.BaselineId == connectionStore.Replication.BaselineId)
             {
@@ -438,7 +453,11 @@ namespace DingoGameObjectsCMS.Mirror.V2
                         detail: "The projected membership and topology are unchanged.");
                 }
 
+                var encodeMeasure = RuntimeNetworkEncodeMeasure.Begin();
                 var payload = _deltaCodec.Encode(delta);
+                _telemetry.RecordEncode(
+                    RuntimeNetworkStreamKey.ReliableStore,
+                    encodeMeasure.Complete());
                 var transportEnvelope = new RuntimeReliableDeltaTransportEnvelope(
                     connection.Handshake.SessionId,
                     storeState.Reference,
@@ -483,6 +502,7 @@ namespace DingoGameObjectsCMS.Mirror.V2
                     throw new InvalidOperationException("Reliable queue allocated an unexpected interest delivery sequence.");
 
                 connectionStore.Shadow.ReplaceWith(stagedShadow);
+                _telemetry.ObserveConnectionStore(connectionId, connectionStore.Replication);
                 SendDelta(connectionId, connection, storeState.Reference, envelope);
                 return new RuntimeInterestRefreshResult(
                     RuntimeInterestRefreshStatus.Enqueued,
@@ -554,6 +574,8 @@ namespace DingoGameObjectsCMS.Mirror.V2
             if (_disposed || _sessionInvalidated)
                 return;
 
+            _telemetry.RecordCommittedBatch(batch);
+
             RuntimeStoreRevisionRecord revision;
             try
             {
@@ -599,7 +621,11 @@ namespace DingoGameObjectsCMS.Mirror.V2
                         continue;
                     }
 
+                    var encodeMeasure = RuntimeNetworkEncodeMeasure.Begin();
                     var payload = _deltaCodec.Encode(delta);
+                    _telemetry.RecordEncode(
+                        RuntimeNetworkStreamKey.ReliableStore,
+                        encodeMeasure.Complete());
                     var transportEnvelope = new RuntimeReliableDeltaTransportEnvelope(
                         connection.Handshake.SessionId,
                         storeState.Reference,
@@ -630,6 +656,7 @@ namespace DingoGameObjectsCMS.Mirror.V2
 
                     if (envelope.DeliverySequence != delta.DeliverySequence)
                         throw new InvalidOperationException("Reliable queue allocated an unexpected delivery sequence.");
+                    _telemetry.ObserveConnectionStore(connectionId, connectionStore.Replication);
                     SendDelta(connectionId, connection, storeState.Reference, envelope);
                 }
                 catch (Exception exception)
@@ -695,14 +722,20 @@ namespace DingoGameObjectsCMS.Mirror.V2
                 nextBaselineId,
                 stagedShadow,
                 out var membership);
+            var encodeMeasure = RuntimeNetworkEncodeMeasure.Begin();
             var payload = _baselineCodec.Encode(baseline);
+            _telemetry.RecordEncode(
+                RuntimeNetworkStreamKey.Baseline,
+                encodeMeasure.Complete());
             var transfer = connectionStore.Replication.BeginBaseline(
                 baseline.StoreRevision,
                 payload,
                 membership);
+            _telemetry.RecordBaselineSize(payload.Length);
             if (transfer.BaselineId != baseline.BaselineId)
                 throw new InvalidOperationException("Connection baseline state allocated an unexpected baseline id.");
             connectionStore.Shadow.ReplaceWith(stagedShadow);
+            _telemetry.ObserveConnectionStore(connectionId, connectionStore.Replication);
             BaselineStarted?.Invoke(connectionId, storeState.Reference, connectionStore.Replication);
             SendBaselineChunks(connectionId, connection, transfer);
         }
@@ -734,6 +767,9 @@ namespace DingoGameObjectsCMS.Mirror.V2
             for (var i = 0; i < chunks.Count; i++)
             {
                 _output.BaselineChunk(connectionId, chunks[i]);
+                _telemetry.RecordSent(
+                    RuntimeNetworkStreamKey.Baseline,
+                    chunks[i].Payload?.Length ?? 0);
             }
         }
 
@@ -752,6 +788,111 @@ namespace DingoGameObjectsCMS.Mirror.V2
                 envelope.ToRevision,
                 envelope.Payload,
                 envelope.Kind));
+            _telemetry.RecordSent(
+                RuntimeNetworkStreamKey.ReliableStore,
+                envelope.PayloadBytes);
+        }
+
+        protected virtual byte[] EncodeStateStreamFrame(RuntimeStateStreamFrame frame)
+        {
+            return _stateStreamCodec.Encode(frame);
+        }
+
+        protected virtual RuntimeStateStreamFrame DecodeStateStreamPayload(byte[] payload)
+        {
+            return _stateStreamCodec.Decode(payload);
+        }
+
+        private RuntimeSessionHandshakeResult ResolveStateStreamSend(
+            ConnectionState connection,
+            ulong sessionId,
+            in NetStoreRef store,
+            uint streamTypeId,
+            out ConnectionStoreState storeState,
+            out RuntimeStateStreamProfile profile)
+        {
+            storeState = null;
+            profile = null;
+            var authorization = Authorize(connection, sessionId, store);
+            if (!authorization.Accepted)
+                return authorization;
+            if (!connection.Stores.TryGetValue(store, out storeState))
+            {
+                return RuntimeSessionHandshakeResult.Reject(
+                    RuntimeProtocolRejectCode.InvalidStore,
+                    $"State stream references unknown store '{store}'.");
+            }
+            if (!_context.StateStreamProfiles.TryGet(streamTypeId, out profile))
+            {
+                return RuntimeSessionHandshakeResult.Reject(
+                    RuntimeProtocolRejectCode.InvalidEnvelope,
+                    $"State stream type id {streamTypeId} is not registered.");
+            }
+            return RuntimeSessionHandshakeResult.Success();
+        }
+
+        private static RuntimeSessionHandshakeResult ValidateStateStreamFrame(
+            in NetStoreRef store,
+            ConnectionStoreState storeState,
+            RuntimeStateStreamProfile profile,
+            RuntimeStateStreamFrame frame)
+        {
+            if (frame == null || frame.Store != store || frame.StreamTypeId != profile.StreamTypeId)
+            {
+                return RuntimeSessionHandshakeResult.Reject(
+                    RuntimeProtocolRejectCode.InvalidEnvelope,
+                    "State stream frame store or type does not match its send context.");
+            }
+            if (profile.Membership == RuntimeStateStreamMembership.AcknowledgedRuntimeObject
+                && storeState.Replication.PendingReliableCount != 0)
+            {
+                return RuntimeSessionHandshakeResult.Reject(
+                    RuntimeProtocolRejectCode.InvalidEnvelope,
+                    "RuntimeObject state stream is blocked while reliable membership/component changes await ACK.");
+            }
+
+            for (var i = 0; i < frame.Samples.Count; i++)
+            {
+                var sample = frame.Samples[i];
+                if (profile.Membership == RuntimeStateStreamMembership.AcknowledgedRuntimeObject)
+                {
+                    var objectReference = new NetObjectRef(store, sample.Key.Value);
+                    if (!objectReference.IsValid
+                        || !storeState.Replication.IsProjected(objectReference)
+                        || !storeState.Replication.IsAcknowledged(objectReference))
+                    {
+                        return RuntimeSessionHandshakeResult.Reject(
+                            RuntimeProtocolRejectCode.InvalidEnvelope,
+                            $"State stream key '{sample.Key}' is not in projected and ACKed RuntimeObject membership.");
+                    }
+                }
+
+                try
+                {
+                    profile.ValidatePackedSample(sample);
+                }
+                catch (Exception exception) when (exception is FormatException
+                                                  || exception is ArgumentException
+                                                  || exception is InvalidOperationException
+                                                  || exception is OverflowException)
+                {
+                    return RuntimeSessionHandshakeResult.Reject(
+                        RuntimeProtocolRejectCode.InvalidEnvelope,
+                        $"State stream '{profile.StreamName}' sample '{sample.Key}' is invalid: {exception.Message}");
+                }
+            }
+            return RuntimeSessionHandshakeResult.Success();
+        }
+
+        private RuntimeSessionHandshakeResult PublishStateStream(
+            int connectionId,
+            in RtStateStreamFrameData value)
+        {
+            _output.StateStream(connectionId, value);
+            _telemetry.RecordSent(
+                RuntimeNetworkStreamKey.HotState(value.StreamTypeId),
+                value.Payload.Length);
+            return RuntimeSessionHandshakeResult.Success();
         }
 
         private RuntimeSessionHandshakeResult Authorize(

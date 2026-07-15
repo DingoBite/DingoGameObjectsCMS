@@ -159,7 +159,7 @@ namespace DingoGameObjectsCMS.Mirror.V2
         public int Depth;
         public long StoreOrder;
         public Dictionary<uint, GameRuntimeComponent> ReliableComponents;
-        public Dictionary<uint, GameRuntimeComponent> SpawnVisibleComponents;
+        public HashSet<uint> UnreliableComponentPresence;
     }
 
     public class RuntimeConnectionStoreShadow
@@ -217,9 +217,9 @@ namespace DingoGameObjectsCMS.Mirror.V2
                     ReliableComponents = value.ReliableComponents == null
                         ? new Dictionary<uint, GameRuntimeComponent>()
                         : new Dictionary<uint, GameRuntimeComponent>(value.ReliableComponents),
-                    SpawnVisibleComponents = value.SpawnVisibleComponents == null
-                        ? new Dictionary<uint, GameRuntimeComponent>()
-                        : new Dictionary<uint, GameRuntimeComponent>(value.SpawnVisibleComponents),
+                    UnreliableComponentPresence = value.UnreliableComponentPresence == null
+                        ? new HashSet<uint>()
+                        : new HashSet<uint>(value.UnreliableComponentPresence),
                 });
             }
         }
@@ -399,12 +399,11 @@ namespace DingoGameObjectsCMS.Mirror.V2
                 {
                     var currentReliable = SnapshotReliableComponents(runtimeObject);
                     var patch = patchEngine.BuildPatch(existing.ReliableComponents, currentReliable);
-                    var currentSpawnVisible = SnapshotSpawnVisibleComponents(runtimeObject);
-                    AppendUnreliableStructurePatches(
-                        patchEngine,
-                        existing.SpawnVisibleComponents,
-                        currentSpawnVisible,
-                        patch);
+                    var currentUnreliablePresence = SnapshotUnreliableComponentPresence(runtimeObject);
+                    patchEngine.AppendStructuralPresenceChanges(
+                        patch,
+                        existing.UnreliableComponentPresence,
+                        currentUnreliablePresence);
                     if (!patch.IsEmpty)
                     {
                         operations.Add(new RuntimeStoreDeltaOperation
@@ -416,7 +415,7 @@ namespace DingoGameObjectsCMS.Mirror.V2
                     }
 
                     existing.ReliableComponents = currentReliable;
-                    existing.SpawnVisibleComponents = currentSpawnVisible;
+                    existing.UnreliableComponentPresence = currentUnreliablePresence;
                 }
 
                 existing.ParentObjectId = node.ParentObjectId;
@@ -664,7 +663,7 @@ namespace DingoGameObjectsCMS.Mirror.V2
                 Depth = node.Depth,
                 StoreOrder = node.StoreOrder,
                 ReliableComponents = SnapshotReliableComponents(runtimeObject),
-                SpawnVisibleComponents = SnapshotSpawnVisibleComponents(runtimeObject),
+                UnreliableComponentPresence = SnapshotUnreliableComponentPresence(runtimeObject),
             };
         }
 
@@ -692,10 +691,10 @@ namespace DingoGameObjectsCMS.Mirror.V2
             return result;
         }
 
-        private Dictionary<uint, GameRuntimeComponent> SnapshotSpawnVisibleComponents(
+        private HashSet<uint> SnapshotUnreliableComponentPresence(
             GameRuntimeObject runtimeObject)
         {
-            var result = new Dictionary<uint, GameRuntimeComponent>();
+            var result = new HashSet<uint>();
             var components = runtimeObject.Components;
             for (var i = 0; i < components.Count; i++)
             {
@@ -703,83 +702,16 @@ namespace DingoGameObjectsCMS.Mirror.V2
                                 ?? throw new InvalidOperationException($"Runtime object {runtimeObject.InstanceId} contains a null component.");
                 if (!RuntimeComponentTypeRegistry.TryGetId(component.GetType(), out var componentTypeId))
                     throw new InvalidOperationException($"Runtime object {runtimeObject.InstanceId} contains an unregistered component '{component.GetType().FullName}'.");
-                if (!RuntimeComponentVisibilityProjection.IsVisible(
-                        _context.ReplicationPolicies,
-                        componentTypeId,
-                        RuntimeComponentProjectionChannel.Spawn))
-                {
-                    continue;
-                }
-
-                result.Add(componentTypeId, _context.PatchCodecs.Get(componentTypeId).Clone(component));
-            }
-
-            return result;
-        }
-
-        private void AppendUnreliableStructurePatches(
-            RuntimeObjectPatchEngine patchEngine,
-            IReadOnlyDictionary<uint, GameRuntimeComponent> previous,
-            IReadOnlyDictionary<uint, GameRuntimeComponent> current,
-            RuntimeObjectPatch target)
-        {
-            if (patchEngine == null)
-                throw new ArgumentNullException(nameof(patchEngine));
-            if (target == null)
-                throw new ArgumentNullException(nameof(target));
-
-            var previousChanged = new Dictionary<uint, GameRuntimeComponent>();
-            var currentChanged = new Dictionary<uint, GameRuntimeComponent>();
-            var componentTypeIds = new HashSet<uint>();
-            if (previous != null)
-            {
-                foreach (var pair in previous)
-                    componentTypeIds.Add(pair.Key);
-            }
-            if (current != null)
-            {
-                foreach (var pair in current)
-                    componentTypeIds.Add(pair.Key);
-            }
-
-            foreach (var componentTypeId in componentTypeIds)
-            {
                 if (_context.ReplicationPolicies.GetRequired(componentTypeId)
                     != RuntimeReplicationPolicy.UnreliableState)
                 {
                     continue;
                 }
 
-                GameRuntimeComponent previousComponent = null;
-                GameRuntimeComponent currentComponent = null;
-                var hadPrevious = previous != null
-                                  && previous.TryGetValue(componentTypeId, out previousComponent);
-                var hasCurrent = current != null
-                                 && current.TryGetValue(componentTypeId, out currentComponent);
-                if (hadPrevious == hasCurrent)
-                    continue;
-                if (hadPrevious)
-                    previousChanged.Add(componentTypeId, previousComponent);
-                if (hasCurrent)
-                    currentChanged.Add(componentTypeId, currentComponent);
+                result.Add(componentTypeId);
             }
 
-            if (previousChanged.Count == 0 && currentChanged.Count == 0)
-                return;
-
-            var structurePatch = patchEngine.BuildPatch(previousChanged, currentChanged);
-            for (var i = 0; i < structurePatch.Components.Count; i++)
-            {
-                var componentPatch = structurePatch.Components[i];
-                if (componentPatch.Kind != ComponentPatchKind.Add
-                    && componentPatch.Kind != ComponentPatchKind.Remove)
-                {
-                    throw new InvalidOperationException(
-                        $"Unreliable component {componentPatch.ComponentTypeId} produced non-structural reliable patch {componentPatch.Kind}.");
-                }
-                target.Components.Add(componentPatch);
-            }
-            target.Components.Sort((left, right) => left.ComponentTypeId.CompareTo(right.ComponentTypeId));
+            return result;
         }
 
         private void ValidateReliableReferences(

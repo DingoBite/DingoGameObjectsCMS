@@ -462,6 +462,50 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
             long? parentId = null,
             int insertIndex = -1)
         {
+            return SpawnMaterialized(
+                objectId,
+                templateCache,
+                parentId,
+                insertIndex,
+                () => patchContext == null
+                    ? templateCache.Materialize(instance, assetLock)
+                    : templateCache.Materialize(instance, assetLock, patchContext));
+        }
+
+        /// <summary>
+        /// Publishes a lane-projected replica spawn atomically. This is kept
+        /// separate from authored Spawn so network code cannot accidentally
+        /// route hot presence through normal semantic patch materialization.
+        /// </summary>
+        public GameRuntimeObject SpawnProjected(
+            long objectId,
+            GameAssetInstance instance,
+            GameAssetLibraryLock assetLock,
+            GameAssetTemplateCache templateCache,
+            RuntimePatchCodecContext patchContext,
+            Func<uint, RuntimeComponentPatchProjectionMode> selectMode,
+            long? parentId = null,
+            int insertIndex = -1)
+        {
+            return SpawnMaterialized(
+                objectId,
+                templateCache,
+                parentId,
+                insertIndex,
+                () => templateCache.MaterializeProjected(
+                    instance,
+                    assetLock,
+                    patchContext,
+                    selectMode));
+        }
+
+        private GameRuntimeObject SpawnMaterialized(
+            long objectId,
+            GameAssetTemplateCache templateCache,
+            long? parentId,
+            int insertIndex,
+            Func<GameRuntimeObject> materialize)
+        {
             if (Retired)
                 throw new InvalidOperationException($"RuntimeStore '{Id}' cannot spawn into a retired generation.");
             if (objectId < FIRST_USER_OBJECT_ID)
@@ -472,6 +516,8 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
                 throw new InvalidOperationException($"RuntimeStore '{Id}' cannot spawn runtime object {objectId} under missing parent {parentId.Value}.");
             if (templateCache == null)
                 throw new ArgumentNullException(nameof(templateCache));
+            if (materialize == null)
+                throw new ArgumentNullException(nameof(materialize));
 
             if (parentId.HasValue)
                 EnsureExactGameAssetOrigin(_all.V[parentId.Value], "attach child to");
@@ -479,9 +525,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
             // Materialization and patch validation happen before the object is
             // observable through the store. A failed baseline or patch cannot
             // publish a partially initialized GRO.
-            var runtimeObject = patchContext == null
-                ? templateCache.Materialize(instance, assetLock)
-                : templateCache.Materialize(instance, assetLock, patchContext);
+            var runtimeObject = materialize();
             runtimeObject.InstanceId = objectId;
             EnsureExactGameAssetOrigin(runtimeObject, "spawn");
 

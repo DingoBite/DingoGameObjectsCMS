@@ -37,6 +37,7 @@ namespace DingoGameObjectsCMS.Mirror.V2
         public readonly GameAssetTemplateCache TemplateCache;
         public readonly RuntimePatchCodecRegistry PatchCodecs;
         public readonly RuntimeReplicationPolicyRegistry ReplicationPolicies;
+        public readonly RuntimeStateStreamProfileRegistry StateStreamProfiles;
         public readonly World World;
         public readonly RuntimeCommandsBus CommandsBus;
         public readonly RuntimeCommandRegistry CommandRegistry;
@@ -51,6 +52,7 @@ namespace DingoGameObjectsCMS.Mirror.V2
             RuntimePatchCodecRegistry patchCodecs,
             RuntimeReplicationPolicyRegistry replicationPolicies,
             World world,
+            RuntimeStateStreamProfileRegistry stateStreamProfiles,
             RuntimeCommandsBus commandsBus = null,
             RuntimeCommandRegistry commandRegistry = null,
             RuntimeCommandEnvelopeEncoder commandEncoder = null,
@@ -64,6 +66,7 @@ namespace DingoGameObjectsCMS.Mirror.V2
                 patchCodecs,
                 replicationPolicies,
                 world,
+                stateStreamProfiles,
                 commandsBus,
                 commandRegistry,
                 commandEncoder,
@@ -77,6 +80,7 @@ namespace DingoGameObjectsCMS.Mirror.V2
             RuntimePatchCodecRegistry patchCodecs,
             RuntimeReplicationPolicyRegistry replicationPolicies,
             World world,
+            RuntimeStateStreamProfileRegistry stateStreamProfiles,
             RuntimeCommandsBus commandsBus = null,
             RuntimeCommandRegistry commandRegistry = null,
             RuntimeCommandEnvelopeEncoder commandEncoder = null,
@@ -90,6 +94,7 @@ namespace DingoGameObjectsCMS.Mirror.V2
                 patchCodecs,
                 replicationPolicies,
                 world,
+                stateStreamProfiles,
                 commandsBus,
                 commandRegistry,
                 commandEncoder,
@@ -104,6 +109,7 @@ namespace DingoGameObjectsCMS.Mirror.V2
             RuntimePatchCodecRegistry patchCodecs,
             RuntimeReplicationPolicyRegistry replicationPolicies,
             World world,
+            RuntimeStateStreamProfileRegistry stateStreamProfiles,
             RuntimeCommandsBus commandsBus,
             RuntimeCommandRegistry commandRegistry,
             RuntimeCommandEnvelopeEncoder commandEncoder,
@@ -124,6 +130,15 @@ namespace DingoGameObjectsCMS.Mirror.V2
                 throw new ArgumentException("Protocol v2 requires a valid ECS World.", nameof(world));
             if (!string.Equals(patchCodecs.SchemaHash, templateCache.CodecRegistry.SchemaHash, StringComparison.Ordinal))
                 throw new InvalidOperationException("Protocol v2 patch registry does not match the GameAsset template cache schema.");
+
+            StateStreamProfiles = stateStreamProfiles ?? throw new ArgumentNullException(nameof(stateStreamProfiles));
+            if (!StateStreamProfiles.IsSealed)
+                throw new InvalidOperationException("Protocol v2 requires a sealed state stream profile registry.");
+            var descriptor = manifestTemplate != null
+                ? manifestTemplate.Descriptor
+                : clientExpectation.Descriptor;
+            if (!string.Equals(descriptor.StateStreamCatalogHash, StateStreamProfiles.CatalogHash, StringComparison.Ordinal))
+                throw new InvalidOperationException("Protocol v2 descriptor does not match the sealed state stream catalog.");
 
             World = world;
             CommandsBus = commandsBus;

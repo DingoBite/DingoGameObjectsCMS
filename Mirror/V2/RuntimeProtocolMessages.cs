@@ -152,10 +152,12 @@ namespace DingoGameObjectsCMS.Mirror.V2
     }
 
     [Serializable, Preserve]
-    public struct RtMotionState : NetworkMessage
+    public struct RtStateStreamFrame : NetworkMessage
     {
         public ulong SessionId;
         public NetStoreRef Store;
+        public uint StreamTypeId;
+        public uint Sequence;
         public uint SimulationTick;
         public byte[] Payload;
     }

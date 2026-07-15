@@ -1,5 +1,6 @@
 using System;
-using System.Collections.Generic;
+using DingoGameObjectsCMS.AssetLibrary;
+using DingoGameObjectsCMS.RuntimeObjects.Objects;
 using DingoGameObjectsCMS.RuntimeObjects.Overrides;
 
 namespace DingoGameObjectsCMS.Mirror.V2
@@ -8,22 +9,7 @@ namespace DingoGameObjectsCMS.Mirror.V2
     {
         Spawn = 1,
         ReliableOverride = 2,
-        UnreliableMotion = 3,
-    }
-
-    public readonly struct RuntimeGameAssetBaselineComponent
-    {
-        public readonly uint ComponentTypeId;
-        public readonly string ComponentTypeKey;
-
-        public RuntimeGameAssetBaselineComponent(uint componentTypeId, string componentTypeKey)
-        {
-            if (string.IsNullOrWhiteSpace(componentTypeKey))
-                throw new ArgumentException("Runtime component type key is required.", nameof(componentTypeKey));
-
-            ComponentTypeId = componentTypeId;
-            ComponentTypeKey = componentTypeKey;
-        }
+        HotState = 3,
     }
 
     public static class RuntimeComponentVisibilityProjection
@@ -37,7 +23,7 @@ namespace DingoGameObjectsCMS.Mirror.V2
                 throw new ArgumentNullException(nameof(policies));
             if (channel != RuntimeComponentProjectionChannel.Spawn
                 && channel != RuntimeComponentProjectionChannel.ReliableOverride
-                && channel != RuntimeComponentProjectionChannel.UnreliableMotion)
+                && channel != RuntimeComponentProjectionChannel.HotState)
             {
                 throw new ArgumentOutOfRangeException(nameof(channel), channel, null);
             }
@@ -53,18 +39,42 @@ namespace DingoGameObjectsCMS.Mirror.V2
                         || channel == RuntimeComponentProjectionChannel.ReliableOverride;
 
                 case RuntimeReplicationPolicy.UnreliableState:
+                    // Spawn visibility means structural presence only. Hot
+                    // fields are exclusively owned by the typed state stream
+                    // and must never be copied into RuntimeObjectPatch.
                     return channel == RuntimeComponentProjectionChannel.Spawn
-                        || channel == RuntimeComponentProjectionChannel.UnreliableMotion;
+                        || channel == RuntimeComponentProjectionChannel.HotState;
 
                 default:
                     throw new ArgumentOutOfRangeException(nameof(policy), policy, null);
             }
         }
+
+        public static RuntimeComponentPatchProjectionMode GetPatchProjectionMode(
+            RuntimeReplicationPolicyRegistry policies,
+            uint componentTypeId)
+        {
+            if (policies == null || !policies.IsSealed)
+                throw new InvalidOperationException("A sealed replication policy registry is required for network patch projection.");
+
+            switch (policies.GetRequired(componentTypeId))
+            {
+                case RuntimeReplicationPolicy.Never:
+                    return RuntimeComponentPatchProjectionMode.Excluded;
+                case RuntimeReplicationPolicy.BaselineAndReliableOverrides:
+                    return RuntimeComponentPatchProjectionMode.SemanticDiff;
+                case RuntimeReplicationPolicy.UnreliableState:
+                    return RuntimeComponentPatchProjectionMode.StructuralPresence;
+                default:
+                    throw new InvalidOperationException(
+                        $"Component {componentTypeId} has no supported network patch projection mode.");
+            }
+        }
     }
 
-    public static class RuntimeConnectionMotionEligibility
+    public static class RuntimeConnectionStateStreamEligibility
     {
-        public static bool IsMotionEligible(
+        public static bool IsEligible(
             RuntimeConnectionStoreReplicationState state,
             NetObjectRef value,
             uint componentTypeId,
@@ -75,13 +85,13 @@ namespace DingoGameObjectsCMS.Mirror.V2
             if (!RuntimeComponentVisibilityProjection.IsVisible(
                     policies,
                     componentTypeId,
-                    RuntimeComponentProjectionChannel.UnreliableMotion))
+                    RuntimeComponentProjectionChannel.HotState))
                 return false;
             if (!value.IsValid || value.Store != state.Store)
                 return false;
-            // Object membership alone cannot prove that a newly added motion
+            // Object membership alone cannot prove that a newly added hot-state
             // component exists on the replica yet. Coarsely hold this store's
-            // motion stream behind every outstanding reliable envelope; once
+            // stream behind every outstanding reliable envelope; once
             // structural component ACKs become explicit this can be narrowed.
             if (state.PendingReliableCount != 0)
                 return false;
@@ -93,153 +103,30 @@ namespace DingoGameObjectsCMS.Mirror.V2
     public static class RuntimeSpawnPatchProjector
     {
         public static RuntimeObjectPatch Project(
-            string runtimeSchemaHash,
-            RuntimeReplicationPolicyRegistry policies,
-            IReadOnlyList<RuntimeGameAssetBaselineComponent> gameAssetBaseline,
-            RuntimeObjectPatch sourceOverrides)
+            GameRuntimeObject runtimeObject,
+            GameAssetTemplateCache templateCache,
+            GameAssetLibraryLock assetLock,
+            RuntimePatchCodecContext networkPatchContext,
+            RuntimeReplicationPolicyRegistry policies)
         {
-            if (string.IsNullOrWhiteSpace(runtimeSchemaHash))
-                throw new ArgumentException("Runtime schema hash is required.", nameof(runtimeSchemaHash));
-            if (policies == null)
-                throw new ArgumentNullException(nameof(policies));
-            if (gameAssetBaseline == null)
-                throw new ArgumentNullException(nameof(gameAssetBaseline));
-            if (sourceOverrides != null
-                && !string.Equals(sourceOverrides.SchemaHash, runtimeSchemaHash, StringComparison.Ordinal))
-            {
-                throw new InvalidOperationException(
-                    $"Runtime override schema hash '{sourceOverrides.SchemaHash}' does not match '{runtimeSchemaHash}'.");
-            }
+            if (runtimeObject == null)
+                throw new ArgumentNullException(nameof(runtimeObject));
+            if (templateCache == null)
+                throw new ArgumentNullException(nameof(templateCache));
+            if (assetLock == null)
+                throw new ArgumentNullException(nameof(assetLock));
+            if (networkPatchContext == null)
+                throw new ArgumentNullException(nameof(networkPatchContext));
+            if (policies == null || !policies.IsSealed)
+                throw new InvalidOperationException("A sealed replication policy registry is required to project a network spawn.");
 
-            var baselineById = BuildBaselineLookup(gameAssetBaseline);
-            var sourceById = BuildSourceLookup(sourceOverrides);
-            var componentTypeIds = new List<uint>(baselineById.Count + sourceById.Count);
-            foreach (var pair in baselineById)
-            {
-                componentTypeIds.Add(pair.Key);
-            }
-
-            foreach (var pair in sourceById)
-            {
-                if (!baselineById.ContainsKey(pair.Key))
-                    componentTypeIds.Add(pair.Key);
-            }
-
-            componentTypeIds.Sort();
-            var result = new RuntimeObjectPatch(runtimeSchemaHash);
-            for (var i = 0; i < componentTypeIds.Count; i++)
-            {
-                var componentTypeId = componentTypeIds[i];
-                var hasBaseline = baselineById.TryGetValue(componentTypeId, out var baselineComponent);
-                var visible = RuntimeComponentVisibilityProjection.IsVisible(
+            return templateCache.BuildProjectedOverrides(
+                runtimeObject,
+                assetLock,
+                networkPatchContext,
+                componentTypeId => RuntimeComponentVisibilityProjection.GetPatchProjectionMode(
                     policies,
-                    componentTypeId,
-                    RuntimeComponentProjectionChannel.Spawn);
-                if (!visible)
-                {
-                    if (hasBaseline)
-                    {
-                        result.Components.Add(new ComponentPatch(
-                            componentTypeId,
-                            baselineComponent.ComponentTypeKey,
-                            ComponentPatchKind.Remove));
-                    }
-
-                    continue;
-                }
-
-                if (!sourceById.TryGetValue(componentTypeId, out var source))
-                    continue;
-                if (hasBaseline
-                    && !string.Equals(source.ComponentTypeKey, baselineComponent.ComponentTypeKey, StringComparison.Ordinal))
-                {
-                    throw new InvalidOperationException(
-                        $"Runtime override component id {componentTypeId} has key '{source.ComponentTypeKey}', " +
-                        $"but the GameAsset baseline uses '{baselineComponent.ComponentTypeKey}'.");
-                }
-
-                result.Components.Add(Clone(source));
-            }
-
-            return result;
-        }
-
-        private static Dictionary<uint, RuntimeGameAssetBaselineComponent> BuildBaselineLookup(
-            IReadOnlyList<RuntimeGameAssetBaselineComponent> values)
-        {
-            var result = new Dictionary<uint, RuntimeGameAssetBaselineComponent>(values.Count);
-            var keys = new HashSet<string>(StringComparer.Ordinal);
-            for (var i = 0; i < values.Count; i++)
-            {
-                var value = values[i];
-                if (string.IsNullOrWhiteSpace(value.ComponentTypeKey))
-                    throw new InvalidOperationException($"GameAsset baseline component at index {i} is invalid.");
-                if (!result.TryAdd(value.ComponentTypeId, value))
-                    throw new InvalidOperationException($"GameAsset baseline contains duplicate component id {value.ComponentTypeId}.");
-                if (!keys.Add(value.ComponentTypeKey))
-                    throw new InvalidOperationException($"GameAsset baseline contains duplicate component key '{value.ComponentTypeKey}'.");
-            }
-
-            return result;
-        }
-
-        private static Dictionary<uint, ComponentPatch> BuildSourceLookup(RuntimeObjectPatch source)
-        {
-            var result = new Dictionary<uint, ComponentPatch>();
-            if (source?.Components == null)
-                return result;
-
-            var keys = new HashSet<string>(StringComparer.Ordinal);
-            for (var i = 0; i < source.Components.Count; i++)
-            {
-                var value = source.Components[i];
-                if (value == null)
-                    throw new InvalidOperationException($"Runtime override component at index {i} is null.");
-                if (string.IsNullOrWhiteSpace(value.ComponentTypeKey))
-                    throw new InvalidOperationException($"Runtime override component at index {i} is invalid.");
-                if (!result.TryAdd(value.ComponentTypeId, value))
-                    throw new InvalidOperationException($"Runtime overrides contain duplicate component id {value.ComponentTypeId}.");
-                if (!keys.Add(value.ComponentTypeKey))
-                    throw new InvalidOperationException($"Runtime overrides contain duplicate component key '{value.ComponentTypeKey}'.");
-            }
-
-            return result;
-        }
-
-        private static ComponentPatch Clone(ComponentPatch source)
-        {
-            var result = new ComponentPatch(
-                source.ComponentTypeId,
-                source.ComponentTypeKey,
-                source.Kind,
-                Clone(source.Payload));
-            if (source.Fields == null || source.Fields.Count == 0)
-                return result;
-
-            var fields = new List<FieldPatch>(source.Fields.Count);
-            for (var i = 0; i < source.Fields.Count; i++)
-            {
-                var field = source.Fields[i];
-                if (field == null)
-                    throw new InvalidOperationException($"Runtime override component {source.ComponentTypeId} contains a null field patch.");
-
-                fields.Add(new FieldPatch(field.FieldId, field.FieldKey, field.Kind, Clone(field.Payload)));
-            }
-
-            fields.Sort(CompareFields);
-            result.Fields = fields;
-            return result;
-        }
-
-        private static byte[] Clone(byte[] value)
-        {
-            return value == null ? null : (byte[])value.Clone();
-        }
-
-        private static int CompareFields(FieldPatch first, FieldPatch second)
-        {
-            var byId = first.FieldId.CompareTo(second.FieldId);
-            return byId != 0 ? byId : string.CompareOrdinal(first.FieldKey, second.FieldKey);
+                    componentTypeId));
         }
     }
 }

@@ -146,6 +146,15 @@ namespace DingoGameObjectsCMS.Mirror.V2
             return _policies.TryGetValue(componentTypeId, out policy);
         }
 
+        public bool TryGetDataClass(
+            uint componentTypeId,
+            out RuntimeReplicationDataClass dataClass)
+        {
+            return RuntimeReplicationDataClassification.TryClassifyState(
+                GetRequired(componentTypeId),
+                out dataClass);
+        }
+
         public void ValidateExactCoverage(
             RuntimeReplicationPolicy policy,
             IEnumerable<uint> coveredComponentTypeIds,

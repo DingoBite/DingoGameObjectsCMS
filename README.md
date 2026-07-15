@@ -336,30 +336,61 @@ During active development the manifest can be regenerated through `Tools/Runtime
 
 ## Network synchronization
 
-The networking layer is built on top of Mirror, but it synchronizes `RuntimeStore`.
+Mirror is the transport/framework; protocol v2 synchronizes authoritative
+`RuntimeStore` generations. A strict session manifest validates the build,
+runtime schema, and exact GA catalog before a replica store is created.
+Parent-first binary baselines and ordered reliable deltas are staged and
+published atomically. Delivery sequence, baseline id, store revision, ACK,
+bounded pending queues, and resync are independent protocol concepts.
 
-Server side:
+Replication data has three explicit classes:
 
-- subscribes to store dirty events
-- builds full snapshot or delta payloads
-- sends snapshots when the client becomes ready
-- waits for `Ack`
-- can trigger resync
+- `StructuralReliable`: object and GRC presence, hierarchy/order,
+  client-visible ownership, and construction;
+- `ReliableState`: durable semantic state such as health, inventory, carried
+  units, and match state;
+- `HotUnreliable`: transforms, velocity, aim, projectile/combat samples, and
+  animation.
 
-Client side:
+Hot state uses `RuntimeStateStreamProfile<TSample>`,
+`RuntimeStateStreamCollector<TSample>`, and
+`RuntimeStateStreamReceiver<TSample>`. Profiles own quantization and packed
+sample encoding. Frames carry a stream type id, tick, and per-stream sequence;
+they do not use `RuntimeObjectPatch` or ordinary semantic GRC diff.
 
-- receives sync messages
-- deserializes payloads
-- applies snapshot/delta through `RuntimeStoreSnapshotCodec.ApplySync`
-- acknowledges successful application
-- requests full resync after an application failure
+The client coordinator is the one wire ingress: it authorizes the store,
+resolves the profile, decodes the envelope, validates its header and canonical
+packed samples, and only then publishes the profile-validated frame to the
+typed receiver. Project adapters never decode raw wire payloads. A connection
+coalescer accepts the profile itself, including its
+`RuntimeStateStreamLifetime`; retained-state heartbeat is enabled only for
+`EphemeralStreamEntity`, never for `StructuralRuntimeObject`.
 
-Supported modes:
+Component presence changes are structural. A hot component uses payloadless
+`AddPresence`/`Remove`; ordinary `Add`, `Fields`, and `Custom` carry semantic
+state and are rejected for `UnreliableState`. Do not toggle component presence
+for frequent state such as attacks; keep a stable `CombatState`-shaped
+component with mode, target, cooldown, and sequence. ECS-only projectiles,
+particles, short hit areas, and temporary targets do not need a GRO unless they
+acquire a meaningful durable identity.
 
-- `FullSnapshot`
-- `DeltaTick`
+Complete-set reconciliation is an immutable segmented `Begin..End` cycle and
+is applied atomically only at `End`. It is capped at 10 segments / 500 ms at
+20 Hz. An interest revoke aborts the old outgoing cycle and restarts it from
+the current eligible set. A rejected single-frame reconciliation drops its
+provisional buffer and leaves its sequence uncommitted, so the exact frame can
+be retried without publishing partial data.
 
-The key idea is that gameplay networking sees the world as a serializable runtime structure instead of a pile of arbitrary MonoBehaviours.
+`RuntimeNetworkTelemetry` exposes payload bytes/second per wire stream, encode
+time and allocations across preparation, `Pack`/coalescing, canonical
+validation, and final wire encoding, dirty components per committed tick,
+current projected and last ACKed membership per connection, baseline sizes,
+and resync count.
+Protocol coordinators and the `RuntimeStoreNetServerV2` /
+`RuntimeStoreNetClientV2` endpoints expose snapshots without per-GRC adapters.
+Keep per-connection interest filtering and shadow state. If measurements prove
+duplicate encoding material, group identical interest memberships and encode a
+common payload once while retaining per-connection delivery and ACK state.
 
 ## Command bus
 

@@ -73,6 +73,7 @@ namespace DingoGameObjectsCMS.Mirror.V2
         public string BuildId;
         public string RuntimeSchemaHash;
         public string AssetCatalogHash;
+        public string StateStreamCatalogHash;
     }
 
     [Serializable, Preserve]
@@ -98,11 +99,12 @@ namespace DingoGameObjectsCMS.Mirror.V2
         BuildMismatch = 2,
         RuntimeSchemaMismatch = 3,
         AssetCatalogMismatch = 4,
-        InvalidManifest = 5,
-        SessionNotReady = 6,
-        InvalidStore = 7,
-        InvalidEnvelope = 8,
-        CommandRejected = 9,
+        StateStreamCatalogMismatch = 5,
+        InvalidManifest = 6,
+        SessionNotReady = 7,
+        InvalidStore = 8,
+        InvalidEnvelope = 9,
+        CommandRejected = 10,
     }
 
     public static class RuntimeSessionCompatibility
@@ -117,6 +119,8 @@ namespace DingoGameObjectsCMS.Mirror.V2
                 return RuntimeProtocolRejectCode.RuntimeSchemaMismatch;
             if (!EqualsRequired(expected.AssetCatalogHash, actual.AssetCatalogHash))
                 return RuntimeProtocolRejectCode.AssetCatalogMismatch;
+            if (!EqualsRequired(expected.StateStreamCatalogHash, actual.StateStreamCatalogHash))
+                return RuntimeProtocolRejectCode.StateStreamCatalogMismatch;
             return RuntimeProtocolRejectCode.None;
         }
 

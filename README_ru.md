@@ -341,30 +341,62 @@ Assets/StreamingAssets/runtime_component_types.json
 
 ## Сетевая синхронизация
 
-Сетевой слой построен поверх Mirror, но синхронизирует `RuntimeStore`.
+Mirror остаётся транспортом/фреймворком, а protocol v2 синхронизирует
+authoritative поколения `RuntimeStore`. Строгий session manifest проверяет
+build, runtime schema и точный GA catalog до создания replica store.
+Parent-first binary baseline и ordered reliable delta сначала полностью
+собираются в staging и только потом публикуются атомарно. Delivery sequence,
+baseline id, store revision, ACK, bounded pending queue и resync — независимые
+понятия протокола.
 
-Серверная часть:
+Реплицируемые данные явно делятся на три класса:
 
-- подписывается на dirty-события store-ов
-- собирает full snapshot или delta payload
-- отправляет snapshot при готовности клиента
-- ждёт `Ack`
-- умеет инициировать resync
+- `StructuralReliable`: наличие object и GRC, hierarchy/order,
+  client-visible ownership и construction;
+- `ReliableState`: долговечное semantic state — health, inventory, carried
+  units, match state;
+- `HotUnreliable`: transform, velocity, aim, projectile/combat samples и
+  animation.
 
-Клиентская часть:
+Hot state использует `RuntimeStateStreamProfile<TSample>`,
+`RuntimeStateStreamCollector<TSample>` и
+`RuntimeStateStreamReceiver<TSample>`. Profile владеет quantization и packed
+sample encoding. Frame несёт stream type id, tick и отдельный sequence потока;
+`RuntimeObjectPatch` и обычный semantic GRC diff здесь не используются.
 
-- принимает sync message
-- десериализует payload
-- применяет snapshot/delta через `RuntimeStoreSnapshotCodec.ApplySync`
-- подтверждает применение через `Ack`
-- при ошибке запрашивает полный resync
+Client coordinator является единственным wire ingress: он авторизует store,
+разрешает profile, декодирует envelope, проверяет header и canonical packed
+samples и только после этого публикует profile-validated frame в typed
+receiver. Project adapters не разбирают raw wire payload. Connection coalescer
+принимает сам profile вместе с его `RuntimeStateStreamLifetime`; retained-state
+heartbeat включается только для `EphemeralStreamEntity` и никогда для
+`StructuralRuntimeObject`.
 
-Поддерживаются:
+Изменение наличия component — structural operation. Для hot component
+используются payloadless `AddPresence`/`Remove`; обычные `Add`, `Fields` и
+`Custom` несут semantic state и запрещены для `UnreliableState`. Не
+переключайте наличие компонента для частого состояния вроде атаки: держите
+постоянный `CombatState`-подобный компонент с mode, target, cooldown и sequence.
+ECS-only projectile, particle, короткий hit area и временная цель не требуют
+GRO, пока у них нет содержательной долговечной идентичности.
 
-- `FullSnapshot`
-- `DeltaTick`
+Complete-set reconciliation является immutable segmented `Begin..End` cycle и
+применяется атомарно только на `End`. Cycle ограничен 10 сегментами / 500 ms при
+20 Hz. Interest revoke прерывает старый outgoing cycle и начинает новый по
+текущему eligible set. Отклонённый single-frame reconciliation удаляет
+provisional buffer и оставляет sequence uncommitted, поэтому exact frame можно
+повторить без публикации partial data.
 
-Идея в том, что gameplay-сеть смотрит на runtime world как на сериализуемую структуру, а не как на набор произвольных MonoBehaviour.
+`RuntimeNetworkTelemetry` показывает payload bytes/second по wire stream,
+encode time и allocations для preparation, `Pack`/coalescing, canonical
+validation и финального wire encoding, dirty components на committed tick,
+current projected и last ACKed membership по connection, размеры baseline и
+число resync. Coordinators и `RuntimeStoreNetServerV2` /
+`RuntimeStoreNetClientV2` дают snapshot напрямую, без per-GRC adapters.
+Per-connection interest filtering и shadow state сохраняются. Если
+метрики подтвердят существенное повторное кодирование, соединения с одинаковым
+interest membership можно группировать и кодировать общий payload один раз,
+сохранив отдельные delivery/ACK state каждого connection.
 
 ## Командная шина
 

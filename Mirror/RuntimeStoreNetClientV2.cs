@@ -20,10 +20,10 @@ namespace DingoGameObjectsCMS.Mirror
             remove => _coordinator.CommandResultReceived -= value;
         }
 
-        public event Action<RtMotionStateData> MotionStateReceived
+        public event Action<RuntimeStateStreamFrame> StateStreamFrameReceived
         {
-            add => _coordinator.MotionStateReceived += value;
-            remove => _coordinator.MotionStateReceived -= value;
+            add => _coordinator.StateStreamFrameReceived += value;
+            remove => _coordinator.StateStreamFrameReceived -= value;
         }
 
         public event Action<bool> ReplicaReadyChanged
@@ -33,6 +33,7 @@ namespace DingoGameObjectsCMS.Mirror
         }
 
         public bool IsReplicaReady => _coordinator.IsReplicaReady;
+        public RuntimeNetworkTelemetry Telemetry => _coordinator.Telemetry;
 
         public RuntimeStoreNetClientV2(RuntimeProtocolV2Context context, ulong clientNonce)
         {
@@ -54,7 +55,7 @@ namespace DingoGameObjectsCMS.Mirror
             NetworkClient.RegisterHandler<RtBaselineChunk>(OnBaselineChunk);
             NetworkClient.RegisterHandler<RtStoreDelta>(OnDelta);
             NetworkClient.RegisterHandler<RtCommandResult>(OnCommandResult);
-            NetworkClient.RegisterHandler<RtMotionState>(OnMotion);
+            NetworkClient.RegisterHandler<RtStateStreamFrame>(OnStateStream);
         }
 
         public void BeginHandshake()
@@ -66,6 +67,18 @@ namespace DingoGameObjectsCMS.Mirror
             CoroutineParent.AddLateUpdater(this, Tick, TIMEOUT_TICK_ORDER);
         }
 
+        public RuntimeNetworkTelemetrySnapshot CaptureTelemetry(bool resetWindow = false)
+        {
+            return _coordinator.CaptureTelemetry(resetWindow);
+        }
+
+        public RuntimeNetworkTelemetrySnapshot CaptureTelemetry(
+            double windowSeconds,
+            bool resetWindow = false)
+        {
+            return _coordinator.CaptureTelemetry(windowSeconds, resetWindow);
+        }
+
         public void Dispose()
         {
             NetworkClient.UnregisterHandler<RtSessionManifest>();
@@ -73,7 +86,7 @@ namespace DingoGameObjectsCMS.Mirror
             NetworkClient.UnregisterHandler<RtBaselineChunk>();
             NetworkClient.UnregisterHandler<RtStoreDelta>();
             NetworkClient.UnregisterHandler<RtCommandResult>();
-            NetworkClient.UnregisterHandler<RtMotionState>();
+            NetworkClient.UnregisterHandler<RtStateStreamFrame>();
             if (_tickScheduled)
             {
                 _tickScheduled = false;
@@ -119,11 +132,13 @@ namespace DingoGameObjectsCMS.Mirror
                 message.RejectCode));
         }
 
-        private void OnMotion(RtMotionState message)
+        private void OnStateStream(RtStateStreamFrame message)
         {
-            _coordinator.ReceiveMotion(new RtMotionStateData(
+            _coordinator.ReceiveStateStream(new RtStateStreamFrameData(
                 message.SessionId,
                 message.Store,
+                message.StreamTypeId,
+                message.Sequence,
                 message.SimulationTick,
                 message.Payload));
         }

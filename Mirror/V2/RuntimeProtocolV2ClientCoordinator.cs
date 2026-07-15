@@ -42,6 +42,8 @@ namespace DingoGameObjectsCMS.Mirror.V2
         private readonly RuntimeReplicaBaselineStager _stager;
         private readonly RuntimeReplicaBaselineApplier _baselineApplier = new();
         private readonly RuntimeReplicaDeltaTransaction _deltaTransaction;
+        private readonly RuntimeStateStreamFrameCodec _stateStreamCodec = new();
+        private readonly RuntimeNetworkTelemetry _telemetry;
         private readonly Dictionary<NetStoreRef, InitialStoreState> _initialStores = new();
         private readonly Dictionary<NetStoreRef, RuntimeClientLogicalEnvelopeReceiver> _receivers = new();
         private ulong _nextCommandSequence;
@@ -50,25 +52,29 @@ namespace DingoGameObjectsCMS.Mirror.V2
         private bool _disposed;
 
         public event Action<RuntimeCommandResult> CommandResultReceived;
-        public event Action<RtMotionStateData> MotionStateReceived;
+        public event Action<RuntimeStateStreamFrame> StateStreamFrameReceived;
         public event Action<bool> ReplicaReadyChanged;
 
         public bool IsReplicaReady => _initialPublicationComplete;
         public ulong SessionId => _handshake.Manifest?.SessionId ?? 0;
+        public RuntimeNetworkTelemetry Telemetry => _telemetry;
 
         public RuntimeProtocolV2ClientCoordinator(
             RuntimeProtocolV2Context context,
             RuntimeProtocolV2ClientOutput output,
-            ulong clientNonce)
+            ulong clientNonce,
+            RuntimeNetworkTelemetry telemetry = null)
         {
             _context = context ?? throw new ArgumentNullException(nameof(context));
             _output = output ?? throw new ArgumentNullException(nameof(output));
+            _telemetry = telemetry ?? new RuntimeNetworkTelemetry();
             _handshake = new RuntimeSessionClientHandshake(clientNonce, context.ClientExpectation);
             _stagingRealms = new RuntimeReplicaStagingRealms();
             _spawnFactory = new RuntimeReplicaBaselineSpawnFactory(
                 context.AssetCatalog,
                 context.AssetLock,
-                context.TemplateCache);
+                context.TemplateCache,
+                context.ReplicationPolicies);
             var baselineCodec = new RuntimeStoreBaselineCodec(context.PatchCodecs);
             _stager = new RuntimeReplicaBaselineStager(
                 context.World,
@@ -82,6 +88,18 @@ namespace DingoGameObjectsCMS.Mirror.V2
                 _stagingRealms);
             if (context.CommandsBus != null)
                 context.CommandsBus.SetOutboundDispatcher(DispatchOutboundCommand);
+        }
+
+        public RuntimeNetworkTelemetrySnapshot CaptureTelemetry(bool resetWindow = false)
+        {
+            return _telemetry.Capture(resetWindow);
+        }
+
+        public RuntimeNetworkTelemetrySnapshot CaptureTelemetry(
+            double windowSeconds,
+            bool resetWindow = false)
+        {
+            return _telemetry.Capture(windowSeconds, resetWindow);
         }
 
         public void BeginHandshake()
@@ -128,6 +146,9 @@ namespace DingoGameObjectsCMS.Mirror.V2
             var authorization = _handshake.AuthorizeStoreAccess(chunk.SessionId, chunk.Store);
             if (!authorization.Accepted)
                 return Rejected(authorization.RejectCode);
+            _telemetry.RecordReceived(
+                RuntimeNetworkStreamKey.Baseline,
+                chunk.Payload?.Length ?? 0);
 
             if (_initialPublicationComplete)
             {
@@ -162,6 +183,7 @@ namespace DingoGameObjectsCMS.Mirror.V2
                 case RuntimeBaselineChunkResult.DuplicateCompleted:
                     return Accepted(RuntimeClientReceiveResultKind.Duplicate);
                 case RuntimeBaselineChunkResult.Completed:
+                    _telemetry.RecordBaselineSize(payload.Length);
                     initial.Envelope = new RuntimeClientBaselineEnvelope(
                         chunk.SessionId,
                         chunk.Store,
@@ -194,6 +216,9 @@ namespace DingoGameObjectsCMS.Mirror.V2
             var authorization = _handshake.AuthorizeStoreAccess(delta.SessionId, delta.Store);
             if (!authorization.Accepted)
                 return Rejected(authorization.RejectCode);
+            _telemetry.RecordReceived(
+                RuntimeNetworkStreamKey.ReliableStore,
+                delta.PayloadBytes);
 
             if (!_initialPublicationComplete)
             {
@@ -232,7 +257,7 @@ namespace DingoGameObjectsCMS.Mirror.V2
             return result;
         }
 
-        public RuntimeSessionHandshakeResult ReceiveMotion(in RtMotionStateData value)
+        public RuntimeSessionHandshakeResult ReceiveStateStream(in RtStateStreamFrameData value)
         {
             ThrowIfDisposed();
             var authorization = _handshake.AuthorizeStoreAccess(value.SessionId, value.Store);
@@ -240,9 +265,38 @@ namespace DingoGameObjectsCMS.Mirror.V2
                 return authorization;
             if (!_initialPublicationComplete)
                 return RuntimeSessionHandshakeResult.Reject(RuntimeProtocolRejectCode.SessionNotReady, "Replica baseline group is not published.");
-            if (value.Payload == null || value.Payload.Length == 0 || value.Payload.Length > RuntimeMotionProtocol.MAX_PAYLOAD_BYTES)
-                return RuntimeSessionHandshakeResult.Reject(RuntimeProtocolRejectCode.InvalidEnvelope, "Motion payload size is invalid.");
-            MotionStateReceived?.Invoke(value);
+            if (value.Payload == null || value.Payload.Length == 0 || value.Payload.Length > RuntimeStateStreamProtocol.MAX_PAYLOAD_BYTES)
+                return RuntimeSessionHandshakeResult.Reject(RuntimeProtocolRejectCode.InvalidEnvelope, "State stream payload size is invalid.");
+            if (!_context.StateStreamProfiles.TryGet(value.StreamTypeId, out var profile))
+                return RuntimeSessionHandshakeResult.Reject(RuntimeProtocolRejectCode.InvalidEnvelope, $"State stream type id {value.StreamTypeId} is not registered.");
+
+            RuntimeStateStreamFrame frame;
+            try
+            {
+                frame = _stateStreamCodec.Decode(value.Payload);
+                if (frame.Store != value.Store
+                    || frame.StreamTypeId != value.StreamTypeId
+                    || frame.Sequence != value.Sequence
+                    || frame.SimulationTick != value.SimulationTick)
+                {
+                    throw new FormatException("State stream envelope header does not match its packed payload.");
+                }
+                for (var i = 0; i < frame.Samples.Count; i++)
+                    profile.ValidatePackedSample(frame.Samples[i]);
+            }
+            catch (Exception exception) when (exception is FormatException
+                                              || exception is ArgumentException
+                                              || exception is InvalidOperationException
+                                              || exception is OverflowException)
+            {
+                return RuntimeSessionHandshakeResult.Reject(
+                    RuntimeProtocolRejectCode.InvalidEnvelope,
+                    exception.Message);
+            }
+            _telemetry.RecordReceived(
+                RuntimeNetworkStreamKey.HotState(value.StreamTypeId),
+                value.Payload.Length);
+            StateStreamFrameReceived?.Invoke(frame);
             return RuntimeSessionHandshakeResult.Success();
         }
 
@@ -414,7 +468,7 @@ namespace DingoGameObjectsCMS.Mirror.V2
                     if (initial.ApplyToStaging || !_initialPublicationComplete)
                         return;
 
-                    _output.Resync(new RtStoreResyncData(
+                    SendResync(new RtStoreResyncData(
                         request.SessionId,
                         request.Store,
                         request.BaselineId,
@@ -537,7 +591,7 @@ namespace DingoGameObjectsCMS.Mirror.V2
                 return;
             initial.ResyncRequested = true;
             var envelope = initial.Envelope;
-            _output.Resync(new RtStoreResyncData(
+            SendResync(new RtStoreResyncData(
                 _handshake.Manifest.SessionId,
                 initial.Store,
                 forceNewBaseline ? 0 : envelope.BaselineId,
@@ -550,6 +604,12 @@ namespace DingoGameObjectsCMS.Mirror.V2
             initial.ApplyToStaging = false;
             initial.PendingDeltas.Clear();
             initial.PendingDeltaBytes = 0;
+        }
+
+        private void SendResync(in RtStoreResyncData value)
+        {
+            _telemetry.RecordResync();
+            _output.Resync(value);
         }
 
         private static void ValidatePreparedStage(
@@ -626,17 +686,27 @@ namespace DingoGameObjectsCMS.Mirror.V2
         }
     }
 
-    public readonly struct RtMotionStateData
+    public readonly struct RtStateStreamFrameData
     {
         public readonly ulong SessionId;
         public readonly NetStoreRef Store;
+        public readonly uint StreamTypeId;
+        public readonly uint Sequence;
         public readonly uint SimulationTick;
         public readonly byte[] Payload;
 
-        public RtMotionStateData(ulong sessionId, NetStoreRef store, uint simulationTick, byte[] payload)
+        public RtStateStreamFrameData(
+            ulong sessionId,
+            NetStoreRef store,
+            uint streamTypeId,
+            uint sequence,
+            uint simulationTick,
+            byte[] payload)
         {
             SessionId = sessionId;
             Store = store;
+            StreamTypeId = streamTypeId;
+            Sequence = sequence;
             SimulationTick = simulationTick;
             Payload = payload;
         }

@@ -56,27 +56,15 @@ namespace DingoGameObjectsCMS.Mirror.V2
             if (replicationPolicies == null || !replicationPolicies.IsSealed)
                 throw new InvalidOperationException("A sealed replication policy registry is required to project network overrides.");
 
-            var sourceOverrides = templateCache.BuildOverrides(runtimeObject, assetLock, networkPatchContext);
-            var blueprint = templateCache.ResolveStrict(
-                new GameAssetReference(runtimeObject.Origin.Asset.ExactKey),
-                assetLock);
-            var baseline = new RuntimeGameAssetBaselineComponent[blueprint.ComponentTypeIds.Count];
-            for (var i = 0; i < baseline.Length; i++)
-            {
-                var componentTypeId = blueprint.ComponentTypeIds[i];
-                baseline[i] = new RuntimeGameAssetBaselineComponent(
-                    componentTypeId,
-                    templateCache.CodecRegistry.Get(componentTypeId).ComponentTypeKey);
-            }
-
             return RuntimeSpawnPatchProjector.Project(
-                templateCache.CodecRegistry.SchemaHash,
-                replicationPolicies,
-                baseline,
-                sourceOverrides);
+                runtimeObject,
+                templateCache,
+                assetLock,
+                networkPatchContext,
+                replicationPolicies);
         }
 
-        public static RuntimeStoreBaselinePayload Build(
+        private static RuntimeStoreBaselinePayload Build(
             RuntimeStore store,
             RuntimeSessionAssetCatalog assetCatalog,
             ulong baselineId,

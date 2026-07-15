@@ -9,10 +9,12 @@ using DingoGameObjectsCMS.Stores;
 namespace DingoGameObjectsCMS.Mirror.V2
 {
     /// <summary>
-    /// Validates a reliable delta completely on detached component/object
-    /// clones, then commits it to the existing active RuntimeStore in one
-    /// replication-suppressed dirty batch. A commit exception retires and hides
-    /// the failed generation before the receiver requests one rebaseline.
+    /// Validates spawns and patched semantic values on detached instances, then
+    /// commits them to the active RuntimeStore in one replication-suppressed
+    /// dirty batch. Untouched component references (including hot state) may be
+    /// shallow-preserved in the validation plan but are never committed. A
+    /// commit exception retires and hides the failed generation before the
+    /// receiver requests one rebaseline.
     /// </summary>
     public class RuntimeReplicaDeltaTransaction
     {
@@ -20,6 +22,8 @@ namespace DingoGameObjectsCMS.Mirror.V2
         private readonly RuntimeStoreDeltaCodec _deltaCodec;
         private readonly RuntimeReplicaBaselineSpawnFactory _spawnFactory;
         private readonly RuntimeReplicaStagingRealms _stagingRealms;
+        private readonly RuntimeInboundNetworkPatchPolicyValidator _inboundPatchValidator;
+        private readonly Func<uint, RuntimeComponentPatchProjectionMode> _selectPatchMode;
 
         public Exception LastFailure { get; private set; }
 
@@ -33,6 +37,8 @@ namespace DingoGameObjectsCMS.Mirror.V2
             _spawnFactory = spawnFactory ?? throw new ArgumentNullException(nameof(spawnFactory));
             _stagingRealms = stagingRealms ?? throw new ArgumentNullException(nameof(stagingRealms));
             _deltaCodec = new RuntimeStoreDeltaCodec(context.PatchCodecs);
+            _inboundPatchValidator = new RuntimeInboundNetworkPatchPolicyValidator(context.ReplicationPolicies);
+            _selectPatchMode = SelectPatchMode;
         }
 
         public bool TryApply(in RuntimeClientDeltaEnvelope envelope)
@@ -141,14 +147,19 @@ namespace DingoGameObjectsCMS.Mirror.V2
                             throw new InvalidOperationException($"Replica delta spawn {operation.ObjectId} references missing parent {operation.ParentObjectId}.");
                         }
                         var resolved = _spawnFactory.ResolveRequiredAsset(operation.AssetNetId);
+                        _spawnFactory.ValidateInboundSpawn(
+                            operation.ObjectId,
+                            operation.Patch,
+                            resolved);
                         var instance = new GameAssetInstance(
                             operation.InstanceGuid,
                             new GameAssetReference(resolved.ExactKey),
                             operation.Patch);
-                        var runtimeObject = _context.TemplateCache.Materialize(
+                        var runtimeObject = _context.TemplateCache.MaterializeProjected(
                             instance,
                             _context.AssetLock,
-                            patchContext);
+                            patchContext,
+                            _selectPatchMode);
                         runtimeObject.InstanceId = operation.ObjectId;
                         if (runtimeObject.Origin.Asset.AssetGuid != resolved.AssetGuid
                             || !string.Equals(runtimeObject.Origin.Asset.MaterializedContentHash, resolved.MaterializedContentHash, StringComparison.Ordinal))
@@ -179,11 +190,15 @@ namespace DingoGameObjectsCMS.Mirror.V2
                     case RuntimeStoreDeltaOperationKind.Patch:
                         if (!store.TryTakeRO(operation.ObjectId, out var existing))
                             throw new InvalidOperationException($"Replica delta patches missing object {operation.ObjectId}.");
+                        _inboundPatchValidator.ValidateDelta(operation.Patch);
                         var current = SnapshotComponents(existing);
                         plan.ComponentTargets.Add(
                             operation.ObjectId,
                             new ValidatedComponentTarget(
-                                patchEngine.ApplyPatch(current, operation.Patch),
+                                patchEngine.ApplyProjectedPatch(
+                                    current,
+                                    operation.Patch,
+                                    _selectPatchMode),
                                 CollectPatchedComponentIds(operation.Patch)));
                         break;
 
@@ -192,6 +207,13 @@ namespace DingoGameObjectsCMS.Mirror.V2
                 }
             }
             return plan;
+        }
+
+        private RuntimeComponentPatchProjectionMode SelectPatchMode(uint componentTypeId)
+        {
+            return RuntimeComponentVisibilityProjection.GetPatchProjectionMode(
+                _context.ReplicationPolicies,
+                componentTypeId);
         }
 
         private void Commit(

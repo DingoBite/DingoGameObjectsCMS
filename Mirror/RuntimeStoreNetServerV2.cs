@@ -11,10 +11,11 @@ namespace DingoGameObjectsCMS.Mirror
     public class RuntimeStoreNetServerV2 : IDisposable
     {
         private readonly RuntimeProtocolV2ServerCoordinator _coordinator;
-        private double _lastMotionTickTime;
+        private double _lastStateStreamTickTime;
 
-        public event Action<double> MotionSendTick;
+        public event Action<double> StateStreamSendTick;
         public bool IsSessionInvalidated => _coordinator.IsSessionInvalidated;
+        public RuntimeNetworkTelemetry Telemetry => _coordinator.Telemetry;
 
         public event Action<int, ulong> ConnectionReady
         {
@@ -47,8 +48,7 @@ namespace DingoGameObjectsCMS.Mirror
                     SendDelta,
                     SendCommandResult,
                     RuntimeReliableDeltaTransportBudget.Fits,
-                    SendMotionMessage));
-            _coordinator.ConnectionReady += CaptureReadySession;
+                    SendStateStreamMessage));
             _coordinator.ConnectionInvalidated += DisconnectInvalidatedConnection;
 
             NetworkServer.RegisterHandler<RtSessionHello>(OnHello, requireAuthentication: true);
@@ -56,8 +56,8 @@ namespace DingoGameObjectsCMS.Mirror
             NetworkServer.RegisterHandler<RtStoreAck>(OnAck, requireAuthentication: true);
             NetworkServer.RegisterHandler<RtStoreResyncRequest>(OnResync, requireAuthentication: true);
             NetworkServer.RegisterHandler<RtCommandEnvelope>(OnCommand, requireAuthentication: true);
-            _lastMotionTickTime = NetworkTime.localTime;
-            CoroutineParent.AddLateUpdater(this, TickMotion, RuntimeStore.UPDATE_ORDER + 3);
+            _lastStateStreamTickTime = NetworkTime.localTime;
+            CoroutineParent.AddLateUpdater(this, TickStateStreams, RuntimeStore.UPDATE_ORDER + 3);
         }
 
         public void OnConnectionConnected(int connectionId)
@@ -68,20 +68,25 @@ namespace DingoGameObjectsCMS.Mirror
         public void OnConnectionDisconnected(int connectionId)
         {
             _coordinator.RemoveConnection(connectionId);
-            _sessionByConnection.Remove(connectionId);
         }
 
-        public RuntimeSessionHandshakeResult SendMotion(int connectionId, RuntimeMotionFrame frame)
+        public RuntimeSessionHandshakeResult SendStateStream(int connectionId, RuntimeStateStreamFrame frame)
         {
             if (frame == null)
                 throw new ArgumentNullException(nameof(frame));
-            var sessionId = TakeSessionId(connectionId);
-            var payload = new RuntimeMotionFrameCodec().Encode(frame);
-            return _coordinator.SendMotion(connectionId, new RtMotionStateData(
-                sessionId,
-                frame.Store,
-                frame.SimulationTick,
-                payload));
+            return _coordinator.SendStateStream(connectionId, frame);
+        }
+
+        public RuntimeNetworkTelemetrySnapshot CaptureTelemetry(bool resetWindow = false)
+        {
+            return _coordinator.CaptureTelemetry(resetWindow);
+        }
+
+        public RuntimeNetworkTelemetrySnapshot CaptureTelemetry(
+            double windowSeconds,
+            bool resetWindow = false)
+        {
+            return _coordinator.CaptureTelemetry(windowSeconds, resetWindow);
         }
 
         public void RequestBaseline(int connectionId, in NetStoreRef store)
@@ -127,21 +132,19 @@ namespace DingoGameObjectsCMS.Mirror
             NetworkServer.UnregisterHandler<RtStoreResyncRequest>();
             NetworkServer.UnregisterHandler<RtCommandEnvelope>();
             CoroutineParent.RemoveLateUpdater(this);
-            _coordinator.ConnectionReady -= CaptureReadySession;
             _coordinator.ConnectionInvalidated -= DisconnectInvalidatedConnection;
-            _sessionByConnection.Clear();
             _coordinator.Dispose();
         }
 
-        private void TickMotion()
+        private void TickStateStreams()
         {
             if (_coordinator.IsSessionInvalidated)
                 return;
             var now = NetworkTime.localTime;
-            if (now - _lastMotionTickTime < RuntimeMotionProtocol.SEND_INTERVAL_SECONDS)
+            if (now - _lastStateStreamTickTime < RuntimeStateStreamProtocol.SEND_INTERVAL_SECONDS)
                 return;
-            _lastMotionTickTime = now;
-            MotionSendTick?.Invoke(now);
+            _lastStateStreamTickTime = now;
+            StateStreamSendTick?.Invoke(now);
         }
 
         private void OnHello(NetworkConnectionToClient connection, RtSessionHello message)
@@ -234,12 +237,14 @@ namespace DingoGameObjectsCMS.Mirror
             }, Channels.Reliable);
         }
 
-        private static void SendMotionMessage(int connectionId, RtMotionStateData value)
+        private static void SendStateStreamMessage(int connectionId, RtStateStreamFrameData value)
         {
-            RequireConnection(connectionId).Send(new RtMotionState
+            RequireConnection(connectionId).Send(new RtStateStreamFrame
             {
                 SessionId = value.SessionId,
                 Store = value.Store,
+                StreamTypeId = value.StreamTypeId,
+                Sequence = value.Sequence,
                 SimulationTick = value.SimulationTick,
                 Payload = value.Payload,
             }, Channels.Unreliable);
@@ -250,23 +255,6 @@ namespace DingoGameObjectsCMS.Mirror
             if (NetworkServer.connections.TryGetValue(connectionId, out var connection) && connection != null)
                 return connection;
             throw new InvalidOperationException($"Mirror connection {connectionId} is not active.");
-        }
-
-        private ulong TakeSessionId(int connectionId)
-        {
-            // The coordinator validates the session on SendMotion. The id is
-            // captured through the same ready callback used by game-side
-            // ownership setup.
-            if (!_sessionByConnection.TryGetValue(connectionId, out var sessionId))
-                throw new InvalidOperationException($"Connection {connectionId} has not completed protocol-v2 readiness.");
-            return sessionId;
-        }
-
-        private readonly System.Collections.Generic.Dictionary<int, ulong> _sessionByConnection = new();
-
-        private void CaptureReadySession(int connectionId, ulong sessionId)
-        {
-            _sessionByConnection[connectionId] = sessionId;
         }
 
         private static void DisconnectInvalidatedConnection(int connectionId)

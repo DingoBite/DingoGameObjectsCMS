@@ -31,11 +31,11 @@ namespace DingoGameObjectsCMS.Mirror.V2
             RequireFinite(localSimulationTimeSeconds, nameof(localSimulationTimeSeconds));
             if (components == null)
                 throw new ArgumentNullException(nameof(components));
-            if (components.Count == 0 || components.Count > RuntimeMotionProtocol.MAX_COMPONENTS_PER_SAMPLE)
+            if (components.Count == 0 || components.Count > RuntimeStateStreamProtocol.MAX_COMPONENTS_PER_SAMPLE)
             {
                 throw new ArgumentOutOfRangeException(
                     nameof(components),
-                    $"Prepared motion component count {components.Count} is outside 1..{RuntimeMotionProtocol.MAX_COMPONENTS_PER_SAMPLE}.");
+                    $"Prepared motion component count {components.Count} is outside 1..{RuntimeStateStreamProtocol.MAX_COMPONENTS_PER_SAMPLE}.");
             }
 
             var copy = new RuntimeReplicaMotionPreparedComponent[components.Count];
@@ -208,7 +208,7 @@ namespace DingoGameObjectsCMS.Mirror.V2
             }
 
             var last = _samples[_samples.Count - 1];
-            if (!RuntimeSimulationTickSequence.IsNewer(simulationTick, last.SimulationTick))
+            if (!RuntimeStateStreamSequence.IsNewer(simulationTick, last.SimulationTick))
             {
                 throw new InvalidOperationException(
                     $"Motion component tick {simulationTick} is not newer than {last.SimulationTick}.");
@@ -327,14 +327,14 @@ namespace DingoGameObjectsCMS.Mirror.V2
             }
             if (prepared.Components == null
                 || prepared.Components.Count == 0
-                || prepared.Components.Count > RuntimeMotionProtocol.MAX_COMPONENTS_PER_SAMPLE)
+                || prepared.Components.Count > RuntimeStateStreamProtocol.MAX_COMPONENTS_PER_SAMPLE)
             {
                 throw new InvalidOperationException(
-                    $"Prepared motion component count is outside 1..{RuntimeMotionProtocol.MAX_COMPONENTS_PER_SAMPLE}.");
+                    $"Prepared motion component count is outside 1..{RuntimeStateStreamProtocol.MAX_COMPONENTS_PER_SAMPLE}.");
             }
             if (HasAcceptedSimulationTick != 0)
             {
-                if (!RuntimeSimulationTickSequence.IsNewer(prepared.SimulationTick, LastAcceptedSimulationTick))
+                if (!RuntimeStateStreamSequence.IsNewer(prepared.SimulationTick, LastAcceptedSimulationTick))
                 {
                     throw new InvalidOperationException(
                         $"Motion tick {prepared.SimulationTick} is not newer than {LastAcceptedSimulationTick}.");

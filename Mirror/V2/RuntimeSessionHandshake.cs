@@ -300,7 +300,8 @@ namespace DingoGameObjectsCMS.Mirror.V2
             return descriptor.ProtocolVersion != 0
                    && !string.IsNullOrWhiteSpace(descriptor.BuildId)
                    && !string.IsNullOrWhiteSpace(descriptor.RuntimeSchemaHash)
-                   && !string.IsNullOrWhiteSpace(descriptor.AssetCatalogHash);
+                   && !string.IsNullOrWhiteSpace(descriptor.AssetCatalogHash)
+                   && !string.IsNullOrWhiteSpace(descriptor.StateStreamCatalogHash);
         }
 
         private static void ValidateUniqueAssetIdentity(IEnumerable<RuntimeAssetCatalogEntry> assets)
@@ -354,7 +355,8 @@ namespace DingoGameObjectsCMS.Mirror.V2
                 throw new InvalidOperationException($"Client protocol version must be {RuntimeProtocolV2.VERSION}.");
             if (string.IsNullOrWhiteSpace(descriptor.BuildId)
                 || string.IsNullOrWhiteSpace(descriptor.RuntimeSchemaHash)
-                || string.IsNullOrWhiteSpace(descriptor.AssetCatalogHash))
+                || string.IsNullOrWhiteSpace(descriptor.AssetCatalogHash)
+                || string.IsNullOrWhiteSpace(descriptor.StateStreamCatalogHash))
             {
                 throw new InvalidOperationException("Client protocol-v2 descriptor is incomplete.");
             }
