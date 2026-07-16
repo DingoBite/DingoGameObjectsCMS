@@ -1,3 +1,4 @@
+#if MIRROR
 using System;
 using System.Collections.Generic;
 using DingoGameObjectsCMS;
@@ -160,3 +161,4 @@ namespace DingoGameObjectsCMS.Mirror.V2
         }
     }
 }
+#endif
