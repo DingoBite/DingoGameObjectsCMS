@@ -47,13 +47,14 @@ namespace DingoGameObjectsCMS.AssetLibrary
         private readonly List<ModPackage> _immutablePackages = new();
 
         private bool _runtimeCacheBuilt;
+        private string _sessionBasePackageRootOverride;
 
         public bool ExternalOverridesBuiltIn => true;
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
         private static void ResetOnSubsystemRegistration()
         {
-            ClearRuntimeCaches();
+            Instance.ResetSessionConfiguration();
         }
 
         public static GameAssetLibraryManifest GetNoCheck()
@@ -75,6 +76,28 @@ namespace DingoGameObjectsCMS.AssetLibrary
         {
             Instance.EnsureRuntimeCacheSync();
         }
+
+        public static void ConfigureSessionBasePackage(string modRootAbs)
+        {
+            if (string.IsNullOrWhiteSpace(modRootAbs))
+            {
+                throw new ArgumentException("A session base package root is required.", nameof(modRootAbs));
+            }
+
+            Instance.SetSessionBasePackageRoot(Path.GetFullPath(modRootAbs));
+        }
+
+        public static void UseBuiltInSessionBasePackage()
+        {
+            Instance.SetSessionBasePackageRoot(null);
+        }
+
+        public static string GetSessionBasePackageRoot()
+        {
+            return Instance.TakeSessionBasePackageRoot();
+        }
+
+        public static bool HasConfiguredSessionBasePackage => Instance.HasSessionBasePackageRoot();
 
         public static void ClearRuntimeCaches(bool clearExternalPackages = true, bool unloadUnusedAssets = false)
         {
@@ -317,18 +340,76 @@ namespace DingoGameObjectsCMS.AssetLibrary
             }
         }
 
-        private static List<MountInfo> BuildModRootSnapshot()
+        private void ResetSessionConfiguration()
+        {
+            lock (_cacheLock)
+            {
+                _sessionBasePackageRootOverride = null;
+            }
+            ClearRuntimeCache();
+        }
+
+        private void SetSessionBasePackageRoot(string modRootAbs)
+        {
+            lock (_cacheLock)
+            {
+                if (string.Equals(_sessionBasePackageRootOverride, modRootAbs, StringComparison.OrdinalIgnoreCase))
+                {
+                    return;
+                }
+                _sessionBasePackageRootOverride = modRootAbs;
+            }
+            ClearRuntimeCache();
+        }
+
+        private string TakeSessionBasePackageRoot()
+        {
+            lock (_cacheLock)
+            {
+                if (!string.IsNullOrWhiteSpace(_sessionBasePackageRootOverride))
+                {
+                    return _sessionBasePackageRootOverride;
+                }
+            }
+
+            return Path.GetFullPath(Path.Combine(
+                Application.streamingAssetsPath,
+                GameAssetModPathPolicy.DEFAULT_ASSETS_ROOT_SUB_PATH,
+                BASE_MOD));
+        }
+
+        private bool HasSessionBasePackageRoot()
+        {
+            lock (_cacheLock)
+            {
+                return !string.IsNullOrWhiteSpace(_sessionBasePackageRootOverride);
+            }
+        }
+
+        private List<MountInfo> BuildModRootSnapshot()
         {
             var result = new List<MountInfo>();
             var order = 0;
+            string sessionBasePackageRootOverride;
+            lock (_cacheLock)
+            {
+                sessionBasePackageRootOverride = _sessionBasePackageRootOverride;
+            }
 
-            // The built-in package is an immutable part of the player. Runtime
-            // code never falls back to live Unity assets or an inline GRO.
+            // Exactly one base package is the immutable baseline of a session.
+            // Projects may explicitly select an installed package before the
+            // first resolve; runtime never falls back to live Unity assets.
             var builtInAssetsRoot = Path.Combine(
                 Application.streamingAssetsPath,
                 GameAssetModPathPolicy.DEFAULT_ASSETS_ROOT_SUB_PATH);
             var builtInBaseRoot = Path.Combine(builtInAssetsRoot, BASE_MOD);
-            result.Add(new MountInfo(builtInBaseRoot, BASE_MOD, priority: 0, order: order++, isBuiltIn: true));
+            var usesExternalSessionBase = !string.IsNullOrWhiteSpace(sessionBasePackageRootOverride);
+            result.Add(new MountInfo(
+                builtInBaseRoot,
+                BASE_MOD,
+                priority: 0,
+                order: order++,
+                isSessionBaseline: !usesExternalSessionBase));
 
             if (Directory.Exists(builtInAssetsRoot))
             {
@@ -340,17 +421,27 @@ namespace DingoGameObjectsCMS.AssetLibrary
                     var mod = Path.GetFileName(builtInDirectories[i]);
                     if (string.Equals(mod, BASE_MOD, StringComparison.OrdinalIgnoreCase))
                         continue;
-                    result.Add(new MountInfo(builtInDirectories[i], mod, priority: 0, order: order++, isBuiltIn: true));
+                    result.Add(new MountInfo(
+                        builtInDirectories[i],
+                        mod,
+                        priority: 0,
+                        order: order++,
+                        isSessionBaseline: true));
                 }
             }
 
             var assetsRoot = GameAssetModPathPolicy.GetAssetsRootPath();
             Directory.CreateDirectory(assetsRoot);
 
-            // A persisted base package is an explicit external override of the
-            // immutable built-in package, not a missing-content fallback.
-            var externalBaseRoot = Path.Combine(assetsRoot, BASE_MOD);
-            result.Add(new MountInfo(externalBaseRoot, BASE_MOD, priority: 100, order: order++, isBuiltIn: false));
+            var externalBaseRoot = usesExternalSessionBase
+                ? sessionBasePackageRootOverride
+                : Path.Combine(assetsRoot, BASE_MOD);
+            result.Add(new MountInfo(
+                externalBaseRoot,
+                BASE_MOD,
+                priority: 100,
+                order: order++,
+                isSessionBaseline: usesExternalSessionBase));
 
             var directories = Directory.GetDirectories(assetsRoot)
                 .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
@@ -362,7 +453,12 @@ namespace DingoGameObjectsCMS.AssetLibrary
                 if (string.Equals(mod, BASE_MOD, StringComparison.OrdinalIgnoreCase))
                     continue;
 
-                result.Add(new MountInfo(directories[i], mod, priority: 200, order, isBuiltIn: false));
+                result.Add(new MountInfo(
+                    directories[i],
+                    mod,
+                    priority: 200,
+                    order,
+                    isSessionBaseline: false));
                 order++;
             }
 
@@ -397,7 +493,7 @@ namespace DingoGameObjectsCMS.AssetLibrary
                 manifest.Assets ??= new List<ModManifestEntry>();
                 var package = new ModPackage(mount.ModRootAbs, manifest);
                 packages.Add(package);
-                if (mount.IsBuiltIn)
+                if (mount.IsSessionBaseline)
                     immutablePackages.Add(package);
 
                 for (var i = 0; i < manifest.Assets.Count; i++)
@@ -412,7 +508,7 @@ namespace DingoGameObjectsCMS.AssetLibrary
                     if (entry.GUID.isValid)
                         UpsertGuid(byGuid, entry.GUID, locator);
 
-                    if (!mount.IsBuiltIn)
+                    if (!mount.IsSessionBaseline)
                         continue;
 
                     UpsertKey(immutableByKey, locator);
@@ -528,15 +624,15 @@ namespace DingoGameObjectsCMS.AssetLibrary
             public readonly string Mod;
             public readonly int Priority;
             public readonly int Order;
-            public readonly bool IsBuiltIn;
+            public readonly bool IsSessionBaseline;
 
-            public MountInfo(string modRootAbs, string mod, int priority, int order, bool isBuiltIn)
+            public MountInfo(string modRootAbs, string mod, int priority, int order, bool isSessionBaseline)
             {
                 ModRootAbs = modRootAbs;
                 Mod = mod;
                 Priority = priority;
                 Order = order;
-                IsBuiltIn = isBuiltIn;
+                IsSessionBaseline = isSessionBaseline;
             }
         }
 

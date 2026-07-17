@@ -12,7 +12,7 @@ using UnityEngine;
 namespace DingoGameObjectsCMS.AssetLibrary
 {
     /// <summary>
-    /// Canonical checked-in representation of the immutable GameAsset package.
+    /// Canonical checked-in representation of the immutable session GameAsset package.
     /// This file, rather than the live manifest, defines the GA identity accepted
     /// by a runtime/session.
     /// </summary>
@@ -71,7 +71,7 @@ namespace DingoGameObjectsCMS.AssetLibrary
             if (!string.Equals(lockedJson, liveJson, StringComparison.Ordinal))
             {
                 throw new InvalidOperationException(
-                    "The checked-in GameAsset library lock does not exactly match the live immutable built-in package "
+                    "The checked-in GameAsset library lock does not exactly match the configured session base package "
                     + "(exact key, GUID, manifest identity, or materialized content hash differs). Regenerate the lock explicitly.");
             }
         }
