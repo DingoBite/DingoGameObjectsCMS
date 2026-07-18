@@ -4,6 +4,7 @@ using Cysharp.Threading.Tasks;
 using DingoGameObjectsCMS.RuntimeObjects;
 using DingoGameObjectsCMS.RuntimeObjects.Objects;
 using DingoGameObjectsCMS.RuntimeObjects.Stores;
+using DingoUnityExtensions;
 using DingoUnityExtensions.Pools.Core;
 using DingoUnityExtensions.UnityViewProviders.Pools;
 using Unity.Collections;
@@ -27,6 +28,8 @@ namespace DingoGameObjectsCMS.View
         private RuntimeStore _store;
         private RuntimeObjectCollectionScope _scope = RuntimeObjectCollectionScope.Parents;
         private int _entryVersion;
+        private int _scheduledOrderApplyVersion;
+        private bool _orderApplyScheduled;
 
         public RuntimeStore Store => _store;
         public RuntimeObjectCollectionScope Scope => _scope;
@@ -111,6 +114,7 @@ namespace DingoGameObjectsCMS.View
 
         public void Unbind()
         {
+            CancelScheduledActiveOrderApply();
             if (_store == null)
                 return;
 
@@ -128,6 +132,7 @@ namespace DingoGameObjectsCMS.View
         public void Clear(CollectionViewSpawnOptions spawnOptions)
         {
             EnsurePool();
+            CancelScheduledActiveOrderApply();
             ReleaseAll(_store, ResolveSpawnOptions(spawnOptions));
         }
 
@@ -386,6 +391,7 @@ namespace DingoGameObjectsCMS.View
 
         private void SyncActiveOrder()
         {
+            CancelScheduledActiveOrderApply();
             _orderedKeys.Clear();
 
             switch (_scope.Kind)
@@ -477,7 +483,7 @@ namespace DingoGameObjectsCMS.View
                 if (!ReferenceEquals(activeEntry.Container, valueContainer))
                     return;
 
-                SyncActiveOrder();
+                ScheduleActiveOrderApply();
             }
             catch (Exception e)
             {
@@ -509,7 +515,7 @@ namespace DingoGameObjectsCMS.View
                 _orderedKeys.RemoveAt(currentIndex);
         }
 
-        private void ApplyActiveOrder()
+        protected virtual void ApplyActiveOrder()
         {
             var siblingIndex = 0;
             for (var i = 0; i < _orderedKeys.Count; i++)
@@ -521,6 +527,39 @@ namespace DingoGameObjectsCMS.View
                 activeEntry.Container.transform.SetSiblingIndex(siblingIndex);
                 siblingIndex++;
             }
+        }
+
+        private void ScheduleActiveOrderApply()
+        {
+            if (_orderApplyScheduled)
+                return;
+            if (CoroutineParent.GetNoCheck() == null)
+            {
+                ApplyActiveOrder();
+                return;
+            }
+
+            _orderApplyScheduled = true;
+            var version = ++_scheduledOrderApplyVersion;
+            CoroutineParent.AddSingleLateUpdate(() => ApplyScheduledActiveOrder(version));
+        }
+
+        private void ApplyScheduledActiveOrder(int version)
+        {
+            if (this == null || !_orderApplyScheduled || version != _scheduledOrderApplyVersion)
+                return;
+
+            _orderApplyScheduled = false;
+            ApplyActiveOrder();
+        }
+
+        private void CancelScheduledActiveOrderApply()
+        {
+            if (!_orderApplyScheduled)
+                return;
+
+            _orderApplyScheduled = false;
+            _scheduledOrderApplyVersion++;
         }
 
         private CollectionViewSpawnOptions ResolveSpawnOptions(CollectionViewSpawnOptions spawnOptions)
