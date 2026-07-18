@@ -15,6 +15,8 @@ namespace DingoGameObjectsCMS.View
         private readonly HashSet<uint> _activeComponentIds = new();
         private readonly List<uint> _componentIdsBuffer = new();
 
+        public bool IsDestroying { get; private set; }
+
         protected override void OnAwake()
         {
             if (_componentPalettePrefab == null)
@@ -186,6 +188,7 @@ namespace DingoGameObjectsCMS.View
 
         protected virtual void OnDestroy()
         {
+            IsDestroying = true;
             ClearComponents();
         }
 
