@@ -14,6 +14,25 @@ using Hash128 = UnityEngine.Hash128;
 
 namespace DingoGameObjectsCMS.RuntimeObjects.Stores
 {
+    public readonly struct RuntimeStoreEntries
+    {
+        private readonly Dictionary<long, GameRuntimeObject> _entries;
+
+        internal RuntimeStoreEntries(Dictionary<long, GameRuntimeObject> entries)
+        {
+            _entries = entries;
+        }
+
+        public int Count => _entries?.Count ?? 0;
+
+        public Dictionary<long, GameRuntimeObject>.Enumerator GetEnumerator()
+        {
+            return _entries != null
+                ? _entries.GetEnumerator()
+                : default;
+        }
+    }
+
     public class RuntimeStore : AppModelBase
     {
         public const int UPDATE_ORDER = 1_000_000;
@@ -90,6 +109,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
         private readonly List<ObjectStructDirty> _objectStructureChanges = new();
         
         public IReadonlyBind<IReadOnlyDictionary<long, GameRuntimeObject>> All => _all;
+        public RuntimeStoreEntries Entries => new(_all.V);
         public IReadonlyBind<IReadOnlyDictionary<long, GameRuntimeObject>> Parents => _parents;
         public bool ReplicationSuppressed => _suppressReplicationThisFlush;
         public World World => _world;
