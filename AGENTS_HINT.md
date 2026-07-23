@@ -35,3 +35,9 @@
   `Tools/Runtime Types/Generate Manifest` or
   `Tools/Runtime Types/Regenerate Manifest`. Treat the manifest as generated
   output unless the user explicitly asks to debug the manifest file itself.
+- Physical presentation resources belong to domain GameAssets, not project
+  setup code or static catalogs. A module render-preset file defines presets
+  only and must not bind resources to presets. Each owning GA serializes a
+  `SpriteVisualRef` with its source resource, optional preset id, and optional
+  sparse recipe resource. Resource and atlas discovery traverses the generated
+  module manifest; do not maintain a parallel content list.

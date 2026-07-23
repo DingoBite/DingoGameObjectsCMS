@@ -544,6 +544,10 @@ namespace DingoGameObjectsCMS.AssetLibrary.Manifest
             var extension = Path.GetExtension(relativePath).ToLowerInvariant();
             if (extension == ".json")
             {
+                if (string.Equals(relativePath, SpriteRenderModulePresets.RESOURCE_PATH, StringComparison.Ordinal))
+                {
+                    return "spriteRenderPresets";
+                }
                 if (relativePath.EndsWith(".recipe.json", StringComparison.Ordinal))
                 {
                     return "spriteRecipe";
