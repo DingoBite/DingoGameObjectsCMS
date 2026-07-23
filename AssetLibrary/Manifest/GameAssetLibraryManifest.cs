@@ -518,6 +518,12 @@ namespace DingoGameObjectsCMS.AssetLibrary
             }
             catch (Exception ex)
             {
+                if (mount.IsSessionBaseline)
+                {
+                    throw new InvalidDataException(
+                        $"Immutable GameAsset session package '{mount.ModRootAbs}' is invalid.",
+                        ex);
+                }
                 Debug.LogException(ex);
             }
         }

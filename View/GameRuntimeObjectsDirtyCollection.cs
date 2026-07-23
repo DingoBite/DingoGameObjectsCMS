@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Reflection;
 using Cysharp.Threading.Tasks;
 using DingoGameObjectsCMS.RuntimeObjects;
 using DingoGameObjectsCMS.RuntimeObjects.Objects;
@@ -14,6 +15,8 @@ namespace DingoGameObjectsCMS.View
 {
     public class GameRuntimeObjectsDirtyCollection : MonoBehaviour
     {
+        public const int RECONCILE_UPDATE_ORDER = RuntimeStore.UPDATE_ORDER - 1;
+
         [SerializeField] private GameObject _parent;
         [SerializeField] private GameRuntimeObjectOperationView _prefab;
         [SerializeField] private bool _fullRebuildOnChange;
@@ -30,10 +33,16 @@ namespace DingoGameObjectsCMS.View
         private int _entryVersion;
         private int _scheduledOrderApplyVersion;
         private bool _orderApplyScheduled;
+        private bool _orderDirty;
+        private bool _fullRebuildPending;
+        private bool _orderingPolicyInitialized;
+        private bool _usesIncrementalParentOrdering;
 
         public RuntimeStore Store => _store;
         public RuntimeObjectCollectionScope Scope => _scope;
         public bool IsBound => _store != null;
+        public ulong TotalReconcileCount { get; private set; }
+        public ulong TotalFullSortCount { get; private set; }
 
         public IEnumerable<GameRuntimeObjectOperationView> GetOrderedViews()
         {
@@ -101,6 +110,7 @@ namespace DingoGameObjectsCMS.View
             _store.StructureChanges += ApplyStructureChanges;
             _store.ComponentStructureChanges += ApplyComponentStructureChanges;
             _store.ComponentChanges += ApplyComponentChanges;
+            _store.DirtyPublishCompleted += ApplyDirtyPublishCompleted;
             ResetFromStore(ResolveSpawnOptions(CollectionViewSpawnOptions.Default));
         }
 
@@ -122,8 +132,11 @@ namespace DingoGameObjectsCMS.View
             _store.StructureChanges -= ApplyStructureChanges;
             _store.ComponentStructureChanges -= ApplyComponentStructureChanges;
             _store.ComponentChanges -= ApplyComponentChanges;
+            _store.DirtyPublishCompleted -= ApplyDirtyPublishCompleted;
             _store = null;
             _scope = RuntimeObjectCollectionScope.Parents;
+            _orderDirty = false;
+            _fullRebuildPending = false;
             ReleaseAll(previousStore, ResolveSpawnOptions(CollectionViewSpawnOptions.ImmediateFill));
         }
 
@@ -133,6 +146,8 @@ namespace DingoGameObjectsCMS.View
         {
             EnsurePool();
             CancelScheduledActiveOrderApply();
+            _orderDirty = false;
+            _fullRebuildPending = false;
             ReleaseAll(_store, ResolveSpawnOptions(spawnOptions));
         }
 
@@ -155,8 +170,17 @@ namespace DingoGameObjectsCMS.View
         protected virtual UniTask OnBeforePushAsync(long key, GameRuntimeObject value, GameRuntimeObjectOperationView valueContainer, CollectionViewSpawnOptions spawnOptions) =>
             valueContainer != null ? valueContainer.DespawnAsync(spawnOptions) : UniTask.CompletedTask;
 
-        protected virtual void OnBeginRelease(long key, GameRuntimeObject value, GameRuntimeObjectOperationView valueContainer) =>
-            valueContainer.transform.SetAsLastSibling();
+        protected virtual void OnBeginRelease(long key, GameRuntimeObject value, GameRuntimeObjectOperationView valueContainer)
+        {
+            var valueTransform = valueContainer.transform;
+            var parent = valueTransform.parent;
+            if (parent == null || !parent.gameObject.activeInHierarchy)
+                return;
+            if (valueTransform.GetSiblingIndex() == parent.childCount - 1)
+                return;
+
+            valueTransform.SetAsLastSibling();
+        }
 
         private void OnDestroy()
         {
@@ -165,6 +189,7 @@ namespace DingoGameObjectsCMS.View
 
         private void EnsurePool()
         {
+            EnsureOrderingPolicy();
             if (_pool != null)
                 return;
             if (_parent == null)
@@ -177,6 +202,9 @@ namespace DingoGameObjectsCMS.View
 
         private void ResetFromStore(CollectionViewSpawnOptions spawnOptions)
         {
+            CancelScheduledActiveOrderApply();
+            _orderDirty = false;
+            _fullRebuildPending = false;
             ReleaseAll(_store, spawnOptions);
             if (_store == null)
                 return;
@@ -193,8 +221,11 @@ namespace DingoGameObjectsCMS.View
                 UpsertEntry(key, GameRuntimeObjectOperation.Snapshot(_store, key, null, value), spawnOptions);
             }
 
+            _orderedKeys.Clear();
+            _orderedKeys.AddRange(_sourceKeys);
             _sourceKeys.Clear();
-            SyncActiveOrder();
+            CancelScheduledActiveOrderApply();
+            ApplyActiveOrder();
         }
 
         private void ApplyStructureChanges(NativeArray<RuntimeStructureDirty> changes)
@@ -205,28 +236,24 @@ namespace DingoGameObjectsCMS.View
             var spawnOptions = ResolveSpawnOptions(CollectionViewSpawnOptions.Default);
             if (spawnOptions.FullRebuild)
             {
-                ResetFromStore(spawnOptions);
+                _fullRebuildPending = true;
+                _orderDirty = false;
                 return;
             }
 
-            var orderDirty = false;
             for (var i = 0; i < changes.Length; i++)
             {
                 if (ApplyStructureChange(changes[i], spawnOptions))
-                    orderDirty = true;
+                    _orderDirty = true;
             }
-
-            if (orderDirty)
-                SyncActiveOrder();
         }
 
         private void ApplyComponentStructureChanges(NativeArray<ObjectStructDirty> changes)
         {
-            if (_store == null || changes.Length == 0)
+            if (_store == null || changes.Length == 0 || _fullRebuildPending)
                 return;
 
             var spawnOptions = ResolveSpawnOptions(CollectionViewSpawnOptions.Default);
-            var orderDirty = false;
             for (var i = 0; i < changes.Length; i++)
             {
                 var dirty = changes[i];
@@ -236,7 +263,7 @@ namespace DingoGameObjectsCMS.View
                 if (hasActiveEntry && !isIncluded)
                 {
                     ReleaseKey(_store, dirty.Id, spawnOptions);
-                    orderDirty = true;
+                    _orderDirty = true;
                     continue;
                 }
                 if (!hasActiveEntry && isIncluded)
@@ -245,7 +272,8 @@ namespace DingoGameObjectsCMS.View
                         dirty.Id,
                         GameRuntimeObjectOperation.ComponentStructure(_store, dirty, null, value),
                         spawnOptions);
-                    orderDirty = true;
+                    InsertOrderedKey(dirty.Id);
+                    _orderDirty = true;
                     continue;
                 }
                 if (!hasActiveEntry)
@@ -255,14 +283,11 @@ namespace DingoGameObjectsCMS.View
                 activeEntry.Value = value;
                 ApplyOperation(activeEntry.Container, operation);
             }
-
-            if (orderDirty)
-                SyncActiveOrder();
         }
 
         private void ApplyComponentChanges(NativeArray<ObjectComponentDirty> changes)
         {
-            if (_store == null || changes.Length == 0 || _activeEntries.Count == 0)
+            if (_store == null || changes.Length == 0 || _activeEntries.Count == 0 || _fullRebuildPending)
                 return;
 
             for (var i = 0; i < changes.Length; i++)
@@ -302,9 +327,16 @@ namespace DingoGameObjectsCMS.View
                 return true;
             }
 
-            var previousValue = _activeEntries.TryGetValue(dirty.Id, out var activeEntry) ? activeEntry.Value : null;
+            var wasActive = _activeEntries.TryGetValue(dirty.Id, out var activeEntry);
+            var previousValue = wasActive ? activeEntry.Value : null;
             UpsertEntry(dirty.Id, GameRuntimeObjectOperation.Structure(_store, dirty, previousValue, value), spawnOptions);
-            return true;
+            if (!wasActive)
+            {
+                InsertOrderedKey(dirty.Id);
+                return true;
+            }
+
+            return _scope.Kind == RuntimeObjectCollectionScopeKind.DirectChildren;
         }
 
         private void CollectSourceKeys(List<long> target)
@@ -318,6 +350,7 @@ namespace DingoGameObjectsCMS.View
                             target.Add(pair.Key);
                     }
 
+                    TotalFullSortCount++;
                     SortKeys(target);
                     break;
 
@@ -389,26 +422,48 @@ namespace DingoGameObjectsCMS.View
             _ = FinalizePullAsync(key, version, operation.Value, valueContainer, spawnOptions);
         }
 
-        private void SyncActiveOrder()
+        private void ApplyDirtyPublishCompleted(RuntimeStoreDirtyPublish publish)
         {
+            if (_store == null || publish.StoreGeneration != _store.StoreGeneration)
+                return;
+
+            if (_fullRebuildPending)
+            {
+                ResetFromStore(ResolveSpawnOptions(CollectionViewSpawnOptions.Default));
+                return;
+            }
+
+            if (!_orderDirty)
+                return;
+
+            _orderDirty = false;
+            ReconcileActiveOrder();
+        }
+
+        private void ReconcileActiveOrder()
+        {
+            TotalReconcileCount++;
             CancelScheduledActiveOrderApply();
-            _orderedKeys.Clear();
 
             switch (_scope.Kind)
             {
                 case RuntimeObjectCollectionScopeKind.Parents:
-                    _sourceKeys.Clear();
-                    foreach (var key in _activeEntries.Keys)
+                    if (!_usesIncrementalParentOrdering)
                     {
-                        _sourceKeys.Add(key);
-                    }
+                        _sourceKeys.Clear();
+                        foreach (var key in _activeEntries.Keys)
+                            _sourceKeys.Add(key);
 
-                    SortKeys(_sourceKeys);
-                    _orderedKeys.AddRange(_sourceKeys);
-                    _sourceKeys.Clear();
+                        TotalFullSortCount++;
+                        SortKeys(_sourceKeys);
+                        _orderedKeys.Clear();
+                        _orderedKeys.AddRange(_sourceKeys);
+                        _sourceKeys.Clear();
+                    }
                     break;
 
                 case RuntimeObjectCollectionScopeKind.DirectChildren:
+                    _orderedKeys.Clear();
                     if (_store != null && _store.TryTakeChildren(_scope.ParentId, out var children))
                     {
                         for (var i = 0; i < children.Count; i++)
@@ -426,6 +481,60 @@ namespace DingoGameObjectsCMS.View
             }
 
             ApplyActiveOrder();
+        }
+
+        private void InsertOrderedKey(long key)
+        {
+            if (_scope.Kind != RuntimeObjectCollectionScopeKind.Parents)
+                return;
+
+            if (!_usesIncrementalParentOrdering)
+            {
+                _orderedKeys.Add(key);
+                return;
+            }
+
+            var low = 0;
+            var high = _orderedKeys.Count;
+            while (low < high)
+            {
+                var middle = low + ((high - low) >> 1);
+                if (CompareOrderedKeys(_orderedKeys[middle], key) <= 0)
+                    low = middle + 1;
+                else
+                    high = middle;
+            }
+
+            _orderedKeys.Insert(low, key);
+        }
+
+        private int CompareOrderedKeys(long left, long right)
+        {
+            var comparison = CompareKeys(left, right);
+            return comparison != 0 ? comparison : left.CompareTo(right);
+        }
+
+        private void EnsureOrderingPolicy()
+        {
+            if (_orderingPolicyInitialized)
+                return;
+
+            const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
+            var type = GetType();
+            _usesIncrementalParentOrdering =
+                type.GetMethod(
+                    nameof(CompareKeys),
+                    flags,
+                    binder: null,
+                    types: new[] { typeof(long), typeof(long) },
+                    modifiers: null)?.DeclaringType == typeof(GameRuntimeObjectsDirtyCollection)
+                && type.GetMethod(
+                    nameof(SortKeys),
+                    flags,
+                    binder: null,
+                    types: new[] { typeof(List<long>) },
+                    modifiers: null)?.DeclaringType == typeof(GameRuntimeObjectsDirtyCollection);
+            _orderingPolicyInitialized = true;
         }
 
         private void ReleaseAll(RuntimeStore store, CollectionViewSpawnOptions spawnOptions)
@@ -524,7 +633,8 @@ namespace DingoGameObjectsCMS.View
                 if (!_activeEntries.TryGetValue(key, out var activeEntry) || activeEntry.Container == null)
                     continue;
 
-                activeEntry.Container.transform.SetSiblingIndex(siblingIndex);
+                if (activeEntry.Container.transform.GetSiblingIndex() != siblingIndex)
+                    activeEntry.Container.transform.SetSiblingIndex(siblingIndex);
                 siblingIndex++;
             }
         }
@@ -541,7 +651,7 @@ namespace DingoGameObjectsCMS.View
 
             _orderApplyScheduled = true;
             var version = ++_scheduledOrderApplyVersion;
-            CoroutineParent.AddSingleLateUpdate(() => ApplyScheduledActiveOrder(version));
+            CoroutineParent.AddSingleLateUpdate(() => ApplyScheduledActiveOrder(version), RECONCILE_UPDATE_ORDER);
         }
 
         private void ApplyScheduledActiveOrder(int version)

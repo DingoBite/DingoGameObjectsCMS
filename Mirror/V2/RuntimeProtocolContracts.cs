@@ -73,6 +73,7 @@ namespace DingoGameObjectsCMS.Mirror.V2
         public string BuildId;
         public string RuntimeSchemaHash;
         public string AssetCatalogHash;
+        public string ResourceCatalogHash;
         public string StateStreamCatalogHash;
     }
 
@@ -119,6 +120,8 @@ namespace DingoGameObjectsCMS.Mirror.V2
                 return RuntimeProtocolRejectCode.RuntimeSchemaMismatch;
             if (!EqualsRequired(expected.AssetCatalogHash, actual.AssetCatalogHash))
                 return RuntimeProtocolRejectCode.AssetCatalogMismatch;
+            if (!EqualsOptionalExact(expected.ResourceCatalogHash, actual.ResourceCatalogHash))
+                return RuntimeProtocolRejectCode.AssetCatalogMismatch;
             if (!EqualsRequired(expected.StateStreamCatalogHash, actual.StateStreamCatalogHash))
                 return RuntimeProtocolRejectCode.StateStreamCatalogMismatch;
             return RuntimeProtocolRejectCode.None;
@@ -126,6 +129,15 @@ namespace DingoGameObjectsCMS.Mirror.V2
 
         private static bool EqualsRequired(string expected, string actual)
         {
+            return !string.IsNullOrWhiteSpace(expected)
+                   && !string.IsNullOrWhiteSpace(actual)
+                   && string.Equals(expected, actual, StringComparison.Ordinal);
+        }
+
+        private static bool EqualsOptionalExact(string expected, string actual)
+        {
+            if (string.IsNullOrWhiteSpace(expected) && string.IsNullOrWhiteSpace(actual))
+                return true;
             return !string.IsNullOrWhiteSpace(expected)
                    && !string.IsNullOrWhiteSpace(actual)
                    && string.Equals(expected, actual, StringComparison.Ordinal);

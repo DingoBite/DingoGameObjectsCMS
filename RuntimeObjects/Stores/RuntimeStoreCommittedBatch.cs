@@ -5,6 +5,30 @@ using UnityEngine;
 
 namespace DingoGameObjectsCMS.RuntimeObjects.Stores
 {
+    [Flags]
+    public enum RuntimeStoreDirtyKinds : byte
+    {
+        None = 0,
+        Structure = 1 << 0,
+        ComponentStructure = 1 << 1,
+        ComponentData = 1 << 2,
+        Presentation = 1 << 3,
+    }
+
+    public readonly struct RuntimeStoreDirtyPublish
+    {
+        public uint StoreGeneration { get; }
+        public ulong Version { get; }
+        public RuntimeStoreDirtyKinds Kinds { get; }
+
+        public RuntimeStoreDirtyPublish(uint storeGeneration, ulong version, RuntimeStoreDirtyKinds kinds)
+        {
+            StoreGeneration = storeGeneration;
+            Version = version;
+            Kinds = kinds;
+        }
+    }
+
     public readonly struct RuntimeStoreStructureChange
     {
         public const long NO_PARENT_ID = -1;

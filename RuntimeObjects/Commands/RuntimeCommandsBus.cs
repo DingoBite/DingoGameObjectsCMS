@@ -11,7 +11,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
 
     public class RuntimeCommandsBus : AppModelBase
     {
-        public const int UPDATE_ORDER = RuntimeStore.UPDATE_ORDER - 1;
+        public const int UPDATE_ORDER = RuntimeStore.UPDATE_ORDER + 1;
 
         private readonly List<GameRuntimeCommand> _queue = new(capacity: 64);
         private readonly List<GameRuntimeCommand> _processing = new(capacity: 64);

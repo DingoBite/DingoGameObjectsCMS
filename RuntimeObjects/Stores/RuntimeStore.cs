@@ -9,6 +9,7 @@ using DingoProjectAppStructure.Core.Model;
 using DingoUnityExtensions;
 using Unity.Collections;
 using Unity.Entities;
+using Unity.Profiling;
 using UnityEngine;
 using Hash128 = UnityEngine.Hash128;
 
@@ -38,11 +39,15 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
         public const int UPDATE_ORDER = 1_000_000;
         public const long STORE_ROOT_OBJECT_ID = 0;
         public const long FIRST_USER_OBJECT_ID = STORE_ROOT_OBJECT_ID + 1;
+
+        private static readonly ProfilerMarker FLUSH_AND_COLLECTION_MARKER = new("SnakeAndMice.RuntimeStore.FlushAndCollection");
+        private static readonly ProfilerMarker STRUCTURAL_BURST_MARKER = new("SnakeAndMice.RuntimeStore.StructuralBurst");
         
         private readonly SafeMulticast<NativeArray<RuntimeStructureDirty>> _structureChangesDispatcher = new();
         private readonly SafeMulticast<NativeArray<ObjectStructDirty>> _componentStructureChangesDispatcher = new();
         private readonly SafeMulticast<NativeArray<ObjectComponentDirty>> _componentChangesDispatcher = new();
         private readonly SafeMulticast<RuntimeStoreCommittedBatch> _committedBatchDispatcher = new();
+        private readonly SafeMulticast<RuntimeStoreDirtyPublish> _dirtyPublishCompletedDispatcher = new();
 
         public event Action<NativeArray<RuntimeStructureDirty>> StructureChanges
         {
@@ -68,6 +73,12 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
             remove => _committedBatchDispatcher.Unsubscribe(value);
         }
 
+        public event Action<RuntimeStoreDirtyPublish> DirtyPublishCompleted
+        {
+            add => _dirtyPublishCompletedDispatcher.Subscribe(value);
+            remove => _dirtyPublishCompletedDispatcher.Unsubscribe(value);
+        }
+
         
         public readonly FixedString32Bytes Id;
         public readonly StoreRealm Realm;
@@ -91,7 +102,8 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
         private readonly HashSet<long> _hierarchyProjectionDirty = new();
         private readonly List<long> _hierarchyProjectionWork = new();
 
-        private readonly HashSet<long> _touched = new();
+        private HashSet<long> _pendingTouched = new();
+        private HashSet<long> _processingTouched = new();
         private readonly HashSet<PresentationComponentDirtyKey> _presentationComponentChanges = new();
         private bool _scheduled;
         private bool _flushInProgress;
@@ -105,8 +117,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
         private readonly HashSet<long> _cycleVisited = new();
 
         private readonly List<RuntimeStoreStructureChange> _structureChanges = new();
-        private readonly List<ObjectComponentDirty> _objectComponentsChanges = new();
-        private readonly List<ObjectStructDirty> _objectStructureChanges = new();
+        private bool _structureChangesNeedSort;
         
         public IReadonlyBind<IReadOnlyDictionary<long, GameRuntimeObject>> All => _all;
         public RuntimeStoreEntries Entries => new(_all.V);
@@ -116,6 +127,9 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
         public uint Epoch { get; private set; }
         public uint StoreGeneration { get; private set; }
         public ulong StoreRevision { get; private set; }
+        public ulong DirtyPublishVersion { get; private set; }
+        public ulong TotalTouchedSortCount => 0;
+        public ulong TotalFullSortCount { get; private set; }
         public bool Retired { get; private set; }
         
         public RuntimeStore(FixedString32Bytes id, StoreRealm realm, World world)
@@ -135,6 +149,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
             Epoch = epoch;
             StoreGeneration = storeGeneration;
             StoreRevision = 0;
+            DirtyPublishVersion = 0;
             Retired = false;
         }
 
@@ -153,12 +168,13 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
             foreach (var runtimeObject in _all.V.Values)
                 runtimeObject?.ClearDirty();
             _structureChanges.Clear();
-            _objectComponentsChanges.Clear();
-            _objectStructureChanges.Clear();
-            _touched.Clear();
+            _structureChangesNeedSort = false;
+            _pendingTouched.Clear();
+            _processingTouched.Clear();
             _presentationComponentChanges.Clear();
             _order = 0;
             StoreRevision = storeRevision;
+            DirtyPublishVersion = 0;
             _suppressReplicationThisFlush = false;
             _netApplyTargetRevision = 0;
             _netApplyRevisionCommitted = false;
@@ -180,6 +196,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
             _componentStructureChangesDispatcher.Clear();
             _componentChangesDispatcher.Clear();
             _committedBatchDispatcher.Clear();
+            _dirtyPublishCompletedDispatcher.Clear();
 
             try
             {
@@ -262,11 +279,11 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
                 _childrenByParent.Clear();
                 _hierarchyProjectionDirty.Clear();
                 _hierarchyProjectionWork.Clear();
-                _touched.Clear();
+                _pendingTouched.Clear();
+                _processingTouched.Clear();
                 _cycleVisited.Clear();
                 _structureChanges.Clear();
-                _objectComponentsChanges.Clear();
-                _objectStructureChanges.Clear();
+                _structureChangesNeedSort = false;
                 _presentationComponentChanges.Clear();
                 CoroutineParent.RemoveLateUpdater(this);
                 _scheduled = false;
@@ -284,6 +301,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
                 _componentStructureChangesDispatcher.Clear();
                 _componentChangesDispatcher.Clear();
                 _committedBatchDispatcher.Clear();
+                _dirtyPublishCompletedDispatcher.Clear();
             }
         }
 
@@ -660,7 +678,8 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
 
             _all.V.Remove(runtimeObject.InstanceId);
             UnregisterGuid(runtimeObject.GUID, runtimeObject.InstanceId);
-            _touched.Remove(runtimeObject.InstanceId);
+            _pendingTouched.Remove(runtimeObject.InstanceId);
+            _processingTouched.Remove(runtimeObject.InstanceId);
             _hierarchyProjectionDirty.Remove(runtimeObject.InstanceId);
             runtimeObject.ClearRuntimeContext();
         }
@@ -1342,6 +1361,9 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
 
         private void RecordOp(in RuntimeStoreStructureChange op)
         {
+            if (_structureChanges.Count > 0 && _structureChanges[_structureChanges.Count - 1].Order > op.Order)
+                _structureChangesNeedSort = true;
+
             _structureChanges.Add(op);
             ScheduleFlush();
         }
@@ -1571,9 +1593,9 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
         {
             var rootId = GetRootId(id);
             if (rootId != id)
-                _touched.Add(id);
+                _pendingTouched.Add(id);
 
-            _touched.Add(rootId);
+            _pendingTouched.Add(rootId);
             ScheduleFlush();
         }
 
@@ -1635,17 +1657,27 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
 
         private void Flush()
         {
+            using var profilerScope = FLUSH_AND_COLLECTION_MARKER.Auto();
+            var profileStructuralBurst = _structureChanges.Count > 0;
+            if (profileStructuralBurst)
+                STRUCTURAL_BURST_MARKER.Begin();
+
             _flushInProgress = true;
             try
             {
                 var replicationSuppressed = _suppressReplicationThisFlush;
-                _all.V = _all.V;
-                _parents.V = _parents.V;
+                SwapTouchedBuffers();
 
                 NativeList<RuntimeStructureDirty> emitStructure = default;
                 NativeList<RuntimeStoreStructureChange> emitCommittedStructure = default;
                 if (_structureChanges.Count > 0)
                 {
+                    if (_structureChangesNeedSort)
+                    {
+                        TotalFullSortCount++;
+                        _structureChanges.Sort(new RuntimeStoreStructureChangeComparer());
+                    }
+
                     emitStructure = new NativeList<RuntimeStructureDirty>(_structureChanges.Count, Allocator.Temp);
                     emitCommittedStructure = new NativeList<RuntimeStoreStructureChange>(_structureChanges.Count, Allocator.Temp);
                     foreach (var c in _structureChanges)
@@ -1655,44 +1687,18 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
                     }
 
                     _structureChanges.Clear();
-
-                    if (emitStructure.Length > 1)
-                        emitStructure.AsArray().Sort(new RuntimeStructureDirtyComparer());
-                    if (emitCommittedStructure.Length > 1)
-                        emitCommittedStructure.AsArray().Sort(new RuntimeStoreStructureChangeComparer());
-                }
-
-                NativeList<long> touchedIds = default;
-                if (_touched.Count > 0)
-                {
-                    touchedIds = new NativeList<long>(_touched.Count, Allocator.Temp);
-                    foreach (var id in _touched)
-                    {
-                        touchedIds.Add(id);
-                    }
-
-                    _touched.Clear();
-
-                    touchedIds.AsArray().Sort(new LongComparer());
+                    _structureChangesNeedSort = false;
                 }
 
                 NativeList<ObjectStructDirty> emitCompStruct = default;
-                NativeList<ObjectComponentDirty> emitComp = default;
-                NativeList<ObjectComponentDirty> emitCommittedComp = default;
+                NativeList<ObjectComponentDirty> emitAuthoritativeComp = default;
 
-                if ((touchedIds.IsCreated && touchedIds.Length > 0) || _presentationComponentChanges.Count > 0)
+                if (_processingTouched.Count > 0)
                 {
-                    var capacity = (touchedIds.IsCreated ? touchedIds.Length * 2 : 0)
-                                   + _presentationComponentChanges.Count;
-                    emitComp = new NativeList<ObjectComponentDirty>(capacity, Allocator.Temp);
-                }
+                    emitCompStruct = new NativeList<ObjectStructDirty>(_processingTouched.Count * 2, Allocator.Temp);
+                    emitAuthoritativeComp = new NativeList<ObjectComponentDirty>(_processingTouched.Count * 2, Allocator.Temp);
 
-                if (touchedIds.IsCreated && touchedIds.Length > 0)
-                {
-                    emitCompStruct = new NativeList<ObjectStructDirty>(touchedIds.Length * 2, Allocator.Temp);
-                    emitCommittedComp = new NativeList<ObjectComponentDirty>(touchedIds.Length * 2, Allocator.Temp);
-
-                    foreach (var id in touchedIds)
+                    foreach (var id in _processingTouched)
                     {
                         if (!_all.V.TryGetValue(id, out var obj))
                             continue;
@@ -1722,8 +1728,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
                                     continue;
 
                                 var dirty = new ObjectComponentDirty(id, kv.Value);
-                                emitComp.Add(dirty);
-                                emitCommittedComp.Add(dirty);
+                                emitAuthoritativeComp.Add(dirty);
                                 _presentationComponentChanges.Remove(new PresentationComponentDirtyKey(id, compTypeId));
                             }
 
@@ -1735,12 +1740,23 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
                     }
 
                     if (emitCompStruct.Length > 1)
+                    {
+                        TotalFullSortCount++;
                         emitCompStruct.AsArray().Sort(new ObjectStructDirtyComparer());
-
+                    }
+                    if (emitAuthoritativeComp.Length > 1)
+                    {
+                        TotalFullSortCount++;
+                        emitAuthoritativeComp.AsArray().Sort(new ObjectComponentDirtyComparer());
+                    }
                 }
 
+                _processingTouched.Clear();
+
+                NativeList<ObjectComponentDirty> emitPresentationComp = default;
                 if (_presentationComponentChanges.Count > 0)
                 {
+                    emitPresentationComp = new NativeList<ObjectComponentDirty>(_presentationComponentChanges.Count, Allocator.Temp);
                     foreach (var dirty in _presentationComponentChanges)
                     {
                         if (!_all.V.TryGetValue(dirty.ObjectId, out var obj)
@@ -1749,23 +1765,50 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
                             continue;
                         }
 
-                        emitComp.Add(new ObjectComponentDirty(
+                        emitPresentationComp.Add(new ObjectComponentDirty(
                             dirty.ObjectId,
                             new ComponentDirty(dirty.ComponentTypeId)));
                     }
 
                     _presentationComponentChanges.Clear();
+
+                    if (emitPresentationComp.Length > 1)
+                    {
+                        TotalFullSortCount++;
+                        emitPresentationComp.AsArray().Sort(new ObjectComponentDirtyComparer());
+                    }
                 }
 
-                if (emitComp.IsCreated && emitComp.Length > 1)
-                    emitComp.AsArray().Sort(new ObjectComponentDirtyComparer());
+                NativeList<ObjectComponentDirty> emitMergedComp = default;
+                var publicComponentChanges = default(NativeArray<ObjectComponentDirty>);
+                if (emitAuthoritativeComp.IsCreated && emitAuthoritativeComp.Length > 0
+                    && emitPresentationComp.IsCreated && emitPresentationComp.Length > 0)
+                {
+                    emitMergedComp = new NativeList<ObjectComponentDirty>(emitAuthoritativeComp.Length + emitPresentationComp.Length, Allocator.Temp);
+                    MergeSortedComponentChanges(emitAuthoritativeComp.AsArray(), emitPresentationComp.AsArray(), ref emitMergedComp);
+                    publicComponentChanges = emitMergedComp.AsArray();
+                }
+                else if (emitAuthoritativeComp.IsCreated && emitAuthoritativeComp.Length > 0)
+                {
+                    publicComponentChanges = emitAuthoritativeComp.AsArray();
+                }
+                else if (emitPresentationComp.IsCreated && emitPresentationComp.Length > 0)
+                {
+                    publicComponentChanges = emitPresentationComp.AsArray();
+                }
 
-                if (emitCommittedComp.IsCreated && emitCommittedComp.Length > 1)
-                    emitCommittedComp.AsArray().Sort(new ObjectComponentDirtyComparer());
+                // BindDict listeners are legacy structure observers. Notify them
+                // only for the captured structure publish; callback mutations are
+                // recorded into the next publish buffers.
+                if (emitStructure.IsCreated && emitStructure.Length > 0)
+                {
+                    _all.V = _all.V;
+                    _parents.V = _parents.V;
+                }
 
                 var hasMutationBatch = (emitCommittedStructure.IsCreated && emitCommittedStructure.Length > 0)
                     || (emitCompStruct.IsCreated && emitCompStruct.Length > 0)
-                    || (emitCommittedComp.IsCreated && emitCommittedComp.Length > 0);
+                    || (emitAuthoritativeComp.IsCreated && emitAuthoritativeComp.Length > 0);
                 if (hasMutationBatch)
                 {
                     if (_netApplyScopeActive)
@@ -1788,8 +1831,8 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
                 if (emitCompStruct.IsCreated && emitCompStruct.Length > 0)
                     _componentStructureChangesDispatcher.Invoke(emitCompStruct.AsArray());
 
-                if (emitComp.IsCreated && emitComp.Length > 0)
-                    _componentChangesDispatcher.Invoke(emitComp.AsArray());
+                if (publicComponentChanges.IsCreated && publicComponentChanges.Length > 0)
+                    _componentChangesDispatcher.Invoke(publicComponentChanges);
 
                 if (hasMutationBatch)
                 {
@@ -1801,39 +1844,109 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
                         replicationSuppressed,
                         emitCommittedStructure.IsCreated ? emitCommittedStructure.AsArray() : default,
                         emitCompStruct.IsCreated ? emitCompStruct.AsArray() : default,
-                        emitCommittedComp.IsCreated ? emitCommittedComp.AsArray() : default));
+                        emitAuthoritativeComp.IsCreated ? emitAuthoritativeComp.AsArray() : default));
+                }
+
+                var dirtyKinds = RuntimeStoreDirtyKinds.None;
+                if (emitStructure.IsCreated && emitStructure.Length > 0)
+                    dirtyKinds |= RuntimeStoreDirtyKinds.Structure;
+                if (emitCompStruct.IsCreated && emitCompStruct.Length > 0)
+                    dirtyKinds |= RuntimeStoreDirtyKinds.ComponentStructure;
+                if (publicComponentChanges.IsCreated && publicComponentChanges.Length > 0)
+                    dirtyKinds |= RuntimeStoreDirtyKinds.ComponentData;
+                if (emitPresentationComp.IsCreated && emitPresentationComp.Length > 0)
+                    dirtyKinds |= RuntimeStoreDirtyKinds.Presentation;
+
+                if (dirtyKinds != RuntimeStoreDirtyKinds.None)
+                {
+                    if (DirtyPublishVersion == ulong.MaxValue)
+                        throw new InvalidOperationException($"RuntimeStore '{Id}' generation {StoreGeneration} exhausted its dirty publish version range.");
+
+                    DirtyPublishVersion++;
+                    _dirtyPublishCompletedDispatcher.Invoke(new RuntimeStoreDirtyPublish(StoreGeneration, DirtyPublishVersion, dirtyKinds));
                 }
 
                 if (emitStructure.IsCreated)
                     emitStructure.Dispose();
                 if (emitCommittedStructure.IsCreated)
                     emitCommittedStructure.Dispose();
-                if (touchedIds.IsCreated)
-                    touchedIds.Dispose();
                 if (emitCompStruct.IsCreated)
                     emitCompStruct.Dispose();
-                if (emitComp.IsCreated)
-                    emitComp.Dispose();
-                if (emitCommittedComp.IsCreated)
-                    emitCommittedComp.Dispose();
+                if (emitAuthoritativeComp.IsCreated)
+                    emitAuthoritativeComp.Dispose();
+                if (emitPresentationComp.IsCreated)
+                    emitPresentationComp.Dispose();
+                if (emitMergedComp.IsCreated)
+                    emitMergedComp.Dispose();
             }
             finally
             {
-                _flushInProgress = false;
+                try
+                {
+                    _flushInProgress = false;
 
-                _suppressReplicationThisFlush = false;
-                _netApplyTargetRevision = 0;
-                _netApplyRevisionCommitted = false;
-                _netApplyScopeActive = false;
+                    _suppressReplicationThisFlush = false;
+                    _netApplyTargetRevision = 0;
+                    _netApplyRevisionCommitted = false;
+                    _netApplyScopeActive = false;
 
-                var needReschedule = _rescheduleRequested;
-                _rescheduleRequested = false;
+                    var needReschedule = _rescheduleRequested;
+                    _rescheduleRequested = false;
 
-                _scheduled = false;
-                CoroutineParent.RemoveLateUpdater(this);
+                    _scheduled = false;
+                    CoroutineParent.RemoveLateUpdater(this);
 
-                if (needReschedule)
-                    ScheduleFlush();
+                    if (needReschedule)
+                        ScheduleFlush();
+                }
+                finally
+                {
+                    if (profileStructuralBurst)
+                        STRUCTURAL_BURST_MARKER.End();
+                }
+            }
+        }
+
+        private void SwapTouchedBuffers()
+        {
+            var previousProcessing = _processingTouched;
+            _processingTouched = _pendingTouched;
+            _pendingTouched = previousProcessing;
+            _pendingTouched.Clear();
+        }
+
+        private static void MergeSortedComponentChanges(
+            NativeArray<ObjectComponentDirty> authoritative,
+            NativeArray<ObjectComponentDirty> presentation,
+            ref NativeList<ObjectComponentDirty> target)
+        {
+            var comparer = new ObjectComponentDirtyComparer();
+            var authoritativeIndex = 0;
+            var presentationIndex = 0;
+            while (authoritativeIndex < authoritative.Length && presentationIndex < presentation.Length)
+            {
+                if (comparer.Compare(authoritative[authoritativeIndex], presentation[presentationIndex]) <= 0)
+                {
+                    target.Add(authoritative[authoritativeIndex]);
+                    authoritativeIndex++;
+                }
+                else
+                {
+                    target.Add(presentation[presentationIndex]);
+                    presentationIndex++;
+                }
+            }
+
+            while (authoritativeIndex < authoritative.Length)
+            {
+                target.Add(authoritative[authoritativeIndex]);
+                authoritativeIndex++;
+            }
+
+            while (presentationIndex < presentation.Length)
+            {
+                target.Add(presentation[presentationIndex]);
+                presentationIndex++;
             }
         }
 
