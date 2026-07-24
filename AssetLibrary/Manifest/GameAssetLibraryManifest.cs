@@ -458,7 +458,11 @@ namespace DingoGameObjectsCMS.AssetLibrary
                     mod,
                     priority: 200,
                     order,
-                    isSessionBaseline: false));
+                    // Installed mods are discovered before the runtime lock is
+                    // sealed. Include them in that immutable session snapshot
+                    // so gameplay assets from external modules can be resolved
+                    // deterministically for the lifetime of the session.
+                    isSessionBaseline: true));
                 order++;
             }
 

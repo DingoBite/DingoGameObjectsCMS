@@ -47,7 +47,14 @@ namespace DingoGameObjectsCMS.Modding.Editor
             }
 
             Directory.CreateDirectory(dstModRootAbs);
-            BuildModToFolderInternal(modRootUnityPath, dstModRootAbs);
+            try
+            {
+                BuildModToFolderInternal(modRootUnityPath, dstModRootAbs);
+            }
+            finally
+            {
+                EditorUtility.ClearProgressBar();
+            }
         }
 
         [MenuItem("Assets/Game Assets/Build Mod To Folder...", false, 2200)]
@@ -86,10 +93,6 @@ namespace DingoGameObjectsCMS.Modding.Editor
             {
                 Debug.LogException(e);
                 throw;
-            }
-            finally
-            {
-                EditorUtility.ClearProgressBar();
             }
         }
 
