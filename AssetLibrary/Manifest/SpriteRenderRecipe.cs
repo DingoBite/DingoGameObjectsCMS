@@ -10,6 +10,7 @@ namespace DingoGameObjectsCMS.AssetLibrary.Manifest
         PivotPlane = 1,
         ConstantBand = 2,
         DepthMap = 3,
+        DepthAddressMap = 4,
     }
 
     [Serializable, Preserve]
@@ -61,7 +62,8 @@ namespace DingoGameObjectsCMS.AssetLibrary.Manifest
             {
                 throw new InvalidOperationException($"{context} alpha cutoff must be in [0, 1].");
             }
-            if (DepthMode == SpriteRenderDepthMode.DepthMap)
+            if (DepthMode == SpriteRenderDepthMode.DepthMap
+                || DepthMode == SpriteRenderDepthMode.DepthAddressMap)
             {
                 if (!DepthMapResource.IsDefined)
                 {

@@ -124,6 +124,7 @@ namespace DingoGameObjectsCMS.AssetLibrary.Manifest
                     throw new InvalidDataException($"Module '{_package.ModuleId}' sprite preset '{id}' is duplicated or null.");
                 }
                 if (preset.Settings.DepthMode == SpriteRenderDepthMode.DepthMap
+                    || preset.Settings.DepthMode == SpriteRenderDepthMode.DepthAddressMap
                     || preset.Settings.DepthMapResource.IsDefined)
                 {
                     throw new InvalidDataException(

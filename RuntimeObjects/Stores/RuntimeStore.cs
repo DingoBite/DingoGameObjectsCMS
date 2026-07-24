@@ -510,6 +510,29 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
                     : templateCache.Materialize(instance, assetLock, patchContext));
         }
 
+#if UNITY_EDITOR
+        /// <summary>
+        /// Publishes an already materialized exact-origin baseline. Kept
+        /// editor-only so playground assets cannot bypass the immutable lock in
+        /// a player or a network session.
+        /// </summary>
+        public GameRuntimeObject SpawnLocalAuthoringBaseline(
+            GameRuntimeObject materialized,
+            GameAssetTemplateCache templateCache,
+            long? parentId = null,
+            int insertIndex = -1)
+        {
+            if (materialized == null)
+                throw new ArgumentNullException(nameof(materialized));
+            return SpawnMaterialized(
+                _lastId,
+                templateCache,
+                parentId,
+                insertIndex,
+                () => materialized);
+        }
+#endif
+
         /// <summary>
         /// Publishes a lane-projected replica spawn atomically. This is kept
         /// separate from authored Spawn so network code cannot accidentally

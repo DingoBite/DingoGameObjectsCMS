@@ -180,6 +180,43 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
             return CreateRuntimeObject(instance, blueprint, components);
         }
 
+#if UNITY_EDITOR
+        /// <summary>
+        /// Materializes an explicitly supplied local authoring asset without
+        /// resolving it through the immutable installed-library lock. This is
+        /// editor-only by design and is intended for isolated production-runtime
+        /// playgrounds. Network/session code must use the lock-backed overload.
+        /// </summary>
+        public GameRuntimeObject MaterializeLocalAuthoringAsset(
+            GameAssetInstance instance,
+            GameAsset asset,
+            RuntimePatchCodecContext patchContext)
+        {
+            if (asset == null)
+                throw new ArgumentNullException(nameof(asset));
+            if (patchContext == null)
+                throw new ArgumentNullException(nameof(patchContext));
+            if (!instance.InstanceGuid.isValid)
+                throw new InvalidOperationException("GameAsset instance requires a stable InstanceGuid.");
+
+            var blueprint = GetOrCreate(instance.Asset, asset);
+            var components = blueprint.DecodeComponents(_registry, _context);
+            if (instance.Patch != null)
+            {
+                var patchEngine = ReferenceEquals(patchContext, _context)
+                    ? _patchEngine
+                    : new RuntimeObjectPatchEngine(_registry, patchContext);
+                var runtimePatch = _authoringCodec.MaterializeRuntimePatch(
+                    components,
+                    instance.Patch,
+                    patchContext);
+                components = patchEngine.ApplyPatch(components, runtimePatch);
+            }
+
+            return CreateRuntimeObject(instance, blueprint, components);
+        }
+#endif
+
         /// <summary>
         /// Materializes an already validated runtime-binary projection. Unlike
         /// authored local overrides, this path applies only the component lanes
