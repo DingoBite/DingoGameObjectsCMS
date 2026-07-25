@@ -192,6 +192,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
         public readonly RuntimeEncodedCommand EncodedCommand;
         public readonly RuntimeCommandJournalEntry JournalEntry;
         public readonly Exception Exception;
+        public readonly bool ReplayJournalExcluded;
 
         public bool Succeeded => Status == RuntimeCommandExecutionStatus.Succeeded;
         public bool Failed => Status == RuntimeCommandExecutionStatus.Failed;
@@ -206,7 +207,8 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
             RuntimeCommandExecutionStatus status,
             in RuntimeEncodedCommand encodedCommand,
             in RuntimeCommandJournalEntry journalEntry,
-            Exception exception)
+            Exception exception,
+            bool replayJournalExcluded = false)
         {
             if (executionId == 0)
                 throw new ArgumentOutOfRangeException(nameof(executionId));
@@ -224,6 +226,12 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
                 throw new ArgumentException("A successful command result cannot contain an exception.", nameof(exception));
             if (status != RuntimeCommandExecutionStatus.Succeeded && exception == null)
                 throw new ArgumentException("A non-successful command result requires an exception.", nameof(exception));
+            if (replayJournalExcluded
+                && (encodedCommand.IsValid || journalEntry.Sequence > 0))
+            {
+                throw new ArgumentException(
+                    "A command excluded from the replay journal cannot carry encoded replay data.");
+            }
 
             ExecutionId = executionId;
             ApplyBeforeTick = applyBeforeTick;
@@ -237,6 +245,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
                     journalEntry.EncodedCommand)
                 : default;
             Exception = exception;
+            ReplayJournalExcluded = replayJournalExcluded;
         }
     }
 }

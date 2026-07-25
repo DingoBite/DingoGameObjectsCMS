@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using DingoGameObjectsCMS.RuntimeObjects.Overrides;
+using DingoGameObjectsCMS.RuntimeObjects.Replay;
 using DingoGameObjectsCMS.RuntimeObjects.Stores;
 using DingoGameObjectsCMS.Stores;
 using DingoProjectAppStructure.Core.Model;
@@ -27,6 +28,8 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
         private RuntimeCommandsBusMode _mode;
         private RuntimeReplayCommandRegistry _replayRegistry;
         private RuntimePersistentPatchCodecContext _replayCodecContext;
+        private RuntimeReplayStoreScope _replayStoreScope;
+        private bool _clearReplayStoreScopeRequested;
 
         private readonly SafeMulticast<GameRuntimeCommand> _beforeExecute = new();
         private readonly SafeMulticast<GameRuntimeCommand> _afterExecute = new();
@@ -40,6 +43,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
         public bool HasOutboundDispatcher => _outboundDispatcher != null;
         public RuntimeCommandsBusMode Mode => _mode;
         public bool HasReplayRegistry => _replayRegistry != null;
+        public bool HasReplayStoreScope => _replayStoreScope != null;
         public bool HasDrainedTick => _hasDrainedTick;
         public long LastApplyBeforeTick => _hasDrainedTick ? _lastApplyBeforeTick : -1;
         public ulong JournalSequence => _nextJournalSequence;
@@ -131,6 +135,58 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
 
             _replayRegistry = null;
             _replayCodecContext = null;
+            _replayStoreScope = null;
+            _clearReplayStoreScopeRequested = false;
+        }
+
+        public void SetReplayStoreScope(
+            RuntimeReplayStoreScope storeScope)
+        {
+            if (storeScope == null)
+            {
+                throw new ArgumentNullException(nameof(storeScope));
+            }
+            if (_flushInProgress)
+            {
+                throw new InvalidOperationException(
+                    "Replay RuntimeStore scope cannot change during Drain.");
+            }
+            if (_replayRegistry == null)
+            {
+                throw new InvalidOperationException(
+                    "Replay RuntimeStore scope requires a replay command registry.");
+            }
+            if (_replayStoreScope != null)
+            {
+                throw new InvalidOperationException(
+                    "Replay RuntimeStore scope is already assigned.");
+            }
+
+            _replayStoreScope = storeScope;
+            _clearReplayStoreScopeRequested = false;
+        }
+
+        public void ClearReplayStoreScope(
+            RuntimeReplayStoreScope expectedScope = null)
+        {
+            if (_replayStoreScope != null
+                && expectedScope != null
+                && !ReferenceEquals(
+                    _replayStoreScope,
+                    expectedScope))
+            {
+                throw new InvalidOperationException(
+                    "Cannot clear a replay RuntimeStore scope owned by another recorder.");
+            }
+
+            if (_flushInProgress)
+            {
+                _clearReplayStoreScopeRequested = true;
+                return;
+            }
+
+            _replayStoreScope = null;
+            _clearReplayStoreScopeRequested = false;
         }
 
         public void SetOutboundDispatcher(RuntimeCommandOutboundDispatcher outboundDispatcher)
@@ -287,16 +343,23 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
                     var executionId = ++_nextExecutionId;
                     var encodedCommand = default(RuntimeEncodedCommand);
                     Exception replayEncodingFailure = null;
+                    var replayJournalExcluded = false;
                     var replayEncodingStatus =
                         RuntimeCommandExecutionStatus.Succeeded;
                     if (_replayRegistry != null)
                     {
                         try
                         {
-                            if (!_replayRegistry.TryEncode(
-                                cmd,
-                                _replayCodecContext,
-                                out encodedCommand))
+                            replayJournalExcluded =
+                                _replayStoreScope != null
+                                && !IsIncludedInReplayStoreScope(
+                                    cmd,
+                                    _replayStoreScope);
+                            if (!replayJournalExcluded
+                                && !_replayRegistry.TryEncode(
+                                    cmd,
+                                    _replayCodecContext,
+                                    out encodedCommand))
                             {
                                 replayEncodingStatus =
                                     RuntimeCommandExecutionStatus.Unsupported;
@@ -334,7 +397,8 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
                                     replayEncodingStatus,
                                     encodedCommand,
                                     default,
-                                    replayEncodingFailure));
+                                    replayEncodingFailure,
+                                    replayJournalExcluded));
                             continue;
                         }
 
@@ -354,7 +418,8 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
                             RuntimeCommandExecutionStatus.Succeeded,
                             encodedCommand,
                             journalEntry,
-                            null);
+                            null,
+                            replayJournalExcluded);
                         if (success.HasJournalEntry)
                             _journalEntryRecorded.Invoke(journalEntry);
                         _afterExecute.Invoke(cmd);
@@ -370,7 +435,8 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
                             RuntimeCommandExecutionStatus.Failed,
                             encodedCommand,
                             default,
-                            e));
+                            e,
+                            replayJournalExcluded));
                     }
                 }
 
@@ -380,6 +446,11 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
             finally
             {
                 _flushInProgress = false;
+                if (_clearReplayStoreScopeRequested)
+                {
+                    _replayStoreScope = null;
+                    _clearReplayStoreScopeRequested = false;
+                }
                 var needReschedule = _mode == RuntimeCommandsBusMode.AutomaticLateUpdate
                                      && (_rescheduleRequested || _queue.Count > 0);
                 _rescheduleRequested = false;
@@ -427,6 +498,50 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
                 if (c is ICommandLogic logic)
                     logic.Execute(command);
             }
+        }
+
+        private static bool IsIncludedInReplayStoreScope(
+            GameRuntimeCommand command,
+            RuntimeReplayStoreScope storeScope)
+        {
+            var components = command.Components;
+            IRuntimeReplayStoreScopedCommand classifier = null;
+            if (components != null)
+            {
+                foreach (var component in components)
+                {
+                    if (component
+                        is not IRuntimeReplayStoreScopedCommand candidate)
+                    {
+                        continue;
+                    }
+                    if (classifier != null)
+                    {
+                        throw new NotSupportedException(
+                            "Runtime command contains multiple replay "
+                            + "RuntimeStore scope classifiers.");
+                    }
+
+                    classifier = candidate;
+                }
+            }
+            if (classifier == null)
+            {
+                throw new NotSupportedException(
+                    "Runtime command has no replay RuntimeStore "
+                    + "scope classifier.");
+            }
+
+            var disposition =
+                classifier.ClassifyReplayStoreScope(storeScope);
+            return disposition switch
+            {
+                RuntimeReplayStoreScopeDisposition.Included => true,
+                RuntimeReplayStoreScopeDisposition.OutsideScope => false,
+                _ => throw new InvalidOperationException(
+                    $"Unknown replay RuntimeStore scope disposition "
+                    + $"'{disposition}'."),
+            };
         }
     }
 }

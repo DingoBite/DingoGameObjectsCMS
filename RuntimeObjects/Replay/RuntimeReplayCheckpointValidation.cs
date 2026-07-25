@@ -121,11 +121,11 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
             _runtimeComponentTypeIds = new HashSet<uint>();
             foreach (var typeId in runtimeComponentTypeIds)
             {
-                if (typeId == 0u || !_runtimeComponentTypeIds.Add(typeId))
+                if (!_runtimeComponentTypeIds.Add(typeId))
                 {
                     throw new ArgumentException(
                         $"Reference-closure entry '{reference.StoreId}/{reference.InstanceGuid}' "
-                        + $"contains invalid or duplicate component type id {typeId}.",
+                        + $"contains duplicate component type id {typeId}.",
                         nameof(runtimeComponentTypeIds));
                 }
             }

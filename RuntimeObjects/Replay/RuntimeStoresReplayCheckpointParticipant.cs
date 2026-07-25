@@ -87,6 +87,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
         private readonly StoreRealm _realm;
         private readonly GameAssetLibraryLock _assetLock;
         private readonly GameAssetTemplateCache _templates;
+        private readonly RuntimeReplayStoreScope _storeScope;
         private readonly RuntimeObjectPatchBinaryCodec _patchCodec = new();
         private readonly RuntimeReplayReferenceClosureBinding
             _referenceClosureBinding;
@@ -99,6 +100,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
             StoreRealm realm,
             GameAssetLibraryLock assetLock,
             GameAssetTemplateCache templates,
+            RuntimeReplayStoreScope storeScope,
             RuntimeReplayReferenceClosureBinding referenceClosureBinding =
                 null)
         {
@@ -112,6 +114,9 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
                          ?? throw new ArgumentNullException(nameof(assetLock));
             _templates = templates
                          ?? throw new ArgumentNullException(nameof(templates));
+            _storeScope = storeScope
+                          ?? throw new ArgumentNullException(
+                              nameof(storeScope));
             _referenceClosureBinding = referenceClosureBinding;
         }
 
@@ -122,7 +127,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
                 throw new ArgumentNullException(nameof(writer));
             }
 
-            RuntimeStores.FlushToQuiescence(_realm);
+            FlushScopedStoresToQuiescence();
             WriteSnapshot(writer, CaptureSnapshot(), includeRevision: true);
         }
 
@@ -133,7 +138,9 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
                 throw new ArgumentNullException(nameof(reader));
             }
 
-            ValidateSnapshot(ReadSnapshot(reader));
+            var snapshot = ReadSnapshot(reader);
+            ValidateSnapshot(snapshot);
+            ValidateScope(snapshot);
         }
 
         public void ContributeValidationContext(
@@ -149,6 +156,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
                 throw new ArgumentNullException(nameof(context));
             }
             var snapshot = ReadSnapshot(reader);
+            ValidateScope(snapshot);
             if (_referenceClosureBinding == null)
             {
                 return;
@@ -167,6 +175,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
 
             var snapshot = ReadSnapshot(reader);
             ValidateSnapshot(snapshot);
+            ValidateScope(snapshot);
             RestoreSnapshot(snapshot);
         }
 
@@ -177,17 +186,72 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
                 throw new ArgumentNullException(nameof(writer));
             }
 
-            RuntimeStores.FlushToQuiescence(_realm);
+            FlushScopedStoresToQuiescence();
             WriteSnapshot(writer, CaptureSnapshot(), includeRevision: false);
+        }
+
+        private void FlushScopedStoresToQuiescence()
+        {
+            for (var i = 0; i < _storeScope.Count; i++)
+            {
+                var storeId = _storeScope.TakeStoreId(i);
+                if (!RuntimeStores.TryGetRuntimeStore(
+                        storeId,
+                        _realm,
+                        out var store)
+                    || store == null
+                    || store.Retired)
+                {
+                    throw new InvalidOperationException(
+                        $"Replay RuntimeStore scope requires active store "
+                        + $"'{storeId}' in realm {_realm}.");
+                }
+                store.FlushToQuiescence();
+            }
+        }
+
+        private void ValidateScope(RuntimeStoresReplaySnapshot snapshot)
+        {
+            if (snapshot.Stores.Count != _storeScope.Count)
+            {
+                throw new InvalidOperationException(
+                    $"Replay checkpoint contains {snapshot.Stores.Count} "
+                    + $"RuntimeStores, but the selected scope requires "
+                    + $"{_storeScope.Count}.");
+            }
+
+            for (var i = 0; i < snapshot.Stores.Count; i++)
+            {
+                var storeId = snapshot.Stores[i].StoreId;
+                if (!_storeScope.Contains(storeId))
+                {
+                    throw new InvalidOperationException(
+                        $"Replay checkpoint store '{storeId}' is outside "
+                        + "the selected RuntimeStore scope.");
+                }
+            }
         }
 
         private RuntimeStoresReplaySnapshot CaptureSnapshot()
         {
             var snapshot = new RuntimeStoresReplaySnapshot();
-            var stores = RuntimeStores.EnumerateStores(_realm)
-                .Where(store => store != null && !store.Retired)
-                .OrderBy(store => store.Id.ToString(), StringComparer.Ordinal)
-                .ToArray();
+            var stores = new RuntimeStore[_storeScope.Count];
+            for (var i = 0; i < stores.Length; i++)
+            {
+                var storeId = _storeScope.TakeStoreId(i);
+                if (!RuntimeStores.TryGetRuntimeStore(
+                        storeId,
+                        _realm,
+                        out var store)
+                    || store == null
+                    || store.Retired)
+                {
+                    throw new InvalidOperationException(
+                        $"Replay RuntimeStore scope requires active store "
+                        + $"'{storeId}' in realm {_realm}.");
+                }
+                stores[i] = store;
+            }
             if (stores.Length > MAX_STORES)
             {
                 throw new InvalidOperationException(
@@ -624,7 +688,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
                 RuntimeStores.PublishPreparedRestoreStores(
                     stagedStores,
                     directions,
-                    replaceRealm: true);
+                    replaceRealm: false);
                 published = true;
                 PlaybackProjectionCommands();
             }

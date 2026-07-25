@@ -3,6 +3,7 @@ using DingoGameObjectsCMS.RuntimeObjects;
 using DingoGameObjectsCMS.RuntimeObjects.Commands;
 using DingoGameObjectsCMS.RuntimeObjects.Objects;
 using DingoGameObjectsCMS.RuntimeObjects.Overrides;
+using DingoGameObjectsCMS.RuntimeObjects.Replay;
 using NUnit.Framework;
 using Unity.Collections;
 using UnityEngine;
@@ -33,10 +34,53 @@ namespace DingoGameObjectsCMS.Tests.Editor
         }
     }
 
+    public class RuntimeReplayCmsScopedCommand20260725 :
+        GameRuntimeComponent,
+        ICommandLogic,
+        IRuntimeReplayStoreScopedCommand
+    {
+        public FixedString32Bytes StoreId;
+        public int ExecutionCount;
+
+        public RuntimeReplayStoreScopeDisposition ClassifyReplayStoreScope(
+            RuntimeReplayStoreScope storeScope)
+        {
+            return storeScope.Contains(StoreId)
+                ? RuntimeReplayStoreScopeDisposition.Included
+                : RuntimeReplayStoreScopeDisposition.OutsideScope;
+        }
+
+        public void Execute(GameRuntimeCommand command)
+        {
+            ExecutionCount++;
+        }
+    }
+
     public class RuntimeReplayCmsFoundation20260725Tests
     {
         private const uint VALUE_TYPE_ID = 71;
         private const uint ALTERNATE_TYPE_ID = 72;
+
+        [Test]
+        public void StoreScope_IsExplicitUniqueAndDeterministicallyOrdered()
+        {
+            var scope = new RuntimeReplayStoreScope(
+                "snake",
+                "map",
+                "mob");
+
+            Assert.That(scope.Count, Is.EqualTo(3));
+            Assert.That(scope.TakeStoreId(0).ToString(), Is.EqualTo("map"));
+            Assert.That(scope.TakeStoreId(1).ToString(), Is.EqualTo("mob"));
+            Assert.That(scope.TakeStoreId(2).ToString(), Is.EqualTo("snake"));
+            Assert.That(
+                scope.Contains(new FixedString32Bytes("mob")),
+                Is.True);
+            Assert.Throws<ArgumentException>(
+                () => new RuntimeReplayStoreScope("map", "map"));
+            Assert.Throws<ArgumentException>(
+                () => new RuntimeReplayStoreScope(Array.Empty<string>()));
+        }
 
         [Test]
         public void Registry_SealIsOrderIndependentAndLocksCatalog()
@@ -254,6 +298,79 @@ namespace DingoGameObjectsCMS.Tests.Editor
             Assert.That(result.HasEncodedCommand, Is.False);
             Assert.That(result.HasJournalEntry, Is.False);
             Assert.That(result.Exception, Is.TypeOf<NotSupportedException>());
+        }
+
+        [Test]
+        public void ExternalDrain_OutOfScopeUnregisteredCommandExecutesWithoutReplayFault()
+        {
+            var registry = CreateValueRegistry();
+            var bus = new RuntimeCommandsBus(
+                RuntimeCommandsBusMode.ExternalTickBarrier,
+                registry);
+            var storeScope =
+                new RuntimeReplayStoreScope("session");
+            bus.SetReplayStoreScope(storeScope);
+            var logic = new RuntimeReplayCmsScopedCommand20260725
+            {
+                StoreId = new FixedString32Bytes("meta"),
+            };
+            var command = new GameRuntimeCommand();
+            command.AddOrReplace(logic);
+            var journalCount = 0;
+            var result = default(RuntimeCommandExecutionResult);
+            bus.JournalEntryRecorded += _ => journalCount++;
+            bus.CommandCompleted += value => result = value;
+
+            bus.Enqueue(command);
+            bus.Drain(applyBeforeTick: 12);
+
+            Assert.That(logic.ExecutionCount, Is.EqualTo(1));
+            Assert.That(journalCount, Is.Zero);
+            Assert.That(result.Status,
+                Is.EqualTo(RuntimeCommandExecutionStatus.Succeeded));
+            Assert.That(result.ReplayJournalExcluded, Is.True);
+            Assert.That(result.HasEncodedCommand, Is.False);
+            Assert.That(result.HasJournalEntry, Is.False);
+            Assert.That(result.Exception, Is.Null);
+            Assert.That(bus.JournalSequence, Is.Zero);
+            bus.ClearReplayStoreScope(storeScope);
+        }
+
+        [Test]
+        public void ExternalDrain_ActiveScopeRequiresExplicitCommandClassification()
+        {
+            var registry = CreateValueRegistry();
+            var bus = new RuntimeCommandsBus(
+                RuntimeCommandsBusMode.ExternalTickBarrier,
+                registry);
+            var storeScope =
+                new RuntimeReplayStoreScope("session");
+            bus.SetReplayStoreScope(storeScope);
+            var logic = new RuntimeReplayCmsValueCommand20260725
+            {
+                Value = 9,
+                Marker = "unclassified",
+            };
+            var command = new GameRuntimeCommand();
+            command.AddOrReplace(logic);
+            var journalCount = 0;
+            var result = default(RuntimeCommandExecutionResult);
+            bus.JournalEntryRecorded += _ => journalCount++;
+            bus.CommandCompleted += value => result = value;
+
+            bus.Enqueue(command);
+            bus.Drain(applyBeforeTick: 13);
+
+            Assert.That(logic.Value, Is.EqualTo(109));
+            Assert.That(journalCount, Is.Zero);
+            Assert.That(result.Status,
+                Is.EqualTo(RuntimeCommandExecutionStatus.Unsupported));
+            Assert.That(result.ReplayJournalExcluded, Is.False);
+            Assert.That(result.Exception, Is.TypeOf<NotSupportedException>());
+            Assert.That(
+                result.Exception.Message,
+                Does.Contain("scope classifier"));
+            bus.ClearReplayStoreScope(storeScope);
         }
 
         private static RuntimeReplayCommandRegistry CreateRegistry(

@@ -1,7 +1,10 @@
 using System;
 using System.IO;
+using DingoGameObjectsCMS.RuntimeObjects.Commands;
 using DingoGameObjectsCMS.RuntimeObjects.Replay;
 using NUnit.Framework;
+using Unity.Collections;
+using UnityEngine;
 
 namespace DingoGameObjectsCMS.Tests.Editor
 {
@@ -154,6 +157,26 @@ namespace DingoGameObjectsCMS.Tests.Editor
             encoded[encoded.Length - 1] ^= 0x5a;
             Assert.Throws<InvalidOperationException>(
                 () => RuntimeReplayCheckpointCodec.Decode(encoded));
+        }
+
+        [Test]
+        public void ReferenceClosure_AcceptsRegisteredComponentTypeIdZero()
+        {
+            var reference = new RuntimeReplayObjectRef(
+                new FixedString32Bytes("snake"),
+                Hash128.Compute("replay-reference-type-zero"));
+
+            Assert.DoesNotThrow(() =>
+                new RuntimeReplayObjectReferenceClosureEntry(
+                    reference,
+                    new uint[] { 0u, 17u }));
+            var duplicate = Assert.Throws<ArgumentException>(() =>
+                new RuntimeReplayObjectReferenceClosureEntry(
+                    reference,
+                    new uint[] { 0u, 0u }));
+            Assert.That(
+                duplicate.Message,
+                Does.Contain("duplicate component type id 0"));
         }
 
         [Test]

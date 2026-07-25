@@ -95,6 +95,14 @@ namespace DingoGameObjectsCMS.View
 
         public void Bind(RuntimeStore store, RuntimeObjectCollectionScope scope)
         {
+            Bind(store, scope, CollectionViewSpawnOptions.Default);
+        }
+
+        public void Bind(
+            RuntimeStore store,
+            RuntimeObjectCollectionScope scope,
+            CollectionViewSpawnOptions spawnOptions)
+        {
             if (store == null)
                 throw new ArgumentNullException(nameof(store));
 
@@ -111,7 +119,7 @@ namespace DingoGameObjectsCMS.View
             _store.ComponentStructureChanges += ApplyComponentStructureChanges;
             _store.ComponentChanges += ApplyComponentChanges;
             _store.DirtyPublishCompleted += ApplyDirtyPublishCompleted;
-            ResetFromStore(ResolveSpawnOptions(CollectionViewSpawnOptions.Default));
+            ResetFromStore(ResolveSpawnOptions(spawnOptions));
         }
 
         public void RefreshFromStore() => RefreshFromStore(CollectionViewSpawnOptions.Default);
