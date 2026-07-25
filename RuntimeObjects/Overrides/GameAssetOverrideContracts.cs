@@ -57,7 +57,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
             RuntimeObjectPatch patch = null)
         {
             return new GameAssetInstance(
-                instanceGuid.isValid ? instanceGuid : IdUtils.NewHash128FromGuid(),
+                instanceGuid.isValid ? instanceGuid : RuntimeInstanceIdentity.Next(),
                 asset,
                 patch);
         }

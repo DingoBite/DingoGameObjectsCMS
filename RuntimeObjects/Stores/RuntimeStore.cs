@@ -157,16 +157,28 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
         {
             if (Realm != StoreRealm.Client)
                 throw new InvalidOperationException($"RuntimeStore '{Id}' can finalize a replica baseline only in the client realm.");
-            if (Retired || StoreGeneration == 0 || Epoch == 0)
-                throw new InvalidOperationException($"RuntimeStore '{Id}' must adopt a live replica slot before baseline finalization.");
-            if (_flushInProgress)
-                throw new InvalidOperationException($"RuntimeStore '{Id}' cannot finalize a baseline while a flush is in progress.");
+            FinalizeStagedSnapshot(storeRevision);
+        }
 
-            // Baseline construction is staging work, not a local mutation
+        internal void FinalizeRestoredSnapshot(ulong storeRevision)
+        {
+            FinalizeStagedSnapshot(storeRevision);
+        }
+
+        private void FinalizeStagedSnapshot(ulong storeRevision)
+        {
+            if (Retired || StoreGeneration == 0 || Epoch == 0)
+                throw new InvalidOperationException($"RuntimeStore '{Id}' must adopt a live slot before snapshot finalization.");
+            if (_flushInProgress)
+                throw new InvalidOperationException($"RuntimeStore '{Id}' cannot finalize a snapshot while a flush is in progress.");
+
+            // Snapshot construction is staging work, not a local mutation
             // batch. The fully built store becomes observable only when the
             // registry swaps it in, so no dirty stream is emitted here.
             foreach (var runtimeObject in _all.V.Values)
+            {
                 runtimeObject?.ClearDirty();
+            }
             _structureChanges.Clear();
             _structureChangesNeedSort = false;
             _pendingTouched.Clear();
@@ -184,6 +196,33 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
             CoroutineParent.RemoveLateUpdater(this);
             _all.V = _all.V;
             _parents.V = _parents.V;
+        }
+
+        public int FlushToQuiescence(int maxPasses = 64)
+        {
+            if (maxPasses <= 0)
+                throw new ArgumentOutOfRangeException(nameof(maxPasses));
+            if (_flushInProgress)
+                throw new InvalidOperationException($"RuntimeStore '{Id}' cannot synchronously flush while another flush is in progress.");
+
+            var passes = 0;
+            while (_scheduled
+                   || _pendingTouched.Count > 0
+                   || _processingTouched.Count > 0
+                   || _structureChanges.Count > 0
+                   || _presentationComponentChanges.Count > 0)
+            {
+                if (passes >= maxPasses)
+                {
+                    throw new InvalidOperationException(
+                        $"RuntimeStore '{Id}' did not reach quiescence after {maxPasses} synchronous flush passes.");
+                }
+
+                Flush();
+                passes++;
+            }
+
+            return passes;
         }
 
         internal void Retire()

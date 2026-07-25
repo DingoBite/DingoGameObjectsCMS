@@ -12,6 +12,12 @@ namespace DingoGameObjectsCMS
             return world.TakeEndSimulationECB();
         }
 
+        public static EntityCommandBuffer TakeEndFixedStepSimulationECB(this World world)
+        {
+            var ecbSys = world.GetOrCreateSystemManaged<EndFixedStepSimulationEntityCommandBufferSystem>();
+            return ecbSys.CreateCommandBuffer();
+        }
+
         public static EntityCommandBuffer TakeEndSimulationECB(this World world)
         {
             var ecbSys = world.GetOrCreateSystemManaged<EndSimulationEntityCommandBufferSystem>();

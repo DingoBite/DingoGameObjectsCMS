@@ -29,10 +29,25 @@ namespace DingoGameObjectsCMS.Stores
         ClientReplica = 3,
     }
 
+    public readonly struct RuntimeStoresRestoreCompleted
+    {
+        public readonly StoreRealm Realm;
+        public readonly IReadOnlyList<RuntimeStore> Stores;
+
+        public RuntimeStoresRestoreCompleted(
+            StoreRealm realm,
+            IReadOnlyList<RuntimeStore> stores)
+        {
+            Realm = realm;
+            Stores = stores ?? throw new ArgumentNullException(nameof(stores));
+        }
+    }
+
     public static class RuntimeStores
     {
         private static readonly Bind<RuntimeExecutionRole> _role = new();
         private static readonly SafeMulticast<RuntimeStoreLifecycleChange> _storeLifecycleDispatcher = new();
+        private static readonly SafeMulticast<RuntimeStoresRestoreCompleted> _restoreCompletedDispatcher = new();
 
         private static readonly Dictionary<FixedString32Bytes, RuntimeStore> _serverStoresById = new();
         private static readonly Dictionary<FixedString32Bytes, RuntimeStore> _clientStoresById = new();
@@ -45,6 +60,12 @@ namespace DingoGameObjectsCMS.Stores
         private static readonly BindDict<FixedString32Bytes, RuntimeStore> _clientStores = new();
 
         private static readonly Dictionary<FixedString32Bytes, StoreNetDir> _netDirById = new();
+        private static readonly List<RuntimeStore> _serverFlushScratch = new();
+        private static readonly List<RuntimeStore> _clientFlushScratch = new();
+        private static readonly Comparison<RuntimeStore> _storeIdComparison =
+            CompareStoreIds;
+        private static bool _serverFlushScratchInUse;
+        private static bool _clientFlushScratchInUse;
         private static World _world;
 
         public static IReadonlyBind<RuntimeExecutionRole> Role => _role;
@@ -59,6 +80,12 @@ namespace DingoGameObjectsCMS.Stores
         {
             add => _storeLifecycleDispatcher.Subscribe(value);
             remove => _storeLifecycleDispatcher.Unsubscribe(value);
+        }
+
+        public static event Action<RuntimeStoresRestoreCompleted> RestoreCompleted
+        {
+            add => _restoreCompletedDispatcher.Subscribe(value);
+            remove => _restoreCompletedDispatcher.Unsubscribe(value);
         }
 
         static RuntimeStores()
@@ -132,6 +159,10 @@ namespace DingoGameObjectsCMS.Stores
             _serverStoreGenerationById.Clear();
             _clientStoreGenerationById.Clear();
             _netDirById.Clear();
+            _serverFlushScratch.Clear();
+            _clientFlushScratch.Clear();
+            _serverFlushScratchInUse = false;
+            _clientFlushScratchInUse = false;
 
             _serverStores.V.Clear();
             _clientStores.V.Clear();
@@ -141,6 +172,7 @@ namespace DingoGameObjectsCMS.Stores
             _world = null;
             _role.V = RuntimeExecutionRole.OfflineAuthoritative;
             _storeLifecycleDispatcher.Clear();
+            _restoreCompletedDispatcher.Clear();
         }
 
         public static void SetRole(RuntimeExecutionRole role)
@@ -255,6 +287,52 @@ namespace DingoGameObjectsCMS.Stores
 
             return GetDict(realm).Keys;
         }
+
+        public static int FlushToQuiescence(StoreRealm realm, int maxPassesPerStore = 64)
+        {
+            if (maxPassesPerStore <= 0)
+                throw new ArgumentOutOfRangeException(nameof(maxPassesPerStore));
+
+            var stores = realm == StoreRealm.Server
+                ? _serverFlushScratch
+                : _clientFlushScratch;
+            if (realm == StoreRealm.Server
+                    ? _serverFlushScratchInUse
+                    : _clientFlushScratchInUse)
+            {
+                throw new InvalidOperationException(
+                    $"RuntimeStore flush-to-quiescence cannot be re-entered for realm {realm}.");
+            }
+
+            if (realm == StoreRealm.Server)
+                _serverFlushScratchInUse = true;
+            else
+                _clientFlushScratchInUse = true;
+
+            try
+            {
+                stores.Clear();
+                foreach (var store in GetDict(realm).Values)
+                    stores.Add(store);
+                stores.Sort(_storeIdComparison);
+
+                var totalPasses = 0;
+                for (var i = 0; i < stores.Count; i++)
+                    totalPasses += stores[i].FlushToQuiescence(maxPassesPerStore);
+                return totalPasses;
+            }
+            finally
+            {
+                stores.Clear();
+                if (realm == StoreRealm.Server)
+                    _serverFlushScratchInUse = false;
+                else
+                    _clientFlushScratchInUse = false;
+            }
+        }
+
+        private static int CompareStoreIds(RuntimeStore left, RuntimeStore right) =>
+            left.Id.CompareTo(right.Id);
         
         public static RuntimeStore SetRuntimeStore(RuntimeStore store, StoreNetDir dir = StoreNetDir.None, bool ensurePair = false)
         {
@@ -354,6 +432,158 @@ namespace DingoGameObjectsCMS.Stores
             }
 
             store.AdoptSlot(epoch, authoritativeGeneration);
+        }
+
+        public static RuntimeStore PrepareRestoreStore(FixedString32Bytes storeId, StoreRealm realm)
+        {
+            if (storeId.Length == 0)
+                throw new ArgumentException("Restore staging requires a non-empty store id.", nameof(storeId));
+
+            var epochs = GetEpochDict(realm);
+            var generations = GetGenerationDict(realm);
+            var currentEpoch = epochs.GetValueOrDefault(storeId);
+            var currentGeneration = generations.GetValueOrDefault(storeId);
+            if (currentEpoch == uint.MaxValue)
+                throw new InvalidOperationException($"RuntimeStore '{storeId}' in realm {realm} exhausted its epoch range.");
+            if (currentGeneration == uint.MaxValue)
+                throw new InvalidOperationException($"RuntimeStore '{storeId}' in realm {realm} exhausted its generation range.");
+
+            var store = new RuntimeStore(storeId, realm, RequireWorld());
+            store.AdoptSlot(currentEpoch + 1u, currentGeneration + 1u);
+            return store;
+        }
+
+        public static void FinalizeRestoredSnapshot(RuntimeStore store, ulong storeRevision)
+        {
+            if (store == null)
+                throw new ArgumentNullException(nameof(store));
+            store.FinalizeRestoredSnapshot(storeRevision);
+        }
+
+        public static void PublishPreparedRestoreStores(
+            IReadOnlyList<RuntimeStore> stores,
+            IReadOnlyDictionary<FixedString32Bytes, StoreNetDir> directions,
+            bool replaceRealm = true)
+        {
+            if (stores == null)
+                throw new ArgumentNullException(nameof(stores));
+            if (stores.Count == 0)
+                throw new ArgumentException("Restore publication group cannot be empty.", nameof(stores));
+
+            var realm = stores[0]?.Realm
+                        ?? throw new InvalidOperationException("Restore publication group begins with a null store.");
+            var dict = GetDict(realm);
+            var bind = GetBind(realm);
+            var epochs = GetEpochDict(realm);
+            var generations = GetGenerationDict(realm);
+            var seen = new HashSet<FixedString32Bytes>();
+            var previous = new RuntimeStore[stores.Count];
+
+            for (var i = 0; i < stores.Count; i++)
+            {
+                var store = stores[i]
+                            ?? throw new InvalidOperationException($"Restore publication group contains a null store at index {i}.");
+                if (store.Realm != realm)
+                    throw new InvalidOperationException("Restore publication group cannot mix store realms.");
+                if (store.Retired || store.Epoch == 0 || store.StoreGeneration == 0)
+                    throw new InvalidOperationException($"Restore store '{store.Id}' has not been prepared.");
+                if (!seen.Add(store.Id))
+                    throw new InvalidOperationException($"Restore publication group contains duplicate store '{store.Id}'.");
+
+                var expectedEpoch = checked(epochs.GetValueOrDefault(store.Id) + 1u);
+                var expectedGeneration = checked(generations.GetValueOrDefault(store.Id) + 1u);
+                if (store.Epoch != expectedEpoch || store.StoreGeneration != expectedGeneration)
+                {
+                    throw new InvalidOperationException(
+                        $"Restore store '{store.Id}' prepared slot {store.Epoch}/{store.StoreGeneration}, "
+                        + $"but registry expects {expectedEpoch}/{expectedGeneration}.");
+                }
+
+                dict.TryGetValue(store.Id, out previous[i]);
+                var direction = directions != null && directions.TryGetValue(store.Id, out var configured)
+                    ? configured
+                    : GetNetDir(store.Id);
+                ValidateAuthoritativeS2CStore(store.Id, direction, store);
+            }
+
+            List<RuntimeStore> removed = null;
+            if (replaceRealm)
+            {
+                foreach (var pair in dict)
+                {
+                    if (seen.Contains(pair.Key))
+                        continue;
+                    removed ??= new List<RuntimeStore>();
+                    removed.Add(pair.Value);
+                }
+            }
+
+            if (replaceRealm)
+            {
+                dict.Clear();
+                bind.V.Clear();
+            }
+
+            for (var i = 0; i < stores.Count; i++)
+            {
+                var store = stores[i];
+                epochs[store.Id] = store.Epoch;
+                generations[store.Id] = store.StoreGeneration;
+                dict[store.Id] = store;
+                bind.V[store.Id] = store;
+                if (directions != null && directions.TryGetValue(store.Id, out var direction))
+                    _netDirById[store.Id] = direction;
+            }
+            bind.V = bind.V;
+
+            for (var i = 0; i < previous.Length; i++)
+            {
+                if (!ReferenceEquals(previous[i], stores[i]))
+                    previous[i]?.Retire();
+            }
+            if (removed != null)
+            {
+                for (var i = 0; i < removed.Count; i++)
+                {
+                    removed[i]?.Retire();
+                }
+            }
+
+            if (replaceRealm)
+            {
+                var netStoreIds = _netDirById.Keys.ToArray();
+                for (var i = 0; i < netStoreIds.Length; i++)
+                {
+                    var storeId = netStoreIds[i];
+                    if (!_serverStoresById.ContainsKey(storeId) && !_clientStoresById.ContainsKey(storeId))
+                        _netDirById.Remove(storeId);
+                }
+            }
+
+            for (var i = 0; i < stores.Count; i++)
+            {
+                if (ReferenceEquals(previous[i], stores[i]))
+                    continue;
+                _storeLifecycleDispatcher.Invoke(previous[i] == null
+                    ? RuntimeStoreLifecycleChange.Registered(stores[i])
+                    : RuntimeStoreLifecycleChange.Replaced(stores[i], previous[i]));
+            }
+            if (removed != null)
+            {
+                for (var i = 0; i < removed.Count; i++)
+                {
+                    _storeLifecycleDispatcher.Invoke(RuntimeStoreLifecycleChange.Removed(removed[i]));
+                }
+            }
+
+            var published = new RuntimeStore[stores.Count];
+            for (var i = 0; i < stores.Count; i++)
+            {
+                published[i] = stores[i];
+            }
+            _restoreCompletedDispatcher.Invoke(new RuntimeStoresRestoreCompleted(
+                realm,
+                Array.AsReadOnly(published)));
         }
 
         /// <summary>
