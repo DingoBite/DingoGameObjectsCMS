@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
@@ -596,14 +597,25 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
                 }
                 if (type == typeof(RuntimeInstance))
                     return WriteRuntimeInstance((RuntimeInstance)value, context);
-                if (type == typeof(List<Vector2Int>))
+                if (type == typeof(Hash128))
+                    return new JValue(((Hash128)value).ToString());
+                if (type == typeof(RuntimeObjectPatch))
                 {
                     if (value == null)
                         return JValue.CreateNull();
+                    return new JValue(Convert.ToBase64String(
+                        RuntimePatchGeneratedValueCodec.EncodeRuntimeObjectPatch((RuntimeObjectPatch)value)));
+                }
+                if (IsSupportedListType(type))
+                {
+                    if (value == null)
+                        return JValue.CreateNull();
+                    var elementType = type.GetGenericArguments()[0];
+                    var list = (IList)value;
+                    RuntimePatchGeneratedValueCodec.RequireCollectionCountForWrite(list.Count);
                     var array = new JArray();
-                    var list = (List<Vector2Int>)value;
                     for (var i = 0; i < list.Count; i++)
-                        array.Add(Write(typeof(Vector2Int), list[i], context));
+                        array.Add(Write(elementType, list[i], context));
                     return array;
                 }
                 if (type.IsValueType && !type.IsGenericType)
@@ -670,15 +682,51 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
                 }
                 if (type == typeof(RuntimeInstance))
                     return ReadRuntimeInstance(token, context);
-                if (type == typeof(List<Vector2Int>))
+                if (type == typeof(Hash128))
+                {
+                    return ParseCanonicalHash128(
+                        RequireString(token, nameof(Hash128)),
+                        nameof(Hash128),
+                        requireValid: false);
+                }
+                if (type == typeof(RuntimeObjectPatch))
+                {
+                    if (token.Type == JTokenType.Null)
+                        return null;
+                    var encoded = RequireString(token, nameof(RuntimeObjectPatch));
+                    byte[] payload;
+                    try
+                    {
+                        payload = Convert.FromBase64String(encoded);
+                    }
+                    catch (FormatException exception)
+                    {
+                        throw new FormatException("RuntimeObjectPatch authoring value must be canonical base64.", exception);
+                    }
+                    if (payload.Length > RuntimePatchGeneratedValueCodec.MAX_NESTED_PATCH_BYTES)
+                    {
+                        throw new FormatException(
+                            $"RuntimeObjectPatch authoring value contains {payload.Length} bytes; maximum is "
+                            + $"{RuntimePatchGeneratedValueCodec.MAX_NESTED_PATCH_BYTES}.");
+                    }
+                    return RuntimePatchGeneratedValueCodec.DecodeRuntimeObjectPatch(payload);
+                }
+                if (IsSupportedListType(type))
                 {
                     if (token.Type == JTokenType.Null)
                         return null;
                     if (token is not JArray array)
                         throw new FormatException($"Authored JSON for '{type.FullName}' must be an array or null.");
-                    var list = new List<Vector2Int>(array.Count);
+                    if (array.Count > RuntimePatchGeneratedValueCodec.MAX_COLLECTION_ELEMENTS)
+                    {
+                        throw new FormatException(
+                            $"Authored JSON collection '{type.FullName}' contains {array.Count} items; maximum is "
+                            + $"{RuntimePatchGeneratedValueCodec.MAX_COLLECTION_ELEMENTS}.");
+                    }
+                    var elementType = type.GetGenericArguments()[0];
+                    var list = (IList)Activator.CreateInstance(type, array.Count);
                     for (var i = 0; i < array.Count; i++)
-                        list.Add((Vector2Int)Read(typeof(Vector2Int), array[i], context));
+                        list.Add(Read(elementType, array[i], context));
                     return list;
                 }
                 if (type.IsValueType && !type.IsGenericType)
@@ -713,9 +761,35 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
                     || type == typeof(float2)
                     || type == typeof(Vector2Int)
                     || type == typeof(RuntimeInstance)
-                    || type == typeof(List<Vector2Int>))
+                    || type == typeof(Hash128)
+                    || type == typeof(RuntimeObjectPatch))
                 {
                     return;
+                }
+                if (IsSupportedListType(type))
+                {
+                    if (!traversal.Add(type))
+                    {
+                        throw new InvalidOperationException(
+                            $"Canonical authoring JSON does not support recursive collection graph '{type.FullName}'.");
+                    }
+                    try
+                    {
+                        var elementType = type.GetGenericArguments()[0];
+                        if (elementType == typeof(RuntimeObjectPatch)
+                            || IsSupportedListType(elementType)
+                            || (!elementType.IsValueType && elementType != typeof(string)))
+                        {
+                            throw new InvalidOperationException(
+                                $"Canonical authoring collection '{type.FullName}' must contain a deterministic atom, enum, or value struct.");
+                        }
+                        ValidateSupportedType(elementType, traversal);
+                        return;
+                    }
+                    finally
+                    {
+                        traversal.Remove(type);
+                    }
                 }
                 if (!type.IsValueType || type.IsGenericType || !traversal.Add(type))
                     throw new InvalidOperationException($"Canonical authoring JSON does not support field graph '{type.FullName}'.");
@@ -777,7 +851,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
                 var storeId = RequireString(json["storeId"], "RuntimeInstance.storeId");
                 if (string.IsNullOrWhiteSpace(storeId))
                     throw new FormatException("RuntimeInstance.storeId cannot be empty.");
-                var guid = ParseCanonicalHash128(guidText, "RuntimeInstance.objectGuid");
+                var guid = ParseCanonicalHash128(guidText, "RuntimeInstance.objectGuid", requireValid: true);
                 return RequirePersistentContext(context).DecodePersistentReference(
                     new RuntimePatchObjectReference(new FixedString32Bytes(storeId), guid));
             }
@@ -828,7 +902,10 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
                     throw new FormatException($"Authored JSON for '{type.FullName}' must be {expected}.");
             }
 
-            private static Hash128 ParseCanonicalHash128(string value, string label)
+            private static Hash128 ParseCanonicalHash128(
+                string value,
+                string label,
+                bool requireValid)
             {
                 if (value == null
                     || value.Length != 32
@@ -837,9 +914,17 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
                     throw new FormatException($"{label} must be 32 lowercase hex characters.");
                 }
                 var parsed = Hash128.Parse(value);
-                if (!parsed.isValid || !string.Equals(parsed.ToString(), value, StringComparison.Ordinal))
+                if ((requireValid && !parsed.isValid)
+                    || !string.Equals(parsed.ToString(), value, StringComparison.Ordinal))
                     throw new FormatException($"{label} is not a canonical GUID.");
                 return parsed;
+            }
+
+            private static bool IsSupportedListType(Type type)
+            {
+                return type != null
+                       && type.IsGenericType
+                       && type.GetGenericTypeDefinition() == typeof(List<>);
             }
 
             private static void RequireFinite(float value, Type type)

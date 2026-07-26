@@ -34,8 +34,11 @@ namespace DingoGameObjectsCMS.Editor
         Float2,
         Vector2Int,
         RuntimeInstance,
+        Hash128,
+        RuntimeObjectPatch,
         Struct,
         ListVector2Int,
+        List,
     }
 
     public class RuntimePatchGeneratedMemberDescriptor
@@ -49,6 +52,7 @@ namespace DingoGameObjectsCMS.Editor
         public Type RuntimeType;
         public Type EnumUnderlyingType;
         public RuntimePatchGeneratedValueKind Kind;
+        public RuntimePatchGeneratedTypeDescriptor ElementType;
         public List<RuntimePatchGeneratedMemberDescriptor> Members = new();
     }
 
@@ -71,7 +75,8 @@ namespace DingoGameObjectsCMS.Editor
             {
                 for (var i = 0; i < Fields.Count; i++)
                 {
-                    if (Fields[i].Schema.Encoding == RuntimePatchFieldEncoding.CustomListVector2Int)
+                    if (Fields[i].Schema.Encoding == RuntimePatchFieldEncoding.CustomListVector2Int
+                        || Fields[i].Schema.Encoding == RuntimePatchFieldEncoding.CustomList)
                         return true;
                 }
                 return false;
@@ -175,12 +180,6 @@ namespace DingoGameObjectsCMS.Editor
                 var field = fields[i];
                 ValidateDirectFieldAccess(field, runtimeType);
                 var valueType = DescribeValueType(field.FieldType);
-                if (valueType.Kind != RuntimePatchGeneratedValueKind.ListVector2Int
-                    && ContainsKind(valueType, RuntimePatchGeneratedValueKind.ListVector2Int))
-                {
-                    throw new InvalidOperationException(
-                        $"Runtime patch collection '{runtimeType.FullName}.{field.Name}' must be a direct component field so it can use an explicit atomic codec.");
-                }
                 var keyAttribute = field.GetCustomAttribute<RuntimePatchFieldKeyAttribute>(inherit: false);
                 var fieldKey = keyAttribute == null
                     ? $"{componentTypeKey}/{field.Name}"
@@ -204,7 +203,10 @@ namespace DingoGameObjectsCMS.Editor
                             ? RuntimePatchFieldEncoding.RuntimeReference
                             : valueType.Kind == RuntimePatchGeneratedValueKind.ListVector2Int
                                 ? RuntimePatchFieldEncoding.CustomListVector2Int
-                                : RuntimePatchFieldEncoding.Value,
+                                : ContainsKind(valueType, RuntimePatchGeneratedValueKind.List)
+                                  || ContainsKind(valueType, RuntimePatchGeneratedValueKind.ListVector2Int)
+                                    ? RuntimePatchFieldEncoding.CustomList
+                                    : RuntimePatchFieldEncoding.Value,
                         Tombstone = false,
                     },
                 };
@@ -345,7 +347,11 @@ namespace DingoGameObjectsCMS.Editor
                 case RuntimePatchGeneratedValueKind.Float2: return "Unity.Mathematics.float2(x:float32,y:float32)";
                 case RuntimePatchGeneratedValueKind.Vector2Int: return "UnityEngine.Vector2Int(x:int32,y:int32)";
                 case RuntimePatchGeneratedValueKind.RuntimeInstance: return "runtime-reference:v1";
+                case RuntimePatchGeneratedValueKind.Hash128: return "UnityEngine.Hash128:canonical-hex:v1";
+                case RuntimePatchGeneratedValueKind.RuntimeObjectPatch: return "runtime-object-patch:canonical:v1";
                 case RuntimePatchGeneratedValueKind.ListVector2Int: return "list-atomic:UnityEngine.Vector2Int:v1";
+                case RuntimePatchGeneratedValueKind.List:
+                    return $"list-atomic:{CreateTypeSignature(descriptor.ElementType)}:v1";
                 case RuntimePatchGeneratedValueKind.Enum:
                     return CreateEnumSignature(descriptor.RuntimeType, descriptor.EnumUnderlyingType);
                 case RuntimePatchGeneratedValueKind.Struct:
@@ -397,8 +403,39 @@ namespace DingoGameObjectsCMS.Editor
                 return CreateLeaf(type, RuntimePatchGeneratedValueKind.Vector2Int);
             if (type == typeof(RuntimeInstance))
                 return CreateLeaf(type, RuntimePatchGeneratedValueKind.RuntimeInstance);
+            if (type == typeof(Hash128))
+                return CreateLeaf(type, RuntimePatchGeneratedValueKind.Hash128);
+            if (type == typeof(RuntimeObjectPatch))
+                return CreateLeaf(type, RuntimePatchGeneratedValueKind.RuntimeObjectPatch);
             if (type == typeof(List<Vector2Int>))
                 return CreateLeaf(type, RuntimePatchGeneratedValueKind.ListVector2Int);
+            if (type.IsGenericType && type.GetGenericTypeDefinition() == typeof(List<>))
+            {
+                if (!traversal.Add(type))
+                    throw new InvalidOperationException($"Runtime patch collection '{type.FullName}' contains a recursive field graph.");
+                try
+                {
+                    var elementRuntimeType = type.GetGenericArguments()[0];
+                    var elementType = DescribeValueType(elementRuntimeType, traversal);
+                    if (elementType.Kind == RuntimePatchGeneratedValueKind.List
+                        || elementType.Kind == RuntimePatchGeneratedValueKind.ListVector2Int
+                        || elementType.Kind == RuntimePatchGeneratedValueKind.RuntimeObjectPatch)
+                    {
+                        throw new InvalidOperationException(
+                            $"Runtime patch collection '{type.FullName}' must contain a deterministic atom, enum, or value struct.");
+                    }
+                    return new RuntimePatchGeneratedTypeDescriptor
+                    {
+                        RuntimeType = type,
+                        Kind = RuntimePatchGeneratedValueKind.List,
+                        ElementType = elementType,
+                    };
+                }
+                finally
+                {
+                    traversal.Remove(type);
+                }
+            }
             if (!type.IsValueType || type.IsGenericType)
                 throw new InvalidOperationException($"Runtime patch field type '{type.FullName}' is unsupported.");
             if (!traversal.Add(type))
@@ -462,6 +499,8 @@ namespace DingoGameObjectsCMS.Editor
             RuntimePatchGeneratedValueKind kind)
         {
             if (descriptor.Kind == kind)
+                return true;
+            if (descriptor.ElementType != null && ContainsKind(descriptor.ElementType, kind))
                 return true;
             for (var i = 0; i < descriptor.Members.Count; i++)
             {

@@ -428,29 +428,16 @@ namespace DingoGameObjectsCMS.Editor
             builder.Line();
             builder.Open(
                 $"private static bool AreField_{id}Equal({fieldType} first, {fieldType} second, RuntimePatchCodecContext context)");
-            if (field.ValueType.Kind == RuntimePatchGeneratedValueKind.ListVector2Int)
-            {
-                builder.Line("if (ReferenceEquals(first, second))");
-                builder.Line("    return true;");
-                builder.Line("if (first == null || second == null || first.Count != second.Count)");
-                builder.Line("    return false;");
-                builder.Open("for (var i = 0; i < first.Count; i++)");
-                builder.Line("if (!first[i].Equals(second[i]))");
-                builder.Line("    return false;");
-                builder.Close();
-                builder.Line("return true;");
-            }
-            else
-            {
-                builder.Line($"return {EqualityExpression(field.ValueType, "first", "second")};");
-            }
+            var equalityIndex = 0;
+            EmitEqualityChecks(builder, field.ValueType, "first", "second", ref equalityIndex);
+            builder.Line("return true;");
             builder.Close();
             builder.Line();
             builder.Open($"private static {fieldType} CloneField_{id}({fieldType} value)");
-            if (field.ValueType.Kind == RuntimePatchGeneratedValueKind.ListVector2Int)
-                builder.Line($"return value == null ? null : new {fieldType}(value);");
-            else
-                builder.Line("return value;");
+            builder.Line($"var result = default({fieldType});");
+            var cloneIndex = 0;
+            EmitCloneAssignments(builder, field.ValueType, "result", "value", ref cloneIndex);
+            builder.Line("return result;");
             builder.Close();
             builder.Line();
             builder.Open(
@@ -484,17 +471,18 @@ namespace DingoGameObjectsCMS.Editor
                 }
                 return;
             }
-            if (descriptor.Kind == RuntimePatchGeneratedValueKind.ListVector2Int)
+            if (IsList(descriptor))
             {
                 var index = loopIndex++;
+                var elementType = ListElementType(descriptor);
                 builder.Line($"if ({value} == null)");
                 builder.Line("    writer.WriteInt32(-1);");
                 builder.Line("else");
                 builder.Open("");
+                builder.Line($"RuntimePatchGeneratedValueCodec.RequireCollectionCountForWrite({value}.Count);");
                 builder.Line($"writer.WriteInt32({value}.Count);");
                 builder.Open($"for (var itemIndex{index} = 0; itemIndex{index} < {value}.Count; itemIndex{index}++)");
-                builder.Line($"writer.WriteInt32({value}[itemIndex{index}].x);");
-                builder.Line($"writer.WriteInt32({value}[itemIndex{index}].y);");
+                EmitWriteValue(builder, elementType, $"{value}[itemIndex{index}]", ref loopIndex);
                 builder.Close();
                 builder.Close();
                 return;
@@ -517,25 +505,173 @@ namespace DingoGameObjectsCMS.Editor
                 }
                 return;
             }
-            if (descriptor.Kind == RuntimePatchGeneratedValueKind.ListVector2Int)
+            if (IsList(descriptor))
             {
                 var index = temporaryIndex++;
-                builder.Line($"var count{index} = reader.ReadInt32();");
-                builder.Line($"if (count{index} < -1)");
-                builder.Line($"    throw new FormatException($\"Invalid canonical list length {{count{index}}}.\");");
+                var elementType = ListElementType(descriptor);
+                builder.Line($"var count{index} = RuntimePatchGeneratedValueCodec.ReadCollectionCount(reader);");
                 builder.Line($"if (count{index} < 0)");
                 builder.Line($"    {target} = null;");
                 builder.Line("else");
                 builder.Open("");
-                builder.Line($"var list{index} = new List<global::UnityEngine.Vector2Int>(count{index});");
+                builder.Line($"var list{index} = new {TypeName(descriptor.RuntimeType)}(count{index});");
                 builder.Open($"for (var itemIndex{index} = 0; itemIndex{index} < count{index}; itemIndex{index}++)");
-                builder.Line($"list{index}.Add(new global::UnityEngine.Vector2Int(reader.ReadInt32(), reader.ReadInt32()));");
+                builder.Line($"var item{index} = default({TypeName(elementType.RuntimeType)});");
+                EmitReadAssignments(builder, elementType, $"item{index}", ref temporaryIndex);
+                builder.Line($"list{index}.Add(item{index});");
                 builder.Close();
                 builder.Line($"{target} = list{index};");
                 builder.Close();
                 return;
             }
             builder.Line($"{target} = {ReadExpression(descriptor)};");
+        }
+
+        private static void EmitCloneAssignments(
+            RuntimePatchSourceBuilder builder,
+            RuntimePatchGeneratedTypeDescriptor descriptor,
+            string target,
+            string source,
+            ref int temporaryIndex)
+        {
+            if (descriptor.Kind == RuntimePatchGeneratedValueKind.Struct)
+            {
+                for (var i = 0; i < descriptor.Members.Count; i++)
+                {
+                    var member = descriptor.Members[i];
+                    EmitCloneAssignments(
+                        builder,
+                        member.ValueType,
+                        $"{target}.{FieldAccess(member.Field.Name)}",
+                        $"{source}.{FieldAccess(member.Field.Name)}",
+                        ref temporaryIndex);
+                }
+                return;
+            }
+            if (IsList(descriptor))
+            {
+                var index = temporaryIndex++;
+                var elementType = ListElementType(descriptor);
+                builder.Line($"if ({source} == null)");
+                builder.Line($"    {target} = null;");
+                builder.Line("else");
+                builder.Open("");
+                builder.Line($"var list{index} = new {TypeName(descriptor.RuntimeType)}({source}.Count);");
+                builder.Open($"for (var itemIndex{index} = 0; itemIndex{index} < {source}.Count; itemIndex{index}++)");
+                builder.Line($"var item{index} = default({TypeName(elementType.RuntimeType)});");
+                EmitCloneAssignments(
+                    builder,
+                    elementType,
+                    $"item{index}",
+                    $"{source}[itemIndex{index}]",
+                    ref temporaryIndex);
+                builder.Line($"list{index}.Add(item{index});");
+                builder.Close();
+                builder.Line($"{target} = list{index};");
+                builder.Close();
+                return;
+            }
+            if (descriptor.Kind == RuntimePatchGeneratedValueKind.RuntimeObjectPatch)
+            {
+                builder.Line($"{target} = RuntimePatchGeneratedValueCodec.CloneRuntimeObjectPatch({source});");
+                return;
+            }
+            builder.Line($"{target} = {source};");
+        }
+
+        private static void EmitEqualityChecks(
+            RuntimePatchSourceBuilder builder,
+            RuntimePatchGeneratedTypeDescriptor descriptor,
+            string first,
+            string second,
+            ref int temporaryIndex)
+        {
+            if (descriptor.Kind == RuntimePatchGeneratedValueKind.Struct)
+            {
+                for (var i = 0; i < descriptor.Members.Count; i++)
+                {
+                    var member = descriptor.Members[i];
+                    EmitEqualityChecks(
+                        builder,
+                        member.ValueType,
+                        $"{first}.{FieldAccess(member.Field.Name)}",
+                        $"{second}.{FieldAccess(member.Field.Name)}",
+                        ref temporaryIndex);
+                }
+                return;
+            }
+            if (IsList(descriptor))
+            {
+                var index = temporaryIndex++;
+                var elementType = ListElementType(descriptor);
+                builder.Open($"if (!ReferenceEquals({first}, {second}))");
+                builder.Line($"if ({first} == null || {second} == null || {first}.Count != {second}.Count)");
+                builder.Line("    return false;");
+                builder.Open($"for (var itemIndex{index} = 0; itemIndex{index} < {first}.Count; itemIndex{index}++)");
+                EmitEqualityChecks(
+                    builder,
+                    elementType,
+                    $"{first}[itemIndex{index}]",
+                    $"{second}[itemIndex{index}]",
+                    ref temporaryIndex);
+                builder.Close();
+                builder.Close();
+                return;
+            }
+
+            string equalExpression;
+            switch (descriptor.Kind)
+            {
+                case RuntimePatchGeneratedValueKind.String:
+                    equalExpression = $"string.Equals({first}, {second}, StringComparison.Ordinal)";
+                    break;
+                case RuntimePatchGeneratedValueKind.Single:
+                case RuntimePatchGeneratedValueKind.Double:
+                case RuntimePatchGeneratedValueKind.Int2:
+                case RuntimePatchGeneratedValueKind.Float2:
+                case RuntimePatchGeneratedValueKind.Vector2Int:
+                case RuntimePatchGeneratedValueKind.Hash128:
+                    equalExpression = $"{first}.Equals({second})";
+                    break;
+                case RuntimePatchGeneratedValueKind.RuntimeInstance:
+                    equalExpression = $"context.RuntimeInstancesEqual({first}, {second})";
+                    break;
+                case RuntimePatchGeneratedValueKind.RuntimeObjectPatch:
+                    equalExpression =
+                        $"RuntimePatchGeneratedValueCodec.RuntimeObjectPatchesEqual({first}, {second})";
+                    break;
+                default:
+                    equalExpression = $"{first} == {second}";
+                    break;
+            }
+            builder.Line($"if (!({equalExpression}))");
+            builder.Line("    return false;");
+        }
+
+        private static bool IsList(RuntimePatchGeneratedTypeDescriptor descriptor)
+        {
+            return descriptor.Kind == RuntimePatchGeneratedValueKind.List
+                   || descriptor.Kind == RuntimePatchGeneratedValueKind.ListVector2Int;
+        }
+
+        private static RuntimePatchGeneratedTypeDescriptor ListElementType(
+            RuntimePatchGeneratedTypeDescriptor descriptor)
+        {
+            if (descriptor.Kind == RuntimePatchGeneratedValueKind.List)
+            {
+                return descriptor.ElementType
+                       ?? throw new InvalidOperationException(
+                           $"Generated list descriptor '{descriptor.RuntimeType}' has no element type.");
+            }
+            if (descriptor.Kind == RuntimePatchGeneratedValueKind.ListVector2Int)
+            {
+                return new RuntimePatchGeneratedTypeDescriptor
+                {
+                    RuntimeType = typeof(Vector2Int),
+                    Kind = RuntimePatchGeneratedValueKind.Vector2Int,
+                };
+            }
+            throw new InvalidOperationException($"Generated patch value '{descriptor.Kind}' is not a list.");
         }
 
         private static string WriteStatement(RuntimePatchGeneratedTypeDescriptor descriptor, string value)
@@ -562,6 +698,10 @@ namespace DingoGameObjectsCMS.Editor
                     return $"writer.WriteInt32({value}.x); writer.WriteInt32({value}.y);";
                 case RuntimePatchGeneratedValueKind.RuntimeInstance:
                     return $"context.WriteRuntimeInstance(writer, {value});";
+                case RuntimePatchGeneratedValueKind.Hash128:
+                    return $"writer.WriteHash128({value});";
+                case RuntimePatchGeneratedValueKind.RuntimeObjectPatch:
+                    return $"RuntimePatchGeneratedValueCodec.WriteRuntimeObjectPatch(writer, {value});";
                 case RuntimePatchGeneratedValueKind.Enum:
                     return WriteEnumStatement(descriptor.EnumUnderlyingType, value);
                 default:
@@ -593,6 +733,10 @@ namespace DingoGameObjectsCMS.Editor
                     return "new global::UnityEngine.Vector2Int(reader.ReadInt32(), reader.ReadInt32())";
                 case RuntimePatchGeneratedValueKind.RuntimeInstance:
                     return "context.ReadRuntimeInstance(reader)";
+                case RuntimePatchGeneratedValueKind.Hash128:
+                    return "RuntimePatchGeneratedValueCodec.ReadHash128(reader)";
+                case RuntimePatchGeneratedValueKind.RuntimeObjectPatch:
+                    return "RuntimePatchGeneratedValueCodec.ReadRuntimeObjectPatch(reader)";
                 case RuntimePatchGeneratedValueKind.Enum:
                     return $"({TypeName(descriptor.RuntimeType)})({ReadUnderlyingExpression(descriptor.EnumUnderlyingType)})";
                 default:
@@ -627,10 +771,14 @@ namespace DingoGameObjectsCMS.Editor
                 case RuntimePatchGeneratedValueKind.Int2:
                 case RuntimePatchGeneratedValueKind.Float2:
                 case RuntimePatchGeneratedValueKind.Vector2Int:
+                case RuntimePatchGeneratedValueKind.Hash128:
                     return $"{first}.Equals({second})";
                 case RuntimePatchGeneratedValueKind.RuntimeInstance:
                     return $"context.RuntimeInstancesEqual({first}, {second})";
+                case RuntimePatchGeneratedValueKind.RuntimeObjectPatch:
+                    return $"RuntimePatchGeneratedValueCodec.RuntimeObjectPatchesEqual({first}, {second})";
                 case RuntimePatchGeneratedValueKind.ListVector2Int:
+                case RuntimePatchGeneratedValueKind.List:
                     throw new InvalidOperationException("List equality requires an explicit generated loop.");
                 default:
                     return $"{first} == {second}";
@@ -670,6 +818,21 @@ namespace DingoGameObjectsCMS.Editor
                 throw new ArgumentNullException(nameof(type));
             if (type == typeof(List<Vector2Int>))
                 return "global::System.Collections.Generic.List<global::UnityEngine.Vector2Int>";
+            if (type.IsGenericType)
+            {
+                var definition = type.GetGenericTypeDefinition();
+                var definitionName = definition.FullName;
+                if (string.IsNullOrWhiteSpace(definitionName))
+                    throw new InvalidOperationException($"Runtime patch generic type '{type}' has no full name.");
+                var tick = definitionName.IndexOf('`');
+                if (tick >= 0)
+                    definitionName = definitionName.Substring(0, tick);
+                var arguments = type.GetGenericArguments();
+                var argumentNames = new string[arguments.Length];
+                for (var i = 0; i < arguments.Length; i++)
+                    argumentNames[i] = TypeName(arguments[i]);
+                return $"global::{definitionName.Replace('+', '.')}<{string.Join(", ", argumentNames)}>";
+            }
             var name = type.FullName;
             if (string.IsNullOrWhiteSpace(name))
                 throw new InvalidOperationException($"Runtime patch type '{type}' has no full name.");

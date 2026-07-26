@@ -221,12 +221,51 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
             return result;
         }
 
+        public byte[] ReadBytes(int maxLength, string label)
+        {
+            if (maxLength < 0)
+                throw new ArgumentOutOfRangeException(nameof(maxLength));
+            var length = ReadLength();
+            if (length < 0)
+                return null;
+            if (length > maxLength)
+            {
+                throw new FormatException(
+                    $"Canonical {label ?? "byte payload"} length {length} exceeds maximum {maxLength}.");
+            }
+            Require(length);
+            var result = new byte[length];
+            Buffer.BlockCopy(_buffer, _position, result, 0, length);
+            _position += length;
+            return result;
+        }
+
         public Hash128 ReadHash128()
         {
             var value = ReadString();
-            if (string.IsNullOrWhiteSpace(value))
-                throw new FormatException("Canonical Hash128 value is empty.");
-            return Hash128.Parse(value);
+            if (value == null || value.Length != 32)
+            {
+                throw new FormatException(
+                    "Canonical Hash128 must be exactly 32 lowercase hexadecimal characters.");
+            }
+            for (var i = 0; i < value.Length; i++)
+            {
+                var character = value[i];
+                if ((character < '0' || character > '9')
+                    && (character < 'a' || character > 'f'))
+                {
+                    throw new FormatException(
+                        "Canonical Hash128 must be exactly 32 lowercase hexadecimal characters.");
+                }
+            }
+
+            var result = Hash128.Parse(value);
+            if (!string.Equals(result.ToString(), value, StringComparison.Ordinal))
+            {
+                throw new FormatException(
+                    "Canonical Hash128 does not round-trip to its source representation.");
+            }
+            return result;
         }
 
         public void RequireEnd()

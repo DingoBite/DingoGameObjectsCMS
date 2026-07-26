@@ -11,6 +11,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
         Value = 1,
         RuntimeReference = 2,
         CustomListVector2Int = 3,
+        CustomList = 4,
     }
 
     [AttributeUsage(AttributeTargets.Field)]
