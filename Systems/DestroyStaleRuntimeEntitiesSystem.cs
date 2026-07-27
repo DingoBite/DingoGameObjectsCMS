@@ -8,8 +8,33 @@ namespace DingoGameObjectsCMS.Systems
     [UpdateInGroup(typeof(FixedStepSimulationSystemGroup), OrderFirst = true)]
     public partial class DestroyStaleRuntimeEntitiesSystem : SystemBase
     {
+        private EntityQuery _runtimeEntityQuery;
+        private int _lastEntityOrderVersion;
+        private ulong _lastStoreLifecycleRevision;
+        private bool _hasReconciled;
+
+        protected override void OnCreate()
+        {
+            _runtimeEntityQuery = GetEntityQuery(
+                ComponentType.ReadOnly<RuntimeInstance>(),
+                ComponentType.ReadOnly<RuntimeRealm>());
+        }
+
         protected override void OnUpdate()
         {
+            var entityOrderVersion =
+                _runtimeEntityQuery.GetCombinedComponentOrderVersion(
+                    includeEntityType: true);
+            var storeLifecycleRevision =
+                RuntimeStores.LifecycleRevision;
+            if (_hasReconciled
+                && entityOrderVersion == _lastEntityOrderVersion
+                && storeLifecycleRevision
+                == _lastStoreLifecycleRevision)
+            {
+                return;
+            }
+
             using var ecb = new EntityCommandBuffer(Allocator.Temp);
             var hasAny = false;
             var destroyStateLookup = SystemAPI.GetComponentLookup<RuntimeEntityDestroyState>(isReadOnly: true);
@@ -37,7 +62,16 @@ namespace DingoGameObjectsCMS.Systems
             }
 
             if (hasAny)
+            {
                 ecb.Playback(EntityManager);
+            }
+
+            _lastEntityOrderVersion =
+                _runtimeEntityQuery.GetCombinedComponentOrderVersion(
+                    includeEntityType: true);
+            _lastStoreLifecycleRevision =
+                RuntimeStores.LifecycleRevision;
+            _hasReconciled = true;
         }
     }
 }

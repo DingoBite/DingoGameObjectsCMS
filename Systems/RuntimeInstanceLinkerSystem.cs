@@ -9,8 +9,33 @@ namespace DingoGameObjectsCMS.Systems
     [UpdateAfter(typeof(DestroyStaleRuntimeEntitiesSystem))]
     public partial class RuntimeInstanceLinkerSystem : SystemBase
     {
+        private EntityQuery _runtimeEntityQuery;
+        private int _lastEntityOrderVersion;
+        private ulong _lastStoreLifecycleRevision;
+        private bool _hasReconciled;
+
+        protected override void OnCreate()
+        {
+            _runtimeEntityQuery = GetEntityQuery(
+                ComponentType.ReadOnly<RuntimeInstance>(),
+                ComponentType.ReadOnly<RuntimeRealm>());
+        }
+
         protected override void OnUpdate()
         {
+            var entityOrderVersion =
+                _runtimeEntityQuery.GetCombinedComponentOrderVersion(
+                    includeEntityType: true);
+            var storeLifecycleRevision =
+                RuntimeStores.LifecycleRevision;
+            if (_hasReconciled
+                && entityOrderVersion == _lastEntityOrderVersion
+                && storeLifecycleRevision
+                == _lastStoreLifecycleRevision)
+            {
+                return;
+            }
+
             BeginLinkPass(StoreRealm.Server);
             BeginLinkPass(StoreRealm.Client);
 
@@ -34,6 +59,13 @@ namespace DingoGameObjectsCMS.Systems
                 EndLinkPass(StoreRealm.Server);
                 EndLinkPass(StoreRealm.Client);
             }
+
+            _lastEntityOrderVersion =
+                _runtimeEntityQuery.GetCombinedComponentOrderVersion(
+                    includeEntityType: true);
+            _lastStoreLifecycleRevision =
+                RuntimeStores.LifecycleRevision;
+            _hasReconciled = true;
         }
 
         private static void BeginLinkPass(StoreRealm realm)

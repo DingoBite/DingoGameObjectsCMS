@@ -72,6 +72,7 @@ namespace DingoGameObjectsCMS.Stores
         public static RuntimeExecutionRole Current => _role.V;
         public static bool IsAuthoritative => _role.V != RuntimeExecutionRole.ClientReplica;
         public static bool IsRemoteReplica => _role.V == RuntimeExecutionRole.ClientReplica;
+        public static ulong LifecycleRevision { get; private set; }
 
         public static IReadonlyBind<IReadOnlyDictionary<FixedString32Bytes, RuntimeStore>> ServerStores => _serverStores;
         public static IReadonlyBind<IReadOnlyDictionary<FixedString32Bytes, RuntimeStore>> ClientStores => _clientStores;
@@ -173,6 +174,7 @@ namespace DingoGameObjectsCMS.Stores
             _role.V = RuntimeExecutionRole.OfflineAuthoritative;
             _storeLifecycleDispatcher.Clear();
             _restoreCompletedDispatcher.Clear();
+            AdvanceLifecycleRevision();
         }
 
         public static void SetRole(RuntimeExecutionRole role)
@@ -239,7 +241,8 @@ namespace DingoGameObjectsCMS.Stores
             if (!_serverStoresById.ContainsKey(id) && !_clientStoresById.ContainsKey(id))
                 _netDirById.Remove(id);
 
-            _storeLifecycleDispatcher.Invoke(RuntimeStoreLifecycleChange.Removed(store));
+            PublishStoreLifecycleChange(
+                RuntimeStoreLifecycleChange.Removed(store));
 
             return true;
         }
@@ -377,7 +380,12 @@ namespace DingoGameObjectsCMS.Stores
             if (dir != StoreNetDir.None)
                 _netDirById[key] = dir;
 
-            _storeLifecycleDispatcher.Invoke(previous == null ? RuntimeStoreLifecycleChange.Registered(store) : RuntimeStoreLifecycleChange.Replaced(store, previous));
+            PublishStoreLifecycleChange(
+                previous == null
+                    ? RuntimeStoreLifecycleChange.Registered(store)
+                    : RuntimeStoreLifecycleChange.Replaced(
+                        store,
+                        previous));
 
             if (ensurePair)
                 EnsureOtherRealmExists(key);
@@ -564,15 +572,19 @@ namespace DingoGameObjectsCMS.Stores
             {
                 if (ReferenceEquals(previous[i], stores[i]))
                     continue;
-                _storeLifecycleDispatcher.Invoke(previous[i] == null
-                    ? RuntimeStoreLifecycleChange.Registered(stores[i])
-                    : RuntimeStoreLifecycleChange.Replaced(stores[i], previous[i]));
+                PublishStoreLifecycleChange(
+                    previous[i] == null
+                        ? RuntimeStoreLifecycleChange.Registered(stores[i])
+                        : RuntimeStoreLifecycleChange.Replaced(
+                            stores[i],
+                            previous[i]));
             }
             if (removed != null)
             {
                 for (var i = 0; i < removed.Count; i++)
                 {
-                    _storeLifecycleDispatcher.Invoke(RuntimeStoreLifecycleChange.Removed(removed[i]));
+                    PublishStoreLifecycleChange(
+                        RuntimeStoreLifecycleChange.Removed(removed[i]));
                 }
             }
 
@@ -626,9 +638,12 @@ namespace DingoGameObjectsCMS.Stores
                 _netDirById[store.Id] = dir;
 
             previous?.Retire();
-            _storeLifecycleDispatcher.Invoke(previous == null
-                ? RuntimeStoreLifecycleChange.Registered(store)
-                : RuntimeStoreLifecycleChange.Replaced(store, previous));
+            PublishStoreLifecycleChange(
+                previous == null
+                    ? RuntimeStoreLifecycleChange.Registered(store)
+                    : RuntimeStoreLifecycleChange.Replaced(
+                        store,
+                        previous));
             return store;
         }
 
@@ -701,9 +716,12 @@ namespace DingoGameObjectsCMS.Stores
             {
                 if (ReferenceEquals(previous[i], stores[i]))
                     continue;
-                _storeLifecycleDispatcher.Invoke(previous[i] == null
-                    ? RuntimeStoreLifecycleChange.Registered(stores[i])
-                    : RuntimeStoreLifecycleChange.Replaced(stores[i], previous[i]));
+                PublishStoreLifecycleChange(
+                    previous[i] == null
+                        ? RuntimeStoreLifecycleChange.Registered(stores[i])
+                        : RuntimeStoreLifecycleChange.Replaced(
+                            stores[i],
+                            previous[i]));
             }
         }
 
@@ -749,7 +767,8 @@ namespace DingoGameObjectsCMS.Stores
             if (dir != StoreNetDir.None)
                 _netDirById[key] = dir;
 
-            _storeLifecycleDispatcher.Invoke(RuntimeStoreLifecycleChange.Registered(store));
+            PublishStoreLifecycleChange(
+                RuntimeStoreLifecycleChange.Registered(store));
 
             if (ensurePair)
                 EnsureOtherRealmExists(key);
@@ -763,6 +782,20 @@ namespace DingoGameObjectsCMS.Stores
 
             if (!_clientStoresById.ContainsKey(key))
                 GetOrAddRuntimeStore(key, StoreNetDir.None, StoreRealm.Client, ensurePair: false);
+        }
+
+        private static void PublishStoreLifecycleChange(
+            RuntimeStoreLifecycleChange change)
+        {
+            AdvanceLifecycleRevision();
+            _storeLifecycleDispatcher.Invoke(change);
+        }
+
+        private static void AdvanceLifecycleRevision()
+        {
+            LifecycleRevision = LifecycleRevision == ulong.MaxValue
+                ? 1UL
+                : LifecycleRevision + 1UL;
         }
     }
 }
