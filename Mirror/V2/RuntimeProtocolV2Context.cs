@@ -3,8 +3,10 @@ using System.Collections.Generic;
 using DingoGameObjectsCMS.AssetLibrary;
 using DingoGameObjectsCMS.RuntimeObjects.Commands;
 using DingoGameObjectsCMS.RuntimeObjects.Overrides;
+using DingoGameObjectsCMS.RuntimeObjects.Replay;
 using DingoGameObjectsCMS.RuntimeObjects.Stores;
 using DingoGameObjectsCMS.Stores;
+using Unity.Collections;
 using Unity.Entities;
 
 namespace DingoGameObjectsCMS.Mirror.V2
@@ -21,6 +23,17 @@ namespace DingoGameObjectsCMS.Mirror.V2
         int connectionId,
         RuntimeStore store,
         long objectId);
+
+    /// <summary>
+    /// Returns a recovery boundary only while every checkpoint-scoped
+    /// RuntimeStore still has the revision captured by that checkpoint and
+    /// the journal recovery window is retained. Pass
+    /// <see cref="RuntimeDotsCheckpointCoordinator.ProvideRecoveryBoundary"/>
+    /// rather than exposing <c>CurrentBoundary</c> directly.
+    /// </summary>
+    public delegate RuntimeCheckpointBoundary?
+        RuntimeCheckpointBoundaryProvider();
+    public delegate void RuntimeJournalCatchupCompletion(World world);
 
     /// <summary>
     /// Immutable game-supplied composition boundary for protocol v2. The
@@ -43,6 +56,9 @@ namespace DingoGameObjectsCMS.Mirror.V2
         public readonly RuntimeCommandRegistry CommandRegistry;
         public readonly RuntimeCommandEnvelopeEncoder CommandEncoder;
         public readonly RuntimeObjectVisibility IsObjectVisible;
+        public readonly RuntimeCheckpointBoundaryProvider CheckpointBoundaryProvider;
+        public readonly RuntimeCommandJournalScope JournalSubscriptionScope;
+        public readonly RuntimeJournalCatchupCompletion CompleteJournalCatchup;
 
         public RuntimeProtocolV2Context(
             RuntimeSessionManifestTemplate manifestTemplate,
@@ -56,7 +72,10 @@ namespace DingoGameObjectsCMS.Mirror.V2
             RuntimeCommandsBus commandsBus = null,
             RuntimeCommandRegistry commandRegistry = null,
             RuntimeCommandEnvelopeEncoder commandEncoder = null,
-            RuntimeObjectVisibility isObjectVisible = null)
+            RuntimeObjectVisibility isObjectVisible = null,
+            RuntimeCheckpointBoundaryProvider checkpointBoundaryProvider = null,
+            RuntimeCommandJournalScope journalSubscriptionScope = null,
+            RuntimeJournalCatchupCompletion completeJournalCatchup = null)
             : this(
                 manifestTemplate,
                 RuntimeSessionClientExpectation.FromServerTemplate(manifestTemplate),
@@ -70,7 +89,10 @@ namespace DingoGameObjectsCMS.Mirror.V2
                 commandsBus,
                 commandRegistry,
                 commandEncoder,
-                isObjectVisible) { }
+                isObjectVisible,
+                checkpointBoundaryProvider,
+                journalSubscriptionScope,
+                completeJournalCatchup) { }
 
         public RuntimeProtocolV2Context(
             RuntimeSessionClientExpectation clientExpectation,
@@ -84,7 +106,10 @@ namespace DingoGameObjectsCMS.Mirror.V2
             RuntimeCommandsBus commandsBus = null,
             RuntimeCommandRegistry commandRegistry = null,
             RuntimeCommandEnvelopeEncoder commandEncoder = null,
-            RuntimeObjectVisibility isObjectVisible = null)
+            RuntimeObjectVisibility isObjectVisible = null,
+            RuntimeCheckpointBoundaryProvider checkpointBoundaryProvider = null,
+            RuntimeCommandJournalScope journalSubscriptionScope = null,
+            RuntimeJournalCatchupCompletion completeJournalCatchup = null)
             : this(
                 null,
                 clientExpectation,
@@ -98,7 +123,10 @@ namespace DingoGameObjectsCMS.Mirror.V2
                 commandsBus,
                 commandRegistry,
                 commandEncoder,
-                isObjectVisible) { }
+                isObjectVisible,
+                checkpointBoundaryProvider,
+                journalSubscriptionScope,
+                completeJournalCatchup) { }
 
         private RuntimeProtocolV2Context(
             RuntimeSessionManifestTemplate manifestTemplate,
@@ -113,7 +141,10 @@ namespace DingoGameObjectsCMS.Mirror.V2
             RuntimeCommandsBus commandsBus,
             RuntimeCommandRegistry commandRegistry,
             RuntimeCommandEnvelopeEncoder commandEncoder,
-            RuntimeObjectVisibility isObjectVisible)
+            RuntimeObjectVisibility isObjectVisible,
+            RuntimeCheckpointBoundaryProvider checkpointBoundaryProvider,
+            RuntimeCommandJournalScope journalSubscriptionScope,
+            RuntimeJournalCatchupCompletion completeJournalCatchup)
         {
             if (manifestTemplate == null && clientExpectation == null)
                 throw new ArgumentException("Protocol v2 context requires a server manifest or client expectation.");
@@ -145,7 +176,64 @@ namespace DingoGameObjectsCMS.Mirror.V2
             CommandRegistry = commandRegistry;
             CommandEncoder = commandEncoder;
             IsObjectVisible = isObjectVisible ?? AlwaysVisible;
+            CheckpointBoundaryProvider = checkpointBoundaryProvider;
+            if (CheckpointBoundaryProvider != null && CommandsBus == null)
+            {
+                throw new InvalidOperationException(
+                    "Protocol-v3 checkpoint journal transport requires a RuntimeCommandsBus.");
+            }
+            if (CheckpointBoundaryProvider != null
+                && journalSubscriptionScope == null)
+            {
+                throw new InvalidOperationException(
+                    "Protocol-v3 checkpoint provider requires a journal subscription scope.");
+            }
+            JournalSubscriptionScope = journalSubscriptionScope;
+            CompleteJournalCatchup = completeJournalCatchup;
+            if (ManifestTemplate != null
+                && JournalSubscriptionScope != null
+                && CheckpointBoundaryProvider == null)
+            {
+                throw new InvalidOperationException(
+                    "A protocol-v3 server journal subscription requires a checkpoint boundary provider.");
+            }
+            if (JournalSubscriptionScope != null)
+            {
+                if (CommandsBus == null)
+                {
+                    throw new InvalidOperationException(
+                        "Protocol-v3 journal subscription scope requires a RuntimeCommandsBus.");
+                }
+                ValidateJournalSubscriptionScope(JournalSubscriptionScope);
+                if (ManifestTemplate == null
+                    && CompleteJournalCatchup == null)
+                {
+                    throw new InvalidOperationException(
+                        "A protocol-v3 client journal subscription requires an explicit ECS playback/completion hook.");
+                }
+            }
             ValidateAssetCatalog();
+        }
+
+        public bool IsObjectVisibleForReliableProjection(
+            int connectionId,
+            RuntimeStore store,
+            long objectId)
+        {
+            if (store == null)
+            {
+                throw new ArgumentNullException(nameof(store));
+            }
+            if (JournalSubscriptionScope != null
+                && JournalSubscriptionScope.Contains(store.Id))
+            {
+                return true;
+            }
+
+            return IsObjectVisible(
+                connectionId,
+                store,
+                objectId);
         }
 
         public bool TryGetAuthoritativeStore(in NetStoreRef storeReference, out RuntimeStore store)
@@ -199,6 +287,74 @@ namespace DingoGameObjectsCMS.Mirror.V2
                 {
                     throw new InvalidOperationException(
                         $"Protocol-v2 manifest GameAsset entry {manifest.AssetNetId} does not match the immutable session catalog.");
+                }
+            }
+        }
+
+        private void ValidateJournalSubscriptionScope(
+            RuntimeCommandJournalScope scope)
+        {
+            if (scope.IsSessionWide)
+            {
+                if (ManifestTemplate != null)
+                {
+                    var manifestStoreIds =
+                        new HashSet<FixedString32Bytes>();
+                    for (var i = 0;
+                         i < ManifestTemplate.Stores.Count;
+                         i++)
+                    {
+                        manifestStoreIds.Add(
+                            ManifestTemplate.Stores[i].StoreId);
+                    }
+
+                    var activeStoreCount = 0;
+                    foreach (var activeStore in
+                             RuntimeStores.EnumerateStores(
+                                 StoreRealm.Server))
+                    {
+                        activeStoreCount++;
+                        if (!manifestStoreIds.Contains(activeStore.Id))
+                        {
+                            throw new InvalidOperationException(
+                                $"Protocol-v3 session-wide journal scope requires active authoritative RuntimeStore '{activeStore.Id}' in the manifest baseline group.");
+                        }
+                    }
+
+                    if (activeStoreCount != manifestStoreIds.Count)
+                    {
+                        throw new InvalidOperationException(
+                            "Protocol-v3 session-wide journal scope requires the manifest to exactly cover all active authoritative RuntimeStores.");
+                    }
+                }
+
+                return;
+            }
+
+            var requiredStoreIds = ClientExpectation.StoreIds;
+            for (var i = 0; i < scope.StoreIds.Count; i++)
+            {
+                var scopedStoreId =
+                    scope.StoreIds[i].ToString();
+                var found = false;
+                for (var storeIndex = 0;
+                     storeIndex < requiredStoreIds.Count;
+                     storeIndex++)
+                {
+                    if (string.Equals(
+                            requiredStoreIds[storeIndex],
+                            scopedStoreId,
+                            StringComparison.Ordinal))
+                    {
+                        found = true;
+                        break;
+                    }
+                }
+
+                if (!found)
+                {
+                    throw new InvalidOperationException(
+                        $"Protocol-v3 journal subscription scope references store '{scopedStoreId}' outside the manifest.");
                 }
             }
         }

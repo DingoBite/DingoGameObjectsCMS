@@ -48,13 +48,17 @@ namespace DingoGameObjectsCMS.Mirror
                     SendDelta,
                     SendCommandResult,
                     RuntimeReliableDeltaTransportBudget.Fits,
-                    SendStateStreamMessage));
+                    SendStateStreamMessage,
+                    SendJournalBatch));
             _coordinator.ConnectionInvalidated += DisconnectInvalidatedConnection;
 
             NetworkServer.RegisterHandler<RtSessionHello>(OnHello, requireAuthentication: true);
             NetworkServer.RegisterHandler<RtSessionReady>(OnReady, requireAuthentication: true);
             NetworkServer.RegisterHandler<RtStoreAck>(OnAck, requireAuthentication: true);
             NetworkServer.RegisterHandler<RtStoreResyncRequest>(OnResync, requireAuthentication: true);
+            NetworkServer.RegisterHandler<RtCommandJournalResyncRequest>(
+                OnJournalResync,
+                requireAuthentication: true);
             NetworkServer.RegisterHandler<RtCommandEnvelope>(OnCommand, requireAuthentication: true);
             _lastStateStreamTickTime = NetworkTime.localTime;
             CoroutineParent.AddLateUpdater(this, TickStateStreams, RuntimeStore.UPDATE_ORDER + 3);
@@ -130,6 +134,7 @@ namespace DingoGameObjectsCMS.Mirror
             NetworkServer.UnregisterHandler<RtSessionReady>();
             NetworkServer.UnregisterHandler<RtStoreAck>();
             NetworkServer.UnregisterHandler<RtStoreResyncRequest>();
+            NetworkServer.UnregisterHandler<RtCommandJournalResyncRequest>();
             NetworkServer.UnregisterHandler<RtCommandEnvelope>();
             CoroutineParent.RemoveLateUpdater(this);
             _coordinator.ConnectionInvalidated -= DisconnectInvalidatedConnection;
@@ -178,6 +183,20 @@ namespace DingoGameObjectsCMS.Mirror
         private void OnCommand(NetworkConnectionToClient connection, RtCommandEnvelope message)
         {
             _coordinator.ReceiveCommand(connection.connectionId, message.Value, NetworkTime.localTime);
+        }
+
+        private void OnJournalResync(
+            NetworkConnectionToClient connection,
+            RtCommandJournalResyncRequest message)
+        {
+            _coordinator.ReceiveJournalResync(
+                connection.connectionId,
+                new RtCommandJournalResyncData(
+                    message.SessionId,
+                    message.CheckpointGroupId,
+                    message.CheckpointHash,
+                    message.ExpectedCursor,
+                    message.ForceCheckpointBaseline));
         }
 
         private static void SendManifest(int connectionId, RuntimeSessionManifestSnapshot manifest)
@@ -248,6 +267,15 @@ namespace DingoGameObjectsCMS.Mirror
                 SimulationTick = value.SimulationTick,
                 Payload = value.Payload,
             }, Channels.Unreliable);
+        }
+
+        private static void SendJournalBatch(
+            int connectionId,
+            RuntimeCommandJournalBatch batch)
+        {
+            RequireConnection(connectionId).Send(
+                RuntimeCommandJournalWireCodec.ToWire(batch),
+                Channels.Reliable);
         }
 
         private static NetworkConnectionToClient RequireConnection(int connectionId)

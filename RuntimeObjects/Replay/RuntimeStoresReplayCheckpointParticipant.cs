@@ -72,6 +72,121 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
         }
     }
 
+    public class RuntimeStoresReplayCheckpointStage : IDisposable
+    {
+        private readonly IReadOnlyList<RuntimeStore> _stores;
+        private readonly IReadOnlyDictionary<FixedString32Bytes, RuntimeStore>
+            _storesById;
+        private readonly Action<RuntimeStoresReplayCheckpointStage> _publish;
+        private readonly Action _abort;
+        private bool _published;
+        private bool _disposed;
+
+        public readonly RuntimeStoresReplayCheckpointParticipant Participant;
+        public readonly RuntimePersistentPatchCodecContext PersistentContext;
+
+        public bool IsPublished => _published;
+        public bool IsDisposed => _disposed;
+        public IReadOnlyList<RuntimeStore> Stores => _stores;
+
+        public RuntimeStoresReplayCheckpointStage(
+            RuntimeStoresReplayCheckpointParticipant participant,
+            IReadOnlyList<RuntimeStore> stores,
+            IReadOnlyDictionary<FixedString32Bytes, RuntimeStore> storesById,
+            RuntimePersistentPatchCodecContext persistentContext,
+            Action<RuntimeStoresReplayCheckpointStage> publish,
+            Action abort)
+        {
+            Participant = participant
+                          ?? throw new ArgumentNullException(nameof(participant));
+            _stores = stores
+                      ?? throw new ArgumentNullException(nameof(stores));
+            _storesById = storesById
+                          ?? throw new ArgumentNullException(nameof(storesById));
+            PersistentContext = persistentContext
+                                ?? throw new ArgumentNullException(
+                                    nameof(persistentContext));
+            _publish = publish
+                       ?? throw new ArgumentNullException(nameof(publish));
+            _abort = abort
+                     ?? throw new ArgumentNullException(nameof(abort));
+        }
+
+        public bool TryTakeStore(
+            FixedString32Bytes storeId,
+            out RuntimeStore store)
+        {
+            ThrowIfDisposed();
+            return _storesById.TryGetValue(storeId, out store);
+        }
+
+        public RuntimeStore TakeStore(FixedString32Bytes storeId)
+        {
+            if (!TryTakeStore(storeId, out var store))
+            {
+                throw new InvalidOperationException(
+                    $"Checkpoint stage does not contain RuntimeStore '{storeId}'.");
+            }
+
+            return store;
+        }
+
+        public void FlushToQuiescence()
+        {
+            ThrowIfDisposed();
+            for (var i = 0; i < _stores.Count; i++)
+            {
+                _stores[i].FlushToQuiescence();
+            }
+        }
+
+        public void Publish()
+        {
+            ThrowIfDisposed();
+            if (_published)
+            {
+                throw new InvalidOperationException(
+                    "Checkpoint RuntimeStore stage is already published.");
+            }
+
+            _publish(this);
+            if (!_published)
+            {
+                throw new InvalidOperationException(
+                    "Checkpoint RuntimeStore stage publication did not mark the stage as published.");
+            }
+        }
+
+        public void MarkPublished()
+        {
+            ThrowIfDisposed();
+            _published = true;
+        }
+
+        public void Dispose()
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            _disposed = true;
+            if (!_published)
+            {
+                _abort();
+            }
+        }
+
+        private void ThrowIfDisposed()
+        {
+            if (_disposed)
+            {
+                throw new ObjectDisposedException(
+                    nameof(RuntimeStoresReplayCheckpointStage));
+            }
+        }
+    }
+
     public class RuntimeStoresReplayCheckpointParticipant :
         IRuntimeReplayCheckpointParticipant,
         IRuntimeReplayCheckpointPrevalidator,
@@ -91,9 +206,12 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
         private readonly RuntimeObjectPatchBinaryCodec _patchCodec = new();
         private readonly RuntimeReplayReferenceClosureBinding
             _referenceClosureBinding;
+        private RuntimeStoresReplayCheckpointStage _captureStage;
 
         public uint SectionId => SECTION_ID;
         public uint CurrentVersion => SECTION_VERSION;
+        public StoreRealm Realm => _realm;
+        public RuntimeReplayStoreScope StoreScope => _storeScope;
 
         public RuntimeStoresReplayCheckpointParticipant(
             World world,
@@ -115,9 +233,58 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
             _templates = templates
                          ?? throw new ArgumentNullException(nameof(templates));
             _storeScope = storeScope
-                          ?? throw new ArgumentNullException(
-                              nameof(storeScope));
+                           ?? throw new ArgumentNullException(
+                               nameof(storeScope));
             _referenceClosureBinding = referenceClosureBinding;
+        }
+
+        public RuntimeStoresReplayCheckpointStage PrepareCheckpointStage(
+            RuntimeReplayStoreScope requestedScope)
+        {
+            ValidateCheckpointScope(requestedScope);
+            FlushScopedStoresToQuiescence();
+            var snapshot = CaptureSnapshot();
+            ValidateSnapshot(snapshot);
+            ValidateScope(snapshot);
+            return PrepareStage(snapshot);
+        }
+
+        public void BeginCaptureFromStage(
+            RuntimeStoresReplayCheckpointStage stage)
+        {
+            if (stage == null)
+            {
+                throw new ArgumentNullException(nameof(stage));
+            }
+            if (!ReferenceEquals(stage.Participant, this))
+            {
+                throw new InvalidOperationException(
+                    "Checkpoint RuntimeStore stage belongs to another replay participant.");
+            }
+            if (stage.IsDisposed || stage.IsPublished)
+            {
+                throw new InvalidOperationException(
+                    "Checkpoint capture requires an unpublished live RuntimeStore stage.");
+            }
+            if (_captureStage != null)
+            {
+                throw new InvalidOperationException(
+                    "Checkpoint RuntimeStore staged capture cannot be re-entered.");
+            }
+
+            _captureStage = stage;
+        }
+
+        public void EndCaptureFromStage(
+            RuntimeStoresReplayCheckpointStage stage)
+        {
+            if (!ReferenceEquals(_captureStage, stage))
+            {
+                throw new InvalidOperationException(
+                    "Checkpoint RuntimeStore staged capture scope is not active.");
+            }
+
+            _captureStage = null;
         }
 
         public void Capture(RuntimeReplayCheckpointWriter writer)
@@ -192,6 +359,12 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
 
         private void FlushScopedStoresToQuiescence()
         {
+            if (_captureStage != null)
+            {
+                _captureStage.FlushToQuiescence();
+                return;
+            }
+
             for (var i = 0; i < _storeScope.Count; i++)
             {
                 var storeId = _storeScope.TakeStoreId(i);
@@ -207,6 +380,50 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
                         + $"'{storeId}' in realm {_realm}.");
                 }
                 store.FlushToQuiescence();
+            }
+        }
+
+        private void ValidateCheckpointScope(
+            RuntimeReplayStoreScope requestedScope)
+        {
+            if (requestedScope != null)
+            {
+                if (requestedScope.Count != _storeScope.Count)
+                {
+                    throw new InvalidOperationException(
+                        "DOTS checkpoint RuntimeStore scope must exactly match its replay RuntimeStore participant.");
+                }
+                for (var i = 0; i < requestedScope.Count; i++)
+                {
+                    if (_storeScope.Contains(
+                            requestedScope.TakeStoreId(i)))
+                    {
+                        continue;
+                    }
+
+                    throw new InvalidOperationException(
+                        "DOTS checkpoint RuntimeStore scope must exactly match its replay RuntimeStore participant.");
+                }
+
+                return;
+            }
+
+            var activeStoreCount = 0;
+            foreach (var store in RuntimeStores.EnumerateStores(_realm))
+            {
+                activeStoreCount++;
+                if (_storeScope.Contains(store.Id))
+                {
+                    continue;
+                }
+
+                throw new InvalidOperationException(
+                    "A session-wide DOTS checkpoint requires its replay RuntimeStore participant to include every active store in the realm.");
+            }
+            if (activeStoreCount != _storeScope.Count)
+            {
+                throw new InvalidOperationException(
+                    "A session-wide DOTS checkpoint requires its replay RuntimeStore participant to include every active store in the realm.");
             }
         }
 
@@ -239,10 +456,14 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
             for (var i = 0; i < stores.Length; i++)
             {
                 var storeId = _storeScope.TakeStoreId(i);
-                if (!RuntimeStores.TryGetRuntimeStore(
+                RuntimeStore store;
+                var hasStore = _captureStage != null
+                    ? _captureStage.TryTakeStore(storeId, out store)
+                    : RuntimeStores.TryGetRuntimeStore(
                         storeId,
                         _realm,
-                        out var store)
+                        out store);
+                if (!hasStore
                     || store == null
                     || store.Retired)
                 {
@@ -258,8 +479,9 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
                     $"Replay checkpoint has {stores.Length} stores; maximum is {MAX_STORES}.");
             }
 
-            var persistentContext =
-                RuntimePersistentPatchCodecContext.ForActiveRealm(_realm);
+            var persistentContext = _captureStage != null
+                ? _captureStage.PersistentContext
+                : RuntimePersistentPatchCodecContext.ForActiveRealm(_realm);
             for (var i = 0; i < stores.Length; i++)
             {
                 var store = stores[i];
@@ -644,6 +866,14 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
                     "Runtime-store replay checkpoint cannot publish an empty authoritative store group.");
             }
 
+            using var stage = PrepareStage(snapshot);
+            stage.Publish();
+            PlaybackProjectionCommands();
+        }
+
+        private RuntimeStoresReplayCheckpointStage PrepareStage(
+            RuntimeStoresReplaySnapshot snapshot)
+        {
             var stagedStores = new List<RuntimeStore>(
                 snapshot.Stores.Count);
             var stagedById =
@@ -652,7 +882,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
                 new Dictionary<RuntimeReplayStableObjectKey, RuntimeInstance>();
             var directions =
                 new Dictionary<FixedString32Bytes, StoreNetDir>();
-            var published = false;
             try
             {
                 PrepareStagedStores(
@@ -685,19 +914,24 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
                         source.CapturedRevision);
                 }
 
-                RuntimeStores.PublishPreparedRestoreStores(
+                return new RuntimeStoresReplayCheckpointStage(
+                    this,
                     stagedStores,
-                    directions,
-                    replaceRealm: false);
-                published = true;
-                PlaybackProjectionCommands();
+                    stagedById,
+                    patchContext,
+                    stage =>
+                    {
+                        RuntimeStores.PublishPreparedRestoreStores(
+                            stagedStores,
+                            directions,
+                            replaceRealm: false);
+                        stage.MarkPublished();
+                    },
+                    () => RetireStagedStores(stagedStores));
             }
             catch
             {
-                if (!published)
-                {
-                    RetireStagedStores(stagedStores);
-                }
+                RetireStagedStores(stagedStores);
                 throw;
             }
         }

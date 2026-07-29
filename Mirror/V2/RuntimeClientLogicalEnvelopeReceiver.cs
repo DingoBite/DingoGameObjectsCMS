@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using DingoGameObjectsCMS.RuntimeObjects.Replay;
 
 namespace DingoGameObjectsCMS.Mirror.V2
 {
@@ -96,6 +97,7 @@ namespace DingoGameObjectsCMS.Mirror.V2
         public readonly ulong DeliverySequence;
         public readonly ulong StoreRevision;
         public readonly byte[] Payload;
+        public readonly RuntimeCheckpointBoundary? CheckpointBoundary;
 
         public RuntimeClientBaselineEnvelope(
             ulong sessionId,
@@ -103,7 +105,8 @@ namespace DingoGameObjectsCMS.Mirror.V2
             ulong baselineId,
             ulong deliverySequence,
             ulong storeRevision,
-            byte[] payload)
+            byte[] payload,
+            RuntimeCheckpointBoundary? checkpointBoundary = null)
         {
             SessionId = sessionId;
             Store = store;
@@ -111,6 +114,7 @@ namespace DingoGameObjectsCMS.Mirror.V2
             DeliverySequence = deliverySequence;
             StoreRevision = storeRevision;
             Payload = payload ?? Array.Empty<byte>();
+            CheckpointBoundary = checkpointBoundary;
         }
     }
 
@@ -467,7 +471,8 @@ namespace DingoGameObjectsCMS.Mirror.V2
                 _activeBaselineHeader.BaselineId,
                 _activeBaselineHeader.DeliverySequence,
                 _activeBaselineHeader.StoreRevision,
-                payload);
+                payload,
+                TakeCheckpointBoundary(_activeBaselineHeader));
             if (!_applyBaseline(baseline))
             {
                 return RequestResync(RuntimeClientResyncReason.BaselineApplyFailed);
@@ -480,6 +485,21 @@ namespace DingoGameObjectsCMS.Mirror.V2
             _activeBaselineHeader = default;
             _baselineStartedAt = 0;
             return DrainContiguous(nowSeconds, RuntimeClientReceiveResultKind.BaselineApplied);
+        }
+
+        private static RuntimeCheckpointBoundary? TakeCheckpointBoundary(
+            in RuntimeBaselineChunk chunk)
+        {
+            if (string.IsNullOrEmpty(chunk.CheckpointGroupId))
+            {
+                return null;
+            }
+
+            return new RuntimeCheckpointBoundary(
+                chunk.CheckpointGroupId,
+                chunk.CompletedTick,
+                chunk.JournalCursor,
+                chunk.CheckpointHash);
         }
 
         private RuntimeClientReceiveResult DrainContiguous(double nowSeconds, RuntimeClientReceiveResultKind fallbackKind)

@@ -47,7 +47,8 @@ namespace DingoGameObjectsCMS.Mirror
                     SendReject,
                     SendAck,
                     SendResync,
-                    SendCommand),
+                    SendCommand,
+                    SendJournalResync),
                 clientNonce);
 
             NetworkClient.RegisterHandler<RtSessionManifest>(OnManifest);
@@ -56,6 +57,8 @@ namespace DingoGameObjectsCMS.Mirror
             NetworkClient.RegisterHandler<RtStoreDelta>(OnDelta);
             NetworkClient.RegisterHandler<RtCommandResult>(OnCommandResult);
             NetworkClient.RegisterHandler<RtStateStreamFrame>(OnStateStream);
+            NetworkClient.RegisterHandler<RtCommandJournalBatch>(
+                OnJournalBatch);
         }
 
         public void BeginHandshake()
@@ -87,6 +90,7 @@ namespace DingoGameObjectsCMS.Mirror
             NetworkClient.UnregisterHandler<RtStoreDelta>();
             NetworkClient.UnregisterHandler<RtCommandResult>();
             NetworkClient.UnregisterHandler<RtStateStreamFrame>();
+            NetworkClient.UnregisterHandler<RtCommandJournalBatch>();
             if (_tickScheduled)
             {
                 _tickScheduled = false;
@@ -143,6 +147,24 @@ namespace DingoGameObjectsCMS.Mirror
                 message.Payload));
         }
 
+        private void OnJournalBatch(RtCommandJournalBatch message)
+        {
+            try
+            {
+                _coordinator.ReceiveJournalBatch(
+                    RuntimeCommandJournalWireCodec.FromWire(message));
+            }
+            catch (Exception exception) when (exception is FormatException
+                                              || exception is ArgumentException
+                                              || exception is InvalidOperationException
+                                              || exception is OverflowException)
+            {
+                SendReject(
+                    RuntimeProtocolRejectCode.InvalidEnvelope,
+                    $"Invalid journal batch: {exception.Message}");
+            }
+        }
+
         private static void SendHello(RuntimeSessionDescriptor descriptor, ulong clientNonce)
         {
             NetworkClient.Send(new RtSessionHello
@@ -192,6 +214,22 @@ namespace DingoGameObjectsCMS.Mirror
         private static void SendCommand(RuntimeCommandEnvelope value)
         {
             NetworkClient.Send(new RtCommandEnvelope { Value = value }, Channels.Reliable);
+        }
+
+        private static void SendJournalResync(
+            RtCommandJournalResyncData value)
+        {
+            NetworkClient.Send(
+                new RtCommandJournalResyncRequest
+                {
+                    SessionId = value.SessionId,
+                    CheckpointGroupId = value.CheckpointGroupId,
+                    CheckpointHash = value.CheckpointHash,
+                    ExpectedCursor = value.ExpectedCursor,
+                    ForceCheckpointBaseline =
+                        value.ForceCheckpointBaseline,
+                },
+                Channels.Reliable);
         }
     }
 }

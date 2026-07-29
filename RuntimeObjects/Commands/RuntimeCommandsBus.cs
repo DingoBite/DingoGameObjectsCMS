@@ -24,17 +24,16 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
         private bool _hasDrainedTick;
         private long _lastApplyBeforeTick;
         private ulong _nextExecutionId;
-        private ulong _nextJournalSequence;
         private RuntimeCommandsBusMode _mode;
         private RuntimeReplayCommandRegistry _replayRegistry;
         private RuntimePersistentPatchCodecContext _replayCodecContext;
         private RuntimeReplayStoreScope _replayStoreScope;
         private bool _clearReplayStoreScopeRequested;
+        private readonly RuntimeCommandJournal _journal;
 
         private readonly SafeMulticast<GameRuntimeCommand> _beforeExecute = new();
         private readonly SafeMulticast<GameRuntimeCommand> _afterExecute = new();
         private readonly SafeMulticast<GameRuntimeCommand, Exception> _executeFailed = new();
-        private readonly SafeMulticast<RuntimeCommandJournalEntry> _journalEntryRecorded = new();
         private readonly SafeMulticast<RuntimeCommandExecutionResult> _commandCompleted = new();
         private RuntimeCommandOutboundDispatcher _outboundDispatcher;
 
@@ -46,17 +45,20 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
         public bool HasReplayStoreScope => _replayStoreScope != null;
         public bool HasDrainedTick => _hasDrainedTick;
         public long LastApplyBeforeTick => _hasDrainedTick ? _lastApplyBeforeTick : -1;
-        public ulong JournalSequence => _nextJournalSequence;
+        public ulong JournalSequence => _journal.Sequence;
+        public RuntimeCommandJournal Journal => _journal;
 
         public RuntimeCommandsBus(
             RuntimeCommandOutboundDispatcher outboundDispatcher = null,
             RuntimeCommandsBusMode mode = RuntimeCommandsBusMode.AutomaticLateUpdate,
             RuntimeReplayCommandRegistry replayRegistry = null,
-            RuntimePersistentPatchCodecContext replayCodecContext = null)
+            RuntimePersistentPatchCodecContext replayCodecContext = null,
+            RuntimeCommandJournal journal = null)
         {
             ValidateMode(mode);
             _outboundDispatcher = outboundDispatcher;
             _mode = mode;
+            _journal = journal ?? new RuntimeCommandJournal();
             if (replayRegistry != null)
                 SetReplayRegistry(replayRegistry, replayCodecContext);
         }
@@ -64,8 +66,9 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
         public RuntimeCommandsBus(
             RuntimeCommandsBusMode mode,
             RuntimeReplayCommandRegistry replayRegistry = null,
-            RuntimePersistentPatchCodecContext replayCodecContext = null)
-            : this(null, mode, replayRegistry, replayCodecContext)
+            RuntimePersistentPatchCodecContext replayCodecContext = null,
+            RuntimeCommandJournal journal = null)
+            : this(null, mode, replayRegistry, replayCodecContext, journal)
         {
         }
 
@@ -89,8 +92,8 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
 
         public event Action<RuntimeCommandJournalEntry> JournalEntryRecorded
         {
-            add => _journalEntryRecorded.Subscribe(value);
-            remove => _journalEntryRecorded.Unsubscribe(value);
+            add => _journal.EntryRecorded += value;
+            remove => _journal.EntryRecorded -= value;
         }
 
         public event Action<RuntimeCommandExecutionResult> CommandCompleted
@@ -275,10 +278,94 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
             }
 
             CancelScheduledFlush();
-            _nextJournalSequence = completedSequence;
+            _journal.ResetBoundary(completedTick, completedSequence);
             _hasDrainedTick = completedTick >= 0;
             _lastApplyBeforeTick = completedTick;
             _rescheduleRequested = false;
+        }
+
+        public RuntimeCommandJournalEntry AppendOutcomeBatch(
+            long applyBeforeTick,
+            GameRuntimeCommand outcomeBatch,
+            RuntimeCommandJournalScope scope = null)
+        {
+            if (applyBeforeTick < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(applyBeforeTick));
+            }
+            if (outcomeBatch == null)
+            {
+                throw new ArgumentNullException(nameof(outcomeBatch));
+            }
+            if (_flushInProgress)
+            {
+                throw new InvalidOperationException(
+                    "A record-only outcome batch cannot be appended during command Drain.");
+            }
+            if (_replayRegistry == null)
+            {
+                throw new InvalidOperationException(
+                    "A record-only outcome batch requires a replay command registry.");
+            }
+            if (!_replayRegistry.TryEncode(
+                    outcomeBatch,
+                    _replayCodecContext,
+                    out var encoded))
+            {
+                throw new NotSupportedException(
+                    "Runtime outcome batch has no registered replay command component.");
+            }
+
+            return _journal.AppendOutcomeBatch(
+                applyBeforeTick,
+                encoded,
+                scope ?? ResolveJournalScope(outcomeBatch));
+        }
+
+        public RuntimeCommandJournalEntry AppendOutcomeBatch(
+            long applyBeforeTick,
+            in RuntimeEncodedCommand encodedBatch,
+            RuntimeCommandJournalScope scope)
+        {
+            if (_flushInProgress)
+            {
+                throw new InvalidOperationException(
+                    "A record-only outcome batch cannot be appended during command Drain.");
+            }
+
+            return _journal.AppendOutcomeBatch(
+                applyBeforeTick,
+                encodedBatch,
+                scope);
+        }
+
+        public GameRuntimeCommand DecodeRecordedCommand(
+            in RuntimeEncodedCommand encodedCommand)
+        {
+            if (_replayRegistry == null)
+            {
+                throw new InvalidOperationException(
+                    "Recorded command decoding requires a replay command registry.");
+            }
+
+            return _replayRegistry.Decode(
+                encodedCommand,
+                _replayCodecContext);
+        }
+
+        public void ExecuteRecordedCommand(GameRuntimeCommand command)
+        {
+            if (command == null)
+            {
+                throw new ArgumentNullException(nameof(command));
+            }
+            if (_flushInProgress)
+            {
+                throw new InvalidOperationException(
+                    "A recorded command cannot execute during command Drain.");
+            }
+
+            ExecuteCommand(command);
         }
 
         public int Drain(long applyBeforeTick)
@@ -291,6 +378,11 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
             {
                 throw new InvalidOperationException(
                     $"Runtime command apply-before tick {applyBeforeTick} precedes the last drained tick {_lastApplyBeforeTick}.");
+            }
+            if (applyBeforeTick < _journal.LastApplyBeforeTick)
+            {
+                throw new InvalidOperationException(
+                    $"Runtime command apply-before tick {applyBeforeTick} precedes the last journal tick {_journal.LastApplyBeforeTick}.");
             }
 
             CancelScheduledFlush();
@@ -342,7 +434,9 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
                     processedCount++;
                     var executionId = ++_nextExecutionId;
                     var encodedCommand = default(RuntimeEncodedCommand);
+                    var journalScope = RuntimeCommandJournalScope.Session;
                     Exception replayEncodingFailure = null;
+                    var rejectBeforeExecute = false;
                     var replayJournalExcluded = false;
                     var replayEncodingStatus =
                         RuntimeCommandExecutionStatus.Succeeded;
@@ -367,6 +461,21 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
                                     new NotSupportedException(
                                         "Runtime command has no registered replay command component.");
                             }
+                            if (encodedCommand.IsValid)
+                            {
+                                journalScope = ResolveJournalScope(cmd);
+                                _journal.ValidateScopeCoverage(
+                                    journalScope);
+                            }
+                        }
+                        catch (
+                            RuntimeCommandJournalScopeCoverageException
+                            e)
+                        {
+                            rejectBeforeExecute = true;
+                            replayEncodingStatus =
+                                RuntimeCommandExecutionStatus.Failed;
+                            replayEncodingFailure = e;
                         }
                         catch (NotSupportedException e)
                         {
@@ -380,6 +489,24 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
                                 RuntimeCommandExecutionStatus.Failed;
                             replayEncodingFailure = e;
                         }
+                    }
+
+                    if (rejectBeforeExecute)
+                    {
+                        _executeFailed.Invoke(
+                            cmd,
+                            replayEncodingFailure);
+                        _commandCompleted.Invoke(
+                            new RuntimeCommandExecutionResult(
+                                executionId,
+                                applyBeforeTick,
+                                cmd,
+                                replayEncodingStatus,
+                                encodedCommand,
+                                default,
+                                replayEncodingFailure,
+                                replayJournalExcluded));
+                        continue;
                     }
 
                     try
@@ -405,10 +532,10 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
                         var journalEntry = default(RuntimeCommandJournalEntry);
                         if (encodedCommand.IsValid)
                         {
-                            journalEntry = new RuntimeCommandJournalEntry(
+                            journalEntry = _journal.AppendInput(
                                 applyBeforeTick,
-                                ++_nextJournalSequence,
-                                encodedCommand);
+                                encodedCommand,
+                                journalScope);
                         }
 
                         var success = new RuntimeCommandExecutionResult(
@@ -420,8 +547,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
                             journalEntry,
                             null,
                             replayJournalExcluded);
-                        if (success.HasJournalEntry)
-                            _journalEntryRecorded.Invoke(journalEntry);
                         _afterExecute.Invoke(cmd);
                         _commandCompleted.Invoke(success);
                     }
@@ -542,6 +667,33 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
                     $"Unknown replay RuntimeStore scope disposition "
                     + $"'{disposition}'."),
             };
+        }
+
+        private static RuntimeCommandJournalScope ResolveJournalScope(
+            GameRuntimeCommand command)
+        {
+            var components = command.Components;
+            IRuntimeCommandJournalScopeProvider provider = null;
+            if (components != null)
+            {
+                foreach (var component in components)
+                {
+                    if (component is not IRuntimeCommandJournalScopeProvider candidate)
+                    {
+                        continue;
+                    }
+                    if (provider != null)
+                    {
+                        throw new NotSupportedException(
+                            "Runtime command contains multiple command journal scope providers.");
+                    }
+
+                    provider = candidate;
+                }
+            }
+
+            return provider?.GetRuntimeCommandJournalScope(command)
+                   ?? RuntimeCommandJournalScope.Session;
         }
     }
 }

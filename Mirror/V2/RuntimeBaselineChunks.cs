@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Security.Cryptography;
+using DingoGameObjectsCMS.RuntimeObjects.Replay;
 using UnityEngine.Scripting;
 
 namespace DingoGameObjectsCMS.Mirror.V2
@@ -13,6 +14,10 @@ namespace DingoGameObjectsCMS.Mirror.V2
         public ulong BaselineId;
         public ulong DeliverySequence;
         public ulong StoreRevision;
+        public string CheckpointGroupId;
+        public long CompletedTick;
+        public ulong JournalCursor;
+        public string CheckpointHash;
         public ushort ChunkIndex;
         public ushort ChunkCount;
         public int LogicalLength;
@@ -40,7 +45,8 @@ namespace DingoGameObjectsCMS.Mirror.V2
             ulong baselineId,
             ulong deliverySequence,
             ulong storeRevision,
-            byte[] payload)
+            byte[] payload,
+            RuntimeCheckpointBoundary? checkpointBoundary = null)
         {
             if (sessionId == 0)
                 throw new ArgumentOutOfRangeException(nameof(sessionId));
@@ -82,6 +88,10 @@ namespace DingoGameObjectsCMS.Mirror.V2
                     BaselineId = baselineId,
                     DeliverySequence = deliverySequence,
                     StoreRevision = storeRevision,
+                    CheckpointGroupId = checkpointBoundary?.GroupId,
+                    CompletedTick = checkpointBoundary?.CompletedTick ?? 0,
+                    JournalCursor = checkpointBoundary?.JournalCursor ?? 0,
+                    CheckpointHash = checkpointBoundary?.CheckpointHash,
                     ChunkIndex = (ushort)i,
                     ChunkCount = (ushort)count,
                     LogicalLength = payload.Length,
@@ -191,6 +201,8 @@ namespace DingoGameObjectsCMS.Mirror.V2
         {
             if (chunk.SessionId == 0 || !chunk.Store.IsValid || chunk.BaselineId == 0 || chunk.DeliverySequence == 0)
                 return false;
+            if (!HasValidCheckpointMetadata(chunk))
+                return false;
             if (chunk.ChunkCount == 0 || chunk.ChunkCount > RuntimeProtocolV2.MAX_BASELINE_CHUNKS || chunk.ChunkIndex >= chunk.ChunkCount)
                 return false;
             if (chunk.LogicalLength < 0 || chunk.LogicalLength > RuntimeProtocolV2.MAX_BASELINE_BYTES)
@@ -233,9 +245,27 @@ namespace DingoGameObjectsCMS.Mirror.V2
                    && left.BaselineId == right.BaselineId
                    && left.DeliverySequence == right.DeliverySequence
                    && left.StoreRevision == right.StoreRevision
+                   && string.Equals(left.CheckpointGroupId, right.CheckpointGroupId, StringComparison.Ordinal)
+                   && left.CompletedTick == right.CompletedTick
+                   && left.JournalCursor == right.JournalCursor
+                   && string.Equals(left.CheckpointHash, right.CheckpointHash, StringComparison.Ordinal)
                    && left.ChunkCount == right.ChunkCount
                    && left.LogicalLength == right.LogicalLength
                    && BytesEqual(left.PayloadHash, right.PayloadHash);
+        }
+
+        private static bool HasValidCheckpointMetadata(in RuntimeBaselineChunk chunk)
+        {
+            var hasGroup = !string.IsNullOrWhiteSpace(chunk.CheckpointGroupId);
+            var hasHash = RuntimeReplayHash.IsSha256Hex(chunk.CheckpointHash);
+            if (!hasGroup && string.IsNullOrEmpty(chunk.CheckpointHash))
+            {
+                return chunk.CompletedTick == 0 && chunk.JournalCursor == 0;
+            }
+
+            return hasGroup
+                   && hasHash
+                   && chunk.CompletedTick >= 0;
         }
 
         private static bool HashMatches(byte[] payload, byte[] expected)

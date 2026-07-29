@@ -183,6 +183,26 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
         public int ParticipantCount => _participants.Count;
         public int MigrationCount => _migrations.Count;
 
+        public bool TryTakeParticipant<TParticipant>(
+            out TParticipant participant)
+            where TParticipant : class, IRuntimeReplayCheckpointParticipant
+        {
+            RequireSealed();
+            for (var i = 0; i < _orderedParticipants.Length; i++)
+            {
+                if (_orderedParticipants[i] is not TParticipant candidate)
+                {
+                    continue;
+                }
+
+                participant = candidate;
+                return true;
+            }
+
+            participant = null;
+            return false;
+        }
+
         public void RegisterParticipant(
             IRuntimeReplayCheckpointParticipant participant)
         {

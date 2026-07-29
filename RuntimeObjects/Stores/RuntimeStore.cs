@@ -804,6 +804,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
             if (!_all.V.TryGetValue(id, out gameRuntimeObject))
                 return false;
 
+            gameRuntimeObject.RegisterEntityFactoryWriteIntent();
             MarkTouchedUpToRoot(id);
             return true;
         }

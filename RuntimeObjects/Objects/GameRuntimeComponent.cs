@@ -5,6 +5,15 @@ using UnityEngine.Scripting;
 
 namespace DingoGameObjectsCMS.RuntimeObjects.Objects
 {
+    /// <summary>
+    /// Opt-in projection contract for a GRO that creates one or more ECS-only
+    /// entities. Unlike <see cref="GameRuntimeComponent{TSelf}"/>, this
+    /// component is not added to the projected root as managed component data.
+    /// </summary>
+    public abstract class GameRuntimeEntityFactoryComponent : GameRuntimeComponent
+    {
+    }
+
     public abstract class GameRuntimeComponent<TSelf> : GameRuntimeComponent where TSelf : GameRuntimeComponent<TSelf>
     {
         public override void SetupForEntity(RuntimeStore store, EntityCommandBuffer ecb, GameRuntimeObject g, Entity e)

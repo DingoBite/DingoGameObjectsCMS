@@ -30,7 +30,9 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
         [NonSerialized, JsonIgnore] private Dictionary<uint, ComponentStructDirty> _structureChanges = new();
         [NonSerialized, JsonIgnore] private bool _isDestroyed;
         [NonSerialized, JsonIgnore] private bool _hasEntityProjection;
+        [NonSerialized, JsonIgnore] private bool _isEntityFactoryProjection;
         [NonSerialized, JsonIgnore] private bool _cacheHasRuntimeIds;
+        [NonSerialized, JsonIgnore] private ulong _entityFactoryMutationRevision;
         [NonSerialized, JsonIgnore] private Entity _entity;
 
         [NonSerialized, JsonIgnore] private RuntimeStore _runtimeStore;
@@ -40,6 +42,8 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
         [JsonIgnore] public IReadOnlyDictionary<uint, ComponentStructDirty> StructureChanges => _structureChanges;
         [JsonIgnore] public IReadOnlyList<GameRuntimeComponent> Components => _components;
         [JsonIgnore] public bool HasEntityProjection => _hasEntityProjection;
+        [JsonIgnore] public bool IsEntityFactory => _isEntityFactoryProjection || HasEntityFactoryComponent();
+        [JsonIgnore] public ulong EntityFactoryMutationRevision => _entityFactoryMutationRevision;
         [JsonIgnore] public RuntimeInstance RuntimeInstance => new() { Id = InstanceId, StoreId = StoreId, Epoch = _runtimeStore?.Epoch ?? 0u };
         [JsonIgnore] public RuntimeObjectOrigin Origin => _origin;
 
@@ -63,6 +67,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
         {
             _entity = entity;
             _hasEntityProjection = true;
+            _isEntityFactoryProjection |= HasEntityFactoryComponent();
         }
 
         public void ClearEntityLink()
@@ -75,6 +80,8 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
             _runtimeStore = null;
             _world = null;
             _hasEntityProjection = false;
+            _isEntityFactoryProjection = false;
+            _entityFactoryMutationRevision = 0;
             ClearEntityLink();
         }
 
@@ -109,6 +116,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
                 return null;
 
             MarkComponentDirty<T>();
+            RegisterEntityFactoryWriteIntent();
             return (T)c;
         }
 
@@ -126,6 +134,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
                 throw new InvalidOperationException($"GameRuntimeObject {InstanceId} in store '{StoreId}' requires a valid ECS World.");
 
             var entityManager = _world.EntityManager;
+            var isEntityFactory = HasEntityFactoryComponent();
             _entity = entityManager.CreateEntity();
             entityManager.AddComponentData(_entity, new AssetLink { AssetGUID = AssetGUID });
             var source = SourceAssetGUID.isValid ? SourceAssetGUID : GUID;
@@ -136,8 +145,16 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
             entityManager.AddComponentData(_entity, RuntimeInstance);
             entityManager.AddComponentData(_entity, new RuntimeEntityDestroyState());
             entityManager.AddBuffer<RuntimeChildEntity>(_entity);
+            if (isEntityFactory)
+            {
+                entityManager.AddComponent<RuntimeEntityFactoryTag>(_entity);
+                var linkedEntities = entityManager.AddBuffer<LinkedEntityGroup>(_entity);
+                linkedEntities.Add(_entity);
+            }
 
             _hasEntityProjection = true;
+            _isEntityFactoryProjection = isEntityFactory;
+            _entityFactoryMutationRevision = 0;
             _runtimeStore.LinkEntity(InstanceId, _entity);
 
             var ecb = _world.TakeGRCEditingECB();
@@ -194,6 +211,8 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
             if (hadExisting && ReferenceEquals(existing, component))
             {
                 MarkComponentDirty(typeId);
+                RegisterProjectedEntityFactoryComponent(component);
+                RegisterEntityFactoryWriteIntent();
                 _isDestroyed = false;
                 if (shouldSyncEntity)
                 {
@@ -239,6 +258,8 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
 
             _componentsByType[keyType] = component;
             _componentsById[typeId] = component;
+            RegisterProjectedEntityFactoryComponent(component);
+            RegisterEntityFactoryWriteIntent();
             _isDestroyed = false;
 
             if (shouldSyncEntity)
@@ -277,6 +298,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
                 disposable.Dispose();
 
             MarkComponentStructDirty(typeId, keyType, CompStructOpKind.Remove);
+            RegisterEntityFactoryWriteIntent();
             return true;
         }
 
@@ -336,6 +358,15 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
                 throw new InvalidOperationException($"GameRuntimeObject {InstanceId} in store '{StoreId}' does not contain component type id {compTypeId}.");
 
             MarkComponentDirty(compTypeId);
+            RegisterEntityFactoryWriteIntent();
+        }
+
+        public void RegisterEntityFactoryWriteIntent()
+        {
+            if (!_isEntityFactoryProjection || _entityFactoryMutationRevision == ulong.MaxValue)
+                return;
+
+            _entityFactoryMutationRevision++;
         }
 
         public void ClearDirty()
@@ -428,6 +459,30 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
             }
 
             _isDestroyed = false;
+        }
+
+        private bool HasEntityFactoryComponent()
+        {
+            if (_components == null)
+                return false;
+
+            foreach (var component in _components)
+            {
+                if (component is GameRuntimeEntityFactoryComponent)
+                    return true;
+            }
+
+            return false;
+        }
+
+        private void RegisterProjectedEntityFactoryComponent(GameRuntimeComponent component)
+        {
+            if (_hasEntityProjection
+                && !_isEntityFactoryProjection
+                && component is GameRuntimeEntityFactoryComponent)
+            {
+                _isEntityFactoryProjection = true;
+            }
         }
 
         [OnDeserialized]

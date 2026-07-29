@@ -162,11 +162,25 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
         public long ApplyBeforeTick;
         public ulong Sequence;
         public RuntimeEncodedCommand EncodedCommand;
+        public RuntimeCommandJournalScope Scope;
 
         public RuntimeCommandJournalEntry(
             long applyBeforeTick,
             ulong sequence,
             in RuntimeEncodedCommand encodedCommand)
+            : this(
+                applyBeforeTick,
+                sequence,
+                encodedCommand,
+                RuntimeCommandJournalScope.Session)
+        {
+        }
+
+        public RuntimeCommandJournalEntry(
+            long applyBeforeTick,
+            ulong sequence,
+            in RuntimeEncodedCommand encodedCommand,
+            RuntimeCommandJournalScope scope)
         {
             if (applyBeforeTick < 0)
                 throw new ArgumentOutOfRangeException(nameof(applyBeforeTick));
@@ -176,10 +190,22 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
                 throw new ArgumentException(
                     "Journal command snapshot is invalid.",
                     nameof(encodedCommand));
+            if (scope == null)
+                throw new ArgumentNullException(nameof(scope));
 
             ApplyBeforeTick = applyBeforeTick;
             Sequence = sequence;
             EncodedCommand = encodedCommand.Copy();
+            Scope = scope;
+        }
+
+        public RuntimeCommandJournalEntry Copy()
+        {
+            return new RuntimeCommandJournalEntry(
+                ApplyBeforeTick,
+                Sequence,
+                EncodedCommand,
+                Scope);
         }
     }
 
@@ -242,7 +268,8 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
                 ? new RuntimeCommandJournalEntry(
                     journalEntry.ApplyBeforeTick,
                     journalEntry.Sequence,
-                    journalEntry.EncodedCommand)
+                    journalEntry.EncodedCommand,
+                    journalEntry.Scope)
                 : default;
             Exception = exception;
             ReplayJournalExcluded = replayJournalExcluded;

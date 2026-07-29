@@ -16,6 +16,8 @@
 
 Это не просто “CMS для ScriptableObject”, а унифицированная модель игры, где asset pipeline, runtime model, ECS bridge, replication и modding используют один и тот же язык данных.
 
+Опциональный высоконагруженный DOTS-профиль описан в [Интеграции DOTS + RuntimeStore](DOTS_INTEGRATION.md).
+
 ## Почему это решение полезно
 
 - **Content-first архитектура.** Игра описывается asset-ами и runtime-компонентами, а не разрастающимся набором scene-specific MonoBehaviour.
@@ -341,9 +343,11 @@ Assets/StreamingAssets/runtime_component_types.json
 
 ## Сетевая синхронизация
 
-Mirror остаётся транспортом/фреймворком, а protocol v2 синхронизирует
-authoritative поколения `RuntimeStore`. Строгий session manifest проверяет
-build, runtime schema и точный GA catalog до создания replica store.
+Mirror остаётся транспортом/фреймворком, а wire protocol V3 синхронизирует
+authoritative поколения `RuntimeStore` через существующий стек
+`RuntimeProtocolV2*`. Постфикс V2 сохранён как имя семейства реализации, а не
+как номер wire protocol. Строгий session manifest проверяет build, runtime
+schema и точный GA catalog до создания replica store.
 Parent-first binary baseline и ordered reliable delta сначала полностью
 собираются в staging и только потом публикуются атомарно. Delivery sequence,
 baseline id, store revision, ACK, bounded pending queue и resync — независимые
@@ -391,7 +395,7 @@ provisional buffer и оставляет sequence uncommitted, поэтому ex
 encode time и allocations для preparation, `Pack`/coalescing, canonical
 validation и финального wire encoding, dirty components на committed tick,
 current projected и last ACKed membership по connection, размеры baseline и
-число resync. Coordinators и `RuntimeStoreNetServerV2` /
+число resync. Существующие coordinators `RuntimeProtocolV2*` и `RuntimeStoreNetServerV2` /
 `RuntimeStoreNetClientV2` дают snapshot напрямую, без per-GRC adapters.
 Per-connection interest filtering и shadow state сохраняются. Если
 метрики подтвердят существенное повторное кодирование, соединения с одинаковым

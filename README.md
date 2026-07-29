@@ -16,6 +16,8 @@ The core idea is simple:
 
 This is not just a "ScriptableObject CMS". It is a unified game model where the asset pipeline, runtime model, ECS bridge, replication, and modding all speak the same data language.
 
+For the opt-in high-cardinality DOTS profile, see [DOTS + RuntimeStore Integration](DOTS_INTEGRATION.md).
+
 ## Why this solution is valuable
 
 - **Content-first architecture.** Gameplay is described by assets and runtime components instead of growing scene-specific MonoBehaviour graphs.
@@ -336,9 +338,11 @@ During active development the manifest can be regenerated through `Tools/Runtime
 
 ## Network synchronization
 
-Mirror is the transport/framework; protocol v2 synchronizes authoritative
-`RuntimeStore` generations. A strict session manifest validates the build,
-runtime schema, and exact GA catalog before a replica store is created.
+Mirror is the transport/framework; wire protocol V3 synchronizes authoritative
+`RuntimeStore` generations through the existing `RuntimeProtocolV2*` stack.
+The V2 suffix is retained as an implementation-family name, not a wire-version
+claim. A strict session manifest validates the build, runtime schema, and exact
+GA catalog before a replica store is created.
 Parent-first binary baselines and ordered reliable deltas are staged and
 published atomically. Delivery sequence, baseline id, store revision, ACK,
 bounded pending queues, and resync are independent protocol concepts.
@@ -386,7 +390,7 @@ time and allocations across preparation, `Pack`/coalescing, canonical
 validation, and final wire encoding, dirty components per committed tick,
 current projected and last ACKed membership per connection, baseline sizes,
 and resync count.
-Protocol coordinators and the `RuntimeStoreNetServerV2` /
+The existing `RuntimeProtocolV2*` coordinators and `RuntimeStoreNetServerV2` /
 `RuntimeStoreNetClientV2` endpoints expose snapshots without per-GRC adapters.
 Keep per-connection interest filtering and shadow state. If measurements prove
 duplicate encoding material, group identical interest memberships and encode a

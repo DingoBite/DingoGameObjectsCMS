@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using DingoGameObjectsCMS.RuntimeObjects.Commands;
+using DingoGameObjectsCMS.RuntimeObjects.Replay;
 using DingoGameObjectsCMS.RuntimeObjects.Stores;
 using DingoGameObjectsCMS.Stores;
 
@@ -13,6 +15,7 @@ namespace DingoGameObjectsCMS.Mirror.V2
         public readonly Action<int, RuntimeClientDeltaEnvelope> Delta;
         public readonly Action<int, RuntimeCommandResult> CommandResult;
         public readonly Action<int, RtStateStreamFrameData> StateStream;
+        public readonly Action<int, RuntimeCommandJournalBatch> JournalBatch;
         public readonly RuntimeReliableDeltaTransportBudgetCheck ReliableDeltaFitsTransport;
 
         public RuntimeProtocolV2ServerOutput(
@@ -22,7 +25,8 @@ namespace DingoGameObjectsCMS.Mirror.V2
             Action<int, RuntimeClientDeltaEnvelope> delta,
             Action<int, RuntimeCommandResult> commandResult,
             RuntimeReliableDeltaTransportBudgetCheck reliableDeltaFitsTransport,
-            Action<int, RtStateStreamFrameData> stateStream = null)
+            Action<int, RtStateStreamFrameData> stateStream = null,
+            Action<int, RuntimeCommandJournalBatch> journalBatch = null)
         {
             Manifest = manifest ?? throw new ArgumentNullException(nameof(manifest));
             Reject = reject ?? throw new ArgumentNullException(nameof(reject));
@@ -32,6 +36,7 @@ namespace DingoGameObjectsCMS.Mirror.V2
             ReliableDeltaFitsTransport = reliableDeltaFitsTransport
                                          ?? throw new ArgumentNullException(nameof(reliableDeltaFitsTransport));
             StateStream = stateStream ?? ((connectionId, value) => { });
+            JournalBatch = journalBatch;
         }
     }
 
@@ -79,6 +84,16 @@ namespace DingoGameObjectsCMS.Mirror.V2
             _projection = new RuntimeServerStoreProjection(context);
             _baselineCodec = new RuntimeStoreBaselineCodec(context.PatchCodecs);
             _deltaCodec = new RuntimeStoreDeltaCodec(context.PatchCodecs);
+            if (context.CheckpointBoundaryProvider != null)
+            {
+                if (_output.JournalBatch == null)
+                {
+                    throw new InvalidOperationException(
+                        "Protocol-v3 checkpoint journal transport requires a server journal output.");
+                }
+
+                context.CommandsBus.Journal.EntryRecorded += OnJournalEntryRecorded;
+            }
             var manifestStores = context.GetManifestStores();
             for (var i = 0; i < manifestStores.Count; i++)
             {
@@ -185,6 +200,41 @@ namespace DingoGameObjectsCMS.Mirror.V2
             if (connection.Handshake == null)
                 return Reject(connectionId, RuntimeProtocolRejectCode.InvalidEnvelope, "Ready arrived before protocol-v2 hello.");
 
+            RuntimeCheckpointBoundary? checkpointBoundary = null;
+            if (_context.CheckpointBoundaryProvider != null)
+            {
+                checkpointBoundary = _context.CheckpointBoundaryProvider();
+                if (!checkpointBoundary.HasValue)
+                {
+                    return Reject(
+                        connectionId,
+                        RuntimeProtocolRejectCode.SessionNotReady,
+                        "No completed checkpoint is available for protocol-v3 journal recovery.");
+                }
+
+                var read = _context.CommandsBus.Journal.ReadAfter(
+                    checkpointBoundary.Value.GroupId,
+                    checkpointBoundary.Value.JournalCursor);
+                if (!read.Succeeded)
+                {
+                    return Reject(
+                        connectionId,
+                        RuntimeProtocolRejectCode.SessionNotReady,
+                        $"Checkpoint journal recovery is unavailable: {read.Status}.");
+                }
+                if (!_context.CommandsBus.Journal.TryGetWindow(
+                        checkpointBoundary.Value.GroupId,
+                        out var window)
+                    || !window.Scope.Equals(
+                        _context.JournalSubscriptionScope))
+                {
+                    return Reject(
+                        connectionId,
+                        RuntimeProtocolRejectCode.InvalidManifest,
+                        "Checkpoint journal window scope does not exactly match the protocol subscription scope.");
+                }
+            }
+
             var result = connection.Handshake.ReceiveReady(sessionId);
             if (!result.Accepted)
             {
@@ -192,12 +242,23 @@ namespace DingoGameObjectsCMS.Mirror.V2
                 return result;
             }
 
+            connection.CheckpointBoundary = checkpointBoundary;
+            connection.JournalSendCursor =
+                checkpointBoundary?.JournalCursor ?? 0;
+
             foreach (var pair in _stores)
             {
                 var storeState = new ConnectionStoreState(
                     new RuntimeConnectionStoreReplicationState(pair.Key, pair.Value.Store.StoreRevision));
                 connection.Stores.Add(pair.Key, storeState);
                 BeginBaseline(connectionId, connection, pair.Value, storeState);
+            }
+            if (checkpointBoundary.HasValue)
+            {
+                SendJournalCatchup(
+                    connectionId,
+                    connection,
+                    forceMarker: true);
             }
 
             ConnectionReady?.Invoke(connectionId, sessionId);
@@ -362,6 +423,131 @@ namespace DingoGameObjectsCMS.Mirror.V2
 
             BeginBaseline(connectionId, connection, storeState, connectionStore);
             return RuntimeSessionHandshakeResult.Success();
+        }
+
+        public RuntimeSessionHandshakeResult ReceiveJournalResync(
+            int connectionId,
+            in RtCommandJournalResyncData request)
+        {
+            ThrowIfDisposed();
+            var connection = GetConnection(connectionId);
+            if (connection.Handshake?.CanCreateReplica != true
+                || request.SessionId != connection.Handshake.SessionId
+                || !connection.CheckpointBoundary.HasValue)
+            {
+                return Reject(
+                    connectionId,
+                    RuntimeProtocolRejectCode.SessionNotReady,
+                    "Journal resync references a session without an active checkpoint boundary.");
+            }
+
+            var boundary = connection.CheckpointBoundary.Value;
+            if (!string.Equals(
+                    request.CheckpointGroupId,
+                    boundary.GroupId,
+                    StringComparison.Ordinal)
+                || !string.Equals(
+                    request.CheckpointHash,
+                    boundary.CheckpointHash,
+                    StringComparison.Ordinal)
+                || request.ExpectedCursor < boundary.JournalCursor
+                || request.ExpectedCursor > _context.CommandsBus.Journal.Cursor)
+            {
+                return Reject(
+                    connectionId,
+                    RuntimeProtocolRejectCode.InvalidEnvelope,
+                    "Journal resync checkpoint identity or cursor is invalid.");
+            }
+
+            if (request.ForceCheckpointBaseline)
+            {
+                var nextBoundary = _context.CheckpointBoundaryProvider?.Invoke();
+                if (!nextBoundary.HasValue
+                    || nextBoundary.Value.JournalCursor
+                        != _context.CommandsBus.Journal.Cursor)
+                {
+                    return Reject(
+                        connectionId,
+                        RuntimeProtocolRejectCode.SessionNotReady,
+                        "Journal apply failure requires a new checkpoint at the current journal cursor.");
+                }
+
+                SendCheckpointBaselineGroup(
+                    connectionId,
+                    connection,
+                    nextBoundary.Value);
+                return RuntimeSessionHandshakeResult.Success();
+            }
+
+            connection.JournalSendCursor = request.ExpectedCursor;
+            try
+            {
+                SendJournalCatchup(
+                    connectionId,
+                    connection,
+                    forceMarker: true);
+                return RuntimeSessionHandshakeResult.Success();
+            }
+            catch (Exception exception)
+            {
+                var failureDetail = exception.Message;
+                var nextBoundary =
+                    _context.CheckpointBoundaryProvider?.Invoke();
+                if (nextBoundary.HasValue
+                    && nextBoundary.Value.JournalCursor
+                    > request.ExpectedCursor)
+                {
+                    try
+                    {
+                        SendCheckpointBaselineGroup(
+                            connectionId,
+                            connection,
+                            nextBoundary.Value);
+                        return RuntimeSessionHandshakeResult.Success();
+                    }
+                    catch (Exception fallbackException)
+                    {
+                        failureDetail =
+                            $"{failureDetail}; checkpoint fallback failed: {fallbackException.Message}";
+                    }
+                }
+
+                return Reject(
+                    connectionId,
+                    RuntimeProtocolRejectCode.SessionNotReady,
+                    $"Journal recovery window is unavailable: {failureDetail}");
+            }
+        }
+
+        private void SendCheckpointBaselineGroup(
+            int connectionId,
+            ConnectionState connection,
+            in RuntimeCheckpointBoundary boundary)
+        {
+            connection.CheckpointBoundary = boundary;
+            connection.JournalSendCursor =
+                boundary.JournalCursor;
+            foreach (var pair in _stores)
+            {
+                if (!connection.Stores.TryGetValue(
+                        pair.Key,
+                        out var connectionStore))
+                {
+                    throw new InvalidOperationException(
+                        $"Journal recovery group is missing store '{pair.Key}'.");
+                }
+
+                BeginBaseline(
+                    connectionId,
+                    connection,
+                    pair.Value,
+                    connectionStore);
+            }
+
+            SendJournalCatchup(
+                connectionId,
+                connection,
+                forceMarker: true);
         }
 
         public RuntimeCommandResult ReceiveCommand(int connectionId, in RuntimeCommandEnvelope envelope, double nowSeconds)
@@ -556,6 +742,10 @@ namespace DingoGameObjectsCMS.Mirror.V2
             if (_disposed)
                 return;
             _disposed = true;
+            if (_context.CheckpointBoundaryProvider != null)
+            {
+                _context.CommandsBus.Journal.EntryRecorded -= OnJournalEntryRecorded;
+            }
             RuntimeStores.StoreLifecycleChanged -= OnStoreLifecycleChanged;
             foreach (var pair in _stores)
             {
@@ -677,6 +867,63 @@ namespace DingoGameObjectsCMS.Mirror.V2
             }
         }
 
+        private void OnJournalEntryRecorded(RuntimeCommandJournalEntry entry)
+        {
+            if (_disposed || _sessionInvalidated)
+            {
+                return;
+            }
+
+            foreach (var pair in _connections)
+            {
+                var connection = pair.Value;
+                if (connection.Handshake?.CanCreateReplica != true
+                    || !connection.CheckpointBoundary.HasValue)
+                {
+                    continue;
+                }
+
+                try
+                {
+                    if (connection.JournalSendCursor >= entry.Sequence)
+                    {
+                        continue;
+                    }
+                    if (connection.JournalSendCursor + 1 == entry.Sequence)
+                    {
+                        var visibleEntries =
+                            _context.JournalSubscriptionScope.Covers(
+                                entry.Scope)
+                                ? new[] { entry }
+                                : Array.Empty<RuntimeCommandJournalEntry>();
+                        SendJournalBatch(
+                            pair.Key,
+                            connection,
+                            connection.CheckpointBoundary.Value,
+                            connection.JournalSendCursor,
+                            entry.Sequence,
+                            visibleEntries,
+                            force: true,
+                            completesCatchup: false);
+                        continue;
+                    }
+
+                    SendJournalCatchup(
+                        pair.Key,
+                        connection,
+                        forceMarker: false);
+                }
+                catch (Exception exception)
+                {
+                    _output.Reject(
+                        pair.Key,
+                        RuntimeProtocolRejectCode.InvalidEnvelope,
+                        $"Journal catch-up failed: {exception.Message}");
+                    ConnectionInvalidated?.Invoke(pair.Key);
+                }
+            }
+        }
+
         private void OnStoreLifecycleChanged(RuntimeStoreLifecycleChange change)
         {
             if (_disposed || _sessionInvalidated || change.Realm != StoreRealm.Server)
@@ -757,13 +1004,24 @@ namespace DingoGameObjectsCMS.Mirror.V2
 
         private void SendBaselineChunks(int connectionId, ConnectionState connection, RuntimeActiveBaselineTransfer transfer)
         {
+            RuntimeCheckpointBoundary? checkpointBoundary = null;
+            if (connection.CheckpointBoundary.HasValue
+                && _context.JournalSubscriptionScope != null
+                && _context.JournalSubscriptionScope.Contains(
+                    transfer.Store.StoreId))
+            {
+                checkpointBoundary =
+                    connection.CheckpointBoundary;
+            }
+
             var chunks = RuntimeBaselineChunker.Split(
                 connection.Handshake.SessionId,
                 transfer.Store,
                 transfer.BaselineId,
                 transfer.DeliverySequence,
                 transfer.StoreRevision,
-                transfer.CopyPayload());
+                transfer.CopyPayload(),
+                checkpointBoundary);
             for (var i = 0; i < chunks.Count; i++)
             {
                 _output.BaselineChunk(connectionId, chunks[i]);
@@ -771,6 +1029,97 @@ namespace DingoGameObjectsCMS.Mirror.V2
                     RuntimeNetworkStreamKey.Baseline,
                     chunks[i].Payload?.Length ?? 0);
             }
+        }
+
+        private void SendJournalCatchup(
+            int connectionId,
+            ConnectionState connection,
+            bool forceMarker)
+        {
+            var boundary = connection.CheckpointBoundary
+                           ?? throw new InvalidOperationException(
+                               "Connection has no checkpoint journal boundary.");
+            var read = _context.CommandsBus.Journal.ReadAfter(
+                boundary.GroupId,
+                connection.JournalSendCursor);
+            if (!read.Succeeded)
+            {
+                throw new InvalidOperationException(
+                    $"Journal read after cursor {connection.JournalSendCursor} failed: {read.Status}.");
+            }
+
+            var fromCursor = read.RequestedCursor;
+            var batchEntries = new List<RuntimeCommandJournalEntry>();
+            var batchBytes = 0;
+            for (var i = 0; i < read.Entries.Count; i++)
+            {
+                var entry = read.Entries[i];
+                var entryBytes = entry.EncodedCommand.PayloadBytes;
+                if (entryBytes > RuntimeProtocolV2.MAX_JOURNAL_BATCH_BYTES)
+                {
+                    throw new InvalidOperationException(
+                        $"Journal entry {entry.Sequence} is {entryBytes} bytes; network batch limit is {RuntimeProtocolV2.MAX_JOURNAL_BATCH_BYTES}.");
+                }
+
+                var wouldOverflow = batchEntries.Count >= RuntimeProtocolV2.MAX_JOURNAL_BATCH_ENTRIES
+                                    || batchBytes + entryBytes > RuntimeProtocolV2.MAX_JOURNAL_BATCH_BYTES;
+                if (wouldOverflow)
+                {
+                    SendJournalBatch(
+                        connectionId,
+                        connection,
+                        boundary,
+                        fromCursor,
+                        batchEntries[batchEntries.Count - 1].Sequence,
+                        batchEntries,
+                        completesCatchup: false);
+                    fromCursor = batchEntries[batchEntries.Count - 1].Sequence;
+                    batchEntries.Clear();
+                    batchBytes = 0;
+                }
+
+                batchEntries.Add(entry);
+                batchBytes += entryBytes;
+            }
+
+            SendJournalBatch(
+                connectionId,
+                connection,
+                boundary,
+                fromCursor,
+                read.ScannedThroughCursor,
+                batchEntries,
+                forceMarker,
+                completesCatchup: forceMarker);
+        }
+
+        private void SendJournalBatch(
+            int connectionId,
+            ConnectionState connection,
+            in RuntimeCheckpointBoundary boundary,
+            ulong fromCursor,
+            ulong scannedThroughCursor,
+            IReadOnlyList<RuntimeCommandJournalEntry> entries,
+            bool force = false,
+            bool completesCatchup = false)
+        {
+            if (!force
+                && scannedThroughCursor == fromCursor
+                && entries.Count == 0)
+            {
+                return;
+            }
+
+            var batch = new RuntimeCommandJournalBatch(
+                connection.Handshake.SessionId,
+                boundary.GroupId,
+                boundary.CheckpointHash,
+                fromCursor,
+                scannedThroughCursor,
+                entries,
+                completesCatchup);
+            _output.JournalBatch(connectionId, batch);
+            connection.JournalSendCursor = scannedThroughCursor;
         }
 
         private void SendDelta(
@@ -982,6 +1331,8 @@ namespace DingoGameObjectsCMS.Mirror.V2
         {
             public RuntimeSessionServerHandshake Handshake;
             public readonly Dictionary<NetStoreRef, ConnectionStoreState> Stores = new();
+            public RuntimeCheckpointBoundary? CheckpointBoundary;
+            public ulong JournalSendCursor;
         }
 
         private class ConnectionStoreState
@@ -1037,6 +1388,29 @@ namespace DingoGameObjectsCMS.Mirror.V2
             Store = store;
             BaselineId = baselineId;
             ExpectedDeliverySequence = expectedDeliverySequence;
+        }
+    }
+
+    public readonly struct RtCommandJournalResyncData
+    {
+        public readonly ulong SessionId;
+        public readonly string CheckpointGroupId;
+        public readonly string CheckpointHash;
+        public readonly ulong ExpectedCursor;
+        public readonly bool ForceCheckpointBaseline;
+
+        public RtCommandJournalResyncData(
+            ulong sessionId,
+            string checkpointGroupId,
+            string checkpointHash,
+            ulong expectedCursor,
+            bool forceCheckpointBaseline = false)
+        {
+            SessionId = sessionId;
+            CheckpointGroupId = checkpointGroupId;
+            CheckpointHash = checkpointHash;
+            ExpectedCursor = expectedCursor;
+            ForceCheckpointBaseline = forceCheckpointBaseline;
         }
     }
 }

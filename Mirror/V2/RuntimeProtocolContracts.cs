@@ -10,13 +10,17 @@ namespace DingoGameObjectsCMS.Mirror.V2
 {
     public static class RuntimeProtocolV2
     {
-        public const ushort VERSION = 2;
+        public const ushort VERSION = 3;
         public const int BASELINE_CHUNK_BYTES = 32 * 1024;
         public const int MAX_BASELINE_BYTES = 16 * 1024 * 1024;
         public const int MAX_BASELINE_CHUNKS = 512;
         public const double BASELINE_TIMEOUT_SECONDS = 10d;
         public const int MAX_PENDING_ENVELOPES = 256;
         public const int MAX_PENDING_ENVELOPE_BYTES = 4 * 1024 * 1024;
+        public const int MAX_JOURNAL_BATCH_ENTRIES = 1_024;
+        public const int MAX_JOURNAL_BATCH_BYTES = 1024 * 1024;
+        public const int MAX_PENDING_JOURNAL_ENTRIES = 16 * 1_024;
+        public const int MAX_PENDING_JOURNAL_BYTES = 16 * 1024 * 1024;
         // Reliable deltas deliberately stay small even when the selected
         // transport supports very large reliable packets. Large mutation
         // batches are represented by the existing chunked baseline path so a

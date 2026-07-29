@@ -247,7 +247,7 @@ namespace DingoGameObjectsCMS.Mirror.V2
             var projectedTopology = RuntimeProjectedStoreSnapshotBuilder.Build(
                 store,
                 connectionId,
-                _context.IsObjectVisible);
+                _context.IsObjectVisibleForReliableProjection);
             var networkContext = CreateRestrictedNetworkContext(connectionId, store, projectedTopology);
             var storeReference = new NetStoreRef(store.Id, store.StoreGeneration);
             var projected = new RuntimeStoreBaselinePayload
@@ -310,7 +310,10 @@ namespace DingoGameObjectsCMS.Mirror.V2
             if (shadow == null)
                 throw new ArgumentNullException(nameof(shadow));
 
-            var topology = RuntimeProjectedStoreSnapshotBuilder.Build(store, connectionId, _context.IsObjectVisible);
+            var topology = RuntimeProjectedStoreSnapshotBuilder.Build(
+                store,
+                connectionId,
+                _context.IsObjectVisibleForReliableProjection);
             var networkContext = CreateRestrictedNetworkContext(connectionId, store, topology);
             var patchEngine = new RuntimeObjectPatchEngine(_context.PatchCodecs, networkContext);
             var desiredIds = new HashSet<long>();
@@ -471,7 +474,10 @@ namespace DingoGameObjectsCMS.Mirror.V2
                     $"after observed revision {state.StoreRevision}.");
             }
 
-            var topology = RuntimeProjectedStoreSnapshotBuilder.Build(store, connectionId, _context.IsObjectVisible);
+            var topology = RuntimeProjectedStoreSnapshotBuilder.Build(
+                store,
+                connectionId,
+                _context.IsObjectVisibleForReliableProjection);
             var networkContext = CreateRestrictedNetworkContext(connectionId, store, topology);
             var patchEngine = new RuntimeObjectPatchEngine(_context.PatchCodecs, networkContext);
             var desiredIds = new HashSet<long>();
@@ -620,7 +626,8 @@ namespace DingoGameObjectsCMS.Mirror.V2
                     : RuntimeProjectedStoreSnapshotBuilder.Build(
                         store,
                         connectionId,
-                        _context.IsObjectVisible);
+                        _context
+                            .IsObjectVisibleForReliableProjection);
                 for (var nodeIndex = 0; nodeIndex < snapshot.Nodes.Count; nodeIndex++)
                 {
                     allowed.Add(new NetObjectRef(storeReference, snapshot.Nodes[nodeIndex].ObjectId));

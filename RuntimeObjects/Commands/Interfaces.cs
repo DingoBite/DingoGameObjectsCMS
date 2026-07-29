@@ -25,4 +25,10 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
         public RuntimeReplayStoreScopeDisposition ClassifyReplayStoreScope(
             RuntimeReplayStoreScope storeScope);
     }
+
+    public interface IRuntimeCommandJournalScopeProvider
+    {
+        public RuntimeCommandJournalScope GetRuntimeCommandJournalScope(
+            GameRuntimeCommand command);
+    }
 }
