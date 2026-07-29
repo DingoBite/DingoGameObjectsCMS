@@ -343,11 +343,12 @@ Assets/StreamingAssets/runtime_component_types.json
 
 ## Сетевая синхронизация
 
-Mirror остаётся транспортом/фреймворком, а wire protocol V3 синхронизирует
-authoritative поколения `RuntimeStore` через существующий стек
-`RuntimeProtocolV2*`. Постфикс V2 сохранён как имя семейства реализации, а не
-как номер wire protocol. Строгий session manifest проверяет build, runtime
-schema и точный GA catalog до создания replica store.
+Mirror остаётся транспортом/фреймворком, а runtime protocol DingoCMS
+синхронизирует authoritative поколения `RuntimeStore` через стек
+`RuntimeProtocol*`. Строгий session manifest проверяет protocol version, build,
+runtime schema и точный GA catalog до создания replica store. В модуле есть
+только одна текущая реализация протокола без compatibility adapter для старых
+wire-контрактов.
 Parent-first binary baseline и ordered reliable delta сначала полностью
 собираются в staging и только потом публикуются атомарно. Delivery sequence,
 baseline id, store revision, ACK, bounded pending queue и resync — независимые
@@ -395,8 +396,8 @@ provisional buffer и оставляет sequence uncommitted, поэтому ex
 encode time и allocations для preparation, `Pack`/coalescing, canonical
 validation и финального wire encoding, dirty components на committed tick,
 current projected и last ACKed membership по connection, размеры baseline и
-число resync. Существующие coordinators `RuntimeProtocolV2*` и `RuntimeStoreNetServerV2` /
-`RuntimeStoreNetClientV2` дают snapshot напрямую, без per-GRC adapters.
+число resync. Существующие coordinators `RuntimeProtocol*` и `RuntimeStoreNetServer` /
+`RuntimeStoreNetClient` дают snapshot напрямую, без per-GRC adapters.
 Per-connection interest filtering и shadow state сохраняются. Если
 метрики подтвердят существенное повторное кодирование, соединения с одинаковым
 interest membership можно группировать и кодировать общий payload один раз,

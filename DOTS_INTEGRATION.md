@@ -178,7 +178,7 @@ replacement is intentional.
 
 `ProvideRecoveryBoundary()` returns a boundary only while the journal recovery
 window remains valid and every scoped RuntimeStore still has the revision
-captured at that checkpoint. Use this validated provider for Network V3.
+captured at that checkpoint. Use this validated provider for network recovery.
 RuntimeStore revision drift means the immutable hybrid-store contract was
 violated, so join/resync must wait for the next explicit checkpoint.
 
@@ -192,7 +192,7 @@ the framework does not infer sparse item-level diffs for arbitrary lists.
 
 ## Network recovery
 
-Mirror protocol V3 extends the existing grouped baseline flow rather than
+The DingoCMS Mirror protocol extends the existing grouped baseline flow rather than
 introducing another transport:
 
 - Checkpoint and journal interest is whole-`RuntimeStore`.
@@ -204,7 +204,8 @@ introducing another transport:
   required ECB playback.
 - A sequence gap, unknown codec, checkpoint mismatch, or incomplete scope
   requests resynchronization.
-- Protocol V2 peers are rejected; no compatibility adapter is provided.
+- A mismatched protocol version is rejected; no compatibility adapter is
+  provided.
 
 Every checkpoint group supplies explicit journal retention limits for entries,
 bytes, and age. Crossing a soft limit raises `NeedsCheckpoint`. On hard overflow
@@ -444,7 +445,8 @@ stores, immutable factory stores и stores с внешними живыми `Run
 
 `ProvideRecoveryBoundary()` возвращает boundary только пока journal recovery
 window доступно и revision каждого scoped RuntimeStore совпадает со значением на
-checkpoint. Именно этот проверенный provider следует передавать Network V3.
+checkpoint. Именно этот проверенный provider следует передавать сетевому
+recovery-контуру.
 Revision drift означает нарушение immutable hybrid-store контракта, поэтому
 join/resync должен ждать следующий явный checkpoint.
 
@@ -459,7 +461,7 @@ Replay envelope уже хранит completed tick и journal cursor. Проек
 
 ## Сетевое восстановление
 
-Mirror protocol V3 расширяет существующий grouped baseline flow, не добавляя
+Mirror protocol DingoCMS расширяет существующий grouped baseline flow, не добавляя
 второй transport:
 
 - Interest для checkpoint и journal задаётся целыми `RuntimeStore`.
@@ -471,7 +473,8 @@ Mirror protocol V3 расширяет существующий grouped baseline 
   необходимого ECB playback.
 - Sequence gap, неизвестный codec, checkpoint mismatch или неполный scope
   запрашивают resync.
-- Protocol V2 peers отклоняются; compatibility adapter не предусмотрен.
+- Несовпадающая версия протокола отклоняется; compatibility adapter не
+  предусмотрен.
 
 Каждая checkpoint group обязана явно задать retention limits по entries, bytes
 и age. Пересечение soft limit поднимает `NeedsCheckpoint`. При hard overflow

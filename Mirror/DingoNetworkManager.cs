@@ -1,6 +1,6 @@
 #if MIRROR
 using System;
-using DingoGameObjectsCMS.Mirror.V2;
+using DingoGameObjectsCMS.Mirror.Protocol;
 using DingoGameObjectsCMS.RuntimeObjects.Commands;
 using DingoGameObjectsCMS.Stores;
 using Mirror;
@@ -11,15 +11,15 @@ namespace DingoGameObjectsCMS.Mirror
     [DisallowMultipleComponent]
     public class DingoNetworkManager : NetworkManager
     {
-        public RuntimeStoreNetServerV2 RtServer { get; private set; }
-        public RuntimeStoreNetClientV2 RtClient { get; private set; }
+        public RuntimeStoreNetServer RtServer { get; private set; }
+        public RuntimeStoreNetClient RtClient { get; private set; }
         public RuntimeNetRole RuntimeRole => ResolveRuntimeRole();
 
         public event Action<RuntimeNetRole> RuntimeRoleChanged;
         public event Action<int, ulong> ProtocolConnectionReady;
         public event Action<int> ProtocolConnectionRemoved;
 
-        private RuntimeProtocolV2ContextFactory _contextFactory;
+        private RuntimeProtocolContextFactory _contextFactory;
         private Func<RuntimeCommandsBus> _commandsBusGetter;
 
         public override void Awake()
@@ -29,7 +29,7 @@ namespace DingoGameObjectsCMS.Mirror
             NotifyRuntimeRoleChanged();
         }
 
-        public void SetProtocolV2ContextFactory(RuntimeProtocolV2ContextFactory contextFactory)
+        public void SetProtocolContextFactory(RuntimeProtocolContextFactory contextFactory)
         {
             _contextFactory = contextFactory ?? throw new ArgumentNullException(nameof(contextFactory));
         }
@@ -65,8 +65,8 @@ namespace DingoGameObjectsCMS.Mirror
             RuntimeExecutionContext.SetReplicaReady(false);
             RuntimeExecutionContext.SetNetworkRole(ResolveRuntimeRole());
             var context = RequireContext(StoreRealm.Client);
-            UnregisterV2ClientHandlers();
-            RtClient = new RuntimeStoreNetClientV2(context, CreateClientNonce());
+            UnregisterClientHandlers();
+            RtClient = new RuntimeStoreNetClient(context, CreateClientNonce());
             RtClient.ReplicaReadyChanged += RuntimeExecutionContext.SetReplicaReady;
             NotifyRuntimeRoleChanged();
         }
@@ -143,7 +143,7 @@ namespace DingoGameObjectsCMS.Mirror
 
         public override void OnServerReady(NetworkConnectionToClient connection)
         {
-            // Protocol-v2 readiness is RtSessionReady, not Mirror's scene-ready
+            // Protocol readiness is RtSessionReady, not Mirror's scene-ready
             // callback. Baselines are sent only after the strict manifest is
             // accepted by this specific connection.
             base.OnServerReady(connection);
@@ -165,7 +165,7 @@ namespace DingoGameObjectsCMS.Mirror
                 ? RtServer.RefreshInterest(connectionId, store)
                 : new RuntimeInterestRefreshResult(
                     RuntimeInterestRefreshStatus.NotReady,
-                    detail: "Protocol-v2 server endpoint is not active.");
+                    detail: "Protocol server endpoint is not active.");
         }
 
         public int RefreshInterest(int connectionId)
@@ -178,12 +178,12 @@ namespace DingoGameObjectsCMS.Mirror
             return RtServer?.RefreshInterestAll() ?? 0;
         }
 
-        private RuntimeProtocolV2Context RequireContext(StoreRealm realm)
+        private RuntimeProtocolContext RequireContext(StoreRealm realm)
         {
             var contextFactory = _contextFactory
-                                 ?? throw new InvalidOperationException($"{nameof(DingoNetworkManager)} requires a protocol-v2 context factory before networking starts.");
+                                 ?? throw new InvalidOperationException($"{nameof(DingoNetworkManager)} requires a protocol context factory before networking starts.");
             return contextFactory(realm)
-                   ?? throw new InvalidOperationException($"Protocol-v2 context factory returned null for realm {realm}.");
+                   ?? throw new InvalidOperationException($"Protocol context factory returned null for realm {realm}.");
         }
 
         private void ReplaceServerEndpoint()
@@ -193,8 +193,8 @@ namespace DingoGameObjectsCMS.Mirror
             // to finish disconnect callbacks and a later connection retries.
             var context = RequireContext(StoreRealm.Server);
             DisposeServerEndpoint();
-            UnregisterV2ServerHandlers();
-            RtServer = new RuntimeStoreNetServerV2(context);
+            UnregisterServerHandlers();
+            RtServer = new RuntimeStoreNetServer(context);
             RtServer.ConnectionReady += OnProtocolConnectionReady;
             RtServer.ConnectionRemoved += OnProtocolConnectionRemoved;
         }
@@ -248,7 +248,7 @@ namespace DingoGameObjectsCMS.Mirror
             ProtocolConnectionRemoved?.Invoke(connectionId);
         }
 
-        private static void UnregisterV2ServerHandlers()
+        private static void UnregisterServerHandlers()
         {
             NetworkServer.UnregisterHandler<RtSessionHello>();
             NetworkServer.UnregisterHandler<RtSessionReady>();
@@ -257,7 +257,7 @@ namespace DingoGameObjectsCMS.Mirror
             NetworkServer.UnregisterHandler<RtCommandEnvelope>();
         }
 
-        private static void UnregisterV2ClientHandlers()
+        private static void UnregisterClientHandlers()
         {
             NetworkClient.UnregisterHandler<RtSessionManifest>();
             NetworkClient.UnregisterHandler<RtProtocolReject>();

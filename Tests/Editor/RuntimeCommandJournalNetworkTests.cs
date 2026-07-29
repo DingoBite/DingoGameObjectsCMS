@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using DingoGameObjectsCMS.AssetLibrary;
-using DingoGameObjectsCMS.Mirror.V2;
+using DingoGameObjectsCMS.Mirror.Protocol;
 using DingoGameObjectsCMS.RuntimeObjects;
 using DingoGameObjectsCMS.RuntimeObjects.Commands;
 using DingoGameObjectsCMS.RuntimeObjects.Objects;
@@ -80,14 +80,14 @@ namespace DingoGameObjectsCMS.Tests.Editor
         }
 
         [Test]
-        public void ProtocolV3_RejectsV2Descriptor()
+        public void Handshake_RejectsMismatchedProtocolVersion()
         {
-            var expected = CreateDescriptor(RuntimeProtocolV2.VERSION);
-            var actual = CreateDescriptor(2);
+            var expected = CreateDescriptor(RuntimeProtocol.VERSION);
+            var actual = CreateDescriptor((ushort)(RuntimeProtocol.VERSION + 1));
 
-            Assert.That(RuntimeProtocolV2.VERSION, Is.EqualTo(3));
+            Assert.That(RuntimeProtocol.VERSION, Is.EqualTo(1));
             Assert.That(
-                RuntimeSessionCompatibility.Validate(expected, actual),
+                RuntimeSessionDescriptorValidator.Validate(expected, actual),
                 Is.EqualTo(RuntimeProtocolRejectCode.ProtocolVersionMismatch));
         }
 
@@ -108,7 +108,7 @@ namespace DingoGameObjectsCMS.Tests.Editor
                 1,
                 1,
                 0,
-                new byte[RuntimeProtocolV2.BASELINE_CHUNK_BYTES + 1],
+                new byte[RuntimeProtocol.BASELINE_CHUNK_BYTES + 1],
                 boundary);
             var assembler = new RuntimeBaselineChunkAssembler();
 
@@ -319,14 +319,14 @@ namespace DingoGameObjectsCMS.Tests.Editor
             var journalResyncs =
                 new List<RtCommandJournalResyncData>();
             using var coordinator =
-                new RuntimeProtocolV2ClientCoordinator(
+                new RuntimeProtocolClientCoordinator(
                     fixture.CreateClientContext(
                         bus,
                         new RuntimeCommandJournalScope(
                             "map",
                             "units"),
                         _ => playbackCount++),
-                    new RuntimeProtocolV2ClientOutput(
+                    new RuntimeProtocolClientOutput(
                         (_, _) => { },
                         _ => { },
                         (_, _) => { },
@@ -469,14 +469,14 @@ namespace DingoGameObjectsCMS.Tests.Editor
             var fixture = CreateProtocolFixture(stores);
             var storeResyncs = new List<RtStoreResyncData>();
             using var coordinator =
-                new RuntimeProtocolV2ClientCoordinator(
+                new RuntimeProtocolClientCoordinator(
                     fixture.CreateClientContext(
                         CreateBus(),
                         new RuntimeCommandJournalScope(
                             "map",
                             "units"),
                         _ => { }),
-                    new RuntimeProtocolV2ClientOutput(
+                    new RuntimeProtocolClientOutput(
                         (_, _) => { },
                         _ => { },
                         (_, _) => { },
@@ -546,12 +546,12 @@ namespace DingoGameObjectsCMS.Tests.Editor
             var bus = CreateBus();
             var playbackCount = 0;
             using var coordinator =
-                new RuntimeProtocolV2ClientCoordinator(
+                new RuntimeProtocolClientCoordinator(
                     fixture.CreateClientContext(
                         bus,
                         new RuntimeCommandJournalScope("map"),
                         _ => playbackCount++),
-                    new RuntimeProtocolV2ClientOutput(
+                    new RuntimeProtocolClientOutput(
                         (_, _) => { },
                         _ => { },
                         (_, _) => { },
@@ -609,12 +609,12 @@ namespace DingoGameObjectsCMS.Tests.Editor
             var journalResyncs =
                 new List<RtCommandJournalResyncData>();
             using var coordinator =
-                new RuntimeProtocolV2ClientCoordinator(
+                new RuntimeProtocolClientCoordinator(
                     fixture.CreateClientContext(
                         bus,
                         new RuntimeCommandJournalScope("map"),
                         _ => { }),
-                    new RuntimeProtocolV2ClientOutput(
+                    new RuntimeProtocolClientOutput(
                         (_, _) => { },
                         _ => { },
                         (_, _) => { },
@@ -707,12 +707,12 @@ namespace DingoGameObjectsCMS.Tests.Editor
             var rejects =
                 new List<RuntimeProtocolRejectCode>();
             using var coordinator =
-                new RuntimeProtocolV2ServerCoordinator(
+                new RuntimeProtocolServerCoordinator(
                     fixture.CreateServerContext(
                         bus,
                         scope,
                         () => providedBoundary),
-                    new RuntimeProtocolV2ServerOutput(
+                    new RuntimeProtocolServerOutput(
                         (_, manifest) =>
                             manifests.Add(manifest),
                         (_, code, _) => rejects.Add(code),
@@ -900,12 +900,12 @@ namespace DingoGameObjectsCMS.Tests.Editor
                 new List<RuntimeSessionManifestSnapshot>();
             var chunks = new List<RuntimeBaselineChunk>();
             using var coordinator =
-                new RuntimeProtocolV2ServerCoordinator(
+                new RuntimeProtocolServerCoordinator(
                     fixture.CreateServerContext(
                         CreateBus(journal),
                         scope,
                         () => boundary),
-                    new RuntimeProtocolV2ServerOutput(
+                    new RuntimeProtocolServerOutput(
                         (_, manifest) =>
                             manifests.Add(manifest),
                         (_, _, _) => { },
@@ -968,12 +968,12 @@ namespace DingoGameObjectsCMS.Tests.Editor
             };
             var fixture = CreateProtocolFixture(stores);
             using var coordinator =
-                new RuntimeProtocolV2ClientCoordinator(
+                new RuntimeProtocolClientCoordinator(
                     fixture.CreateClientContext(
                         CreateBus(),
                         new RuntimeCommandJournalScope("map"),
                         _ => { }),
-                    new RuntimeProtocolV2ClientOutput(
+                    new RuntimeProtocolClientOutput(
                         (_, _) => { },
                         _ => { },
                         (_, _) => { },
@@ -1184,7 +1184,7 @@ namespace DingoGameObjectsCMS.Tests.Editor
 
         private static RuntimeSessionManifestSnapshot
             BeginClientSession(
-                RuntimeProtocolV2ClientCoordinator coordinator,
+                RuntimeProtocolClientCoordinator coordinator,
                 ProtocolFixture fixture,
                 ulong sessionId)
         {
@@ -1202,7 +1202,7 @@ namespace DingoGameObjectsCMS.Tests.Editor
 
         private static RuntimeClientReceiveResult
             SendBaseline(
-                RuntimeProtocolV2ClientCoordinator coordinator,
+                RuntimeProtocolClientCoordinator coordinator,
                 ProtocolFixture fixture,
                 ulong sessionId,
                 in NetStoreRef store,
@@ -1398,7 +1398,7 @@ namespace DingoGameObjectsCMS.Tests.Editor
                     new RuntimeSessionDescriptor
                     {
                         ProtocolVersion =
-                            RuntimeProtocolV2.VERSION,
+                            RuntimeProtocol.VERSION,
                         BuildId =
                             "journal-coordinator-tests",
                         RuntimeSchemaHash =
@@ -1419,14 +1419,14 @@ namespace DingoGameObjectsCMS.Tests.Editor
                         storeCatalog);
             }
 
-            public RuntimeProtocolV2Context
+            public RuntimeProtocolContext
                 CreateClientContext(
                     RuntimeCommandsBus bus,
                     RuntimeCommandJournalScope scope,
                     RuntimeJournalCatchupCompletion
                         completeJournalCatchup)
             {
-                return new RuntimeProtocolV2Context(
+                return new RuntimeProtocolContext(
                     RuntimeSessionClientExpectation
                         .FromServerTemplate(Manifest),
                     AssetCatalog,
@@ -1442,7 +1442,7 @@ namespace DingoGameObjectsCMS.Tests.Editor
                         completeJournalCatchup);
             }
 
-            public RuntimeProtocolV2Context
+            public RuntimeProtocolContext
                 CreateServerContext(
                     RuntimeCommandsBus bus,
                     RuntimeCommandJournalScope scope,
@@ -1451,7 +1451,7 @@ namespace DingoGameObjectsCMS.Tests.Editor
                     RuntimeObjectVisibility
                         isObjectVisible = null)
             {
-                return new RuntimeProtocolV2Context(
+                return new RuntimeProtocolContext(
                     Manifest,
                     AssetCatalog,
                     AssetLock,

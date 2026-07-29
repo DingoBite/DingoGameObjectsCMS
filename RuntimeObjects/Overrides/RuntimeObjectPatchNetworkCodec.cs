@@ -4,7 +4,7 @@ using System.Collections.Generic;
 namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
 {
     /// <summary>
-    /// Protocol-v2 patch encoding. Stable authoring keys deliberately do not
+    /// Protocol patch encoding. Stable authoring keys deliberately do not
     /// travel on the wire: the session schema hash fixes the numeric id table.
     /// </summary>
     public sealed class RuntimeObjectPatchNetworkCodec

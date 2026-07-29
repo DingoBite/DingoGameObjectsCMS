@@ -338,11 +338,11 @@ During active development the manifest can be regenerated through `Tools/Runtime
 
 ## Network synchronization
 
-Mirror is the transport/framework; wire protocol V3 synchronizes authoritative
-`RuntimeStore` generations through the existing `RuntimeProtocolV2*` stack.
-The V2 suffix is retained as an implementation-family name, not a wire-version
-claim. A strict session manifest validates the build, runtime schema, and exact
-GA catalog before a replica store is created.
+Mirror is the transport/framework; the DingoCMS runtime protocol synchronizes
+authoritative `RuntimeStore` generations through the `RuntimeProtocol*` stack.
+A strict session manifest validates the protocol version, build, runtime schema,
+and exact GA catalog before a replica store is created. There is one current
+protocol implementation and no compatibility adapter for older wire contracts.
 Parent-first binary baselines and ordered reliable deltas are staged and
 published atomically. Delivery sequence, baseline id, store revision, ACK,
 bounded pending queues, and resync are independent protocol concepts.
@@ -390,8 +390,8 @@ time and allocations across preparation, `Pack`/coalescing, canonical
 validation, and final wire encoding, dirty components per committed tick,
 current projected and last ACKed membership per connection, baseline sizes,
 and resync count.
-The existing `RuntimeProtocolV2*` coordinators and `RuntimeStoreNetServerV2` /
-`RuntimeStoreNetClientV2` endpoints expose snapshots without per-GRC adapters.
+The existing `RuntimeProtocol*` coordinators and `RuntimeStoreNetServer` /
+`RuntimeStoreNetClient` endpoints expose snapshots without per-GRC adapters.
 Keep per-connection interest filtering and shadow state. If measurements prove
 duplicate encoding material, group identical interest memberships and encode a
 common payload once while retaining per-connection delivery and ACK state.
