@@ -1,13 +1,19 @@
 #if NEWTONSOFT_EXISTS
+using System;
 using System.IO;
+using DingoGameObjectsCMS.AssetLibrary.Manifest;
 using DingoGameObjectsCMS.RuntimeObjects;
-using DingoUnityExtensions.Utils;
 
 namespace DingoGameObjectsCMS.AssetLibrary.AssetsEdit
 {
     public static class GameAssetPathPolicy
     {
         private const string ASSET_JSON_FOLDER = "assets";
+
+        private static StringComparison FileSystemPathComparison =>
+            Path.DirectorySeparatorChar == '\\'
+                ? StringComparison.OrdinalIgnoreCase
+                : StringComparison.Ordinal;
 
         public static string BuildDefaultRelativeJsonPath(GameAssetKey key)
         {
@@ -16,12 +22,34 @@ namespace DingoGameObjectsCMS.AssetLibrary.AssetsEdit
 
         public static string CombineAbsolute(string rootAbs, string relativePath)
         {
-            return Path.GetFullPath(Path.Combine(rootAbs, (relativePath ?? string.Empty).Replace('/', Path.DirectorySeparatorChar)));
+            var root = Path.GetFullPath(rootAbs ?? throw new ArgumentNullException(nameof(rootAbs)))
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            var resolved = GameAssetModulePackageFileUtils.ResolveInsideRoot(root, relativePath);
+            EnsureNoReparsePoints(root, resolved);
+            return resolved;
         }
 
         public static string NormalizeSlashes(string path)
         {
-            return path.NormalizePath().TrimStart('/');
+            return (path ?? string.Empty).Replace('\\', '/');
+        }
+
+        private static void EnsureNoReparsePoints(string root, string absolutePath)
+        {
+            var current = Path.GetFullPath(absolutePath);
+            while (!string.Equals(current, root, FileSystemPathComparison))
+            {
+                if ((File.Exists(current) || Directory.Exists(current))
+                    && (File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0)
+                {
+                    throw new InvalidDataException(
+                        $"GameAsset mod path '{current}' uses a reparse point and is not allowed.");
+                }
+
+                current = Path.GetDirectoryName(current);
+                if (string.IsNullOrWhiteSpace(current))
+                    throw new InvalidDataException($"GameAsset mod path '{absolutePath}' is outside '{root}'.");
+            }
         }
     }
 }

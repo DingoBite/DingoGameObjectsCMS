@@ -19,6 +19,11 @@ namespace DingoGameObjectsCMS.Tests.Editor
         public int Value;
     }
 
+    public struct RuntimeEntityFactoryPrefabProductTestData : IComponentData
+    {
+        public int Value;
+    }
+
     [BurstCompile]
     public struct RuntimeEntityFactoryWarmTickTestJob : IJobChunk
     {
@@ -54,9 +59,11 @@ namespace DingoGameObjectsCMS.Tests.Editor
     public class RuntimeEntityFactoryTestComponent : GameRuntimeEntityFactoryComponent
     {
         public static EntityArchetype ProductArchetype;
+        public static Entity ProductPrefab;
 
         public int EmptyProductCount;
         public int ArchetypeProductCount;
+        public int PrefabProductCount;
 
         public override void SetupForEntity(
             RuntimeStore store,
@@ -76,6 +83,20 @@ namespace DingoGameObjectsCMS.Tests.Editor
                     runtimeObject.RuntimeInstance,
                     ProductArchetype);
                 ecb.SetComponent(entity, new RuntimeEntityFactoryProductTestData { Value = i });
+            }
+
+            for (var i = 0; i < PrefabProductCount; i++)
+            {
+                var entity = ecb.InstantiateOwnedEntity(
+                    root,
+                    runtimeObject.RuntimeInstance,
+                    ProductPrefab);
+                ecb.SetComponent(
+                    entity,
+                    new RuntimeEntityFactoryPrefabProductTestData
+                    {
+                        Value = i
+                    });
             }
         }
     }
@@ -103,12 +124,18 @@ namespace DingoGameObjectsCMS.Tests.Editor
             RuntimeEntityFactoryTestComponent.ProductArchetype = _entityManager.CreateArchetype(
                 typeof(RuntimeEntityFactoryOwner),
                 typeof(RuntimeEntityFactoryProductTestData));
+            RuntimeEntityFactoryTestComponent.ProductPrefab =
+                _entityManager.CreateEntity(
+                    typeof(Prefab),
+                    typeof(RuntimeEntityFactoryOwner),
+                    typeof(RuntimeEntityFactoryPrefabProductTestData));
         }
 
         [TearDown]
         public void TearDown()
         {
             RuntimeEntityFactoryTestComponent.ProductArchetype = default;
+            RuntimeEntityFactoryTestComponent.ProductPrefab = Entity.Null;
             if (_world != null && _world.IsCreated)
                 _world.Dispose();
             RuntimeStores.ResetState();
@@ -155,7 +182,7 @@ namespace DingoGameObjectsCMS.Tests.Editor
             Assert.That(linkedEntities.Length, Is.EqualTo(4));
             Assert.That(linkedEntities[0].Value, Is.EqualTo(entity));
 
-            using var query = _entityManager.CreateEntityQuery(typeof(RuntimeEntityFactoryOwner));
+            using var query = CreateOwnedProductQuery();
             using var products = query.ToEntityArray(Allocator.Temp);
             Assert.That(products.Length, Is.EqualTo(3));
             var archetypeProducts = 0;
@@ -180,12 +207,12 @@ namespace DingoGameObjectsCMS.Tests.Editor
             var runtimeObject = _store.Create();
             runtimeObject.AddOrReplaceById(FACTORY_COMPONENT_ID, new RuntimeEntityFactoryTestComponent
             {
-                ArchetypeProductCount = productCount
+                PrefabProductCount = productCount
             });
 
             var root = runtimeObject.CreateEntity();
             PlaybackEditingCommands();
-            using var query = _entityManager.CreateEntityQuery(typeof(RuntimeEntityFactoryOwner));
+            using var query = CreateOwnedProductQuery();
             Assert.That(query.CalculateEntityCount(), Is.EqualTo(productCount));
 
             Assert.That(_store.Remove(runtimeObject.InstanceId), Is.True);
@@ -193,6 +220,48 @@ namespace DingoGameObjectsCMS.Tests.Editor
 
             Assert.That(_entityManager.Exists(root), Is.False);
             Assert.That(query.CalculateEntityCount(), Is.Zero);
+        }
+
+        [Test]
+        public void FactoryProjection_InstantiatesCompleteOwnedPrefabSignature()
+        {
+            var runtimeObject = _store.Create();
+            runtimeObject.AddOrReplaceById(
+                FACTORY_COMPONENT_ID,
+                new RuntimeEntityFactoryTestComponent
+                {
+                    PrefabProductCount = 2
+                });
+
+            var root = runtimeObject.CreateEntity();
+            PlaybackEditingCommands();
+
+            var linkedEntities =
+                _entityManager.GetBuffer<LinkedEntityGroup>(root);
+            Assert.That(linkedEntities.Length, Is.EqualTo(3));
+            for (var index = 1; index < linkedEntities.Length; index++)
+            {
+                var product = linkedEntities[index].Value;
+                Assert.That(
+                    _entityManager.HasComponent<Prefab>(product),
+                    Is.False);
+                Assert.That(
+                    _entityManager.HasComponent<
+                        RuntimeEntityFactoryPrefabProductTestData>(product),
+                    Is.True);
+                Assert.That(
+                    _entityManager.GetComponentData<
+                        RuntimeEntityFactoryPrefabProductTestData>(product)
+                        .Value,
+                    Is.EqualTo(index - 1));
+
+                var owner = _entityManager.GetComponentData<
+                    RuntimeEntityFactoryOwner>(product);
+                Assert.That(owner.FactoryRoot, Is.EqualTo(root));
+                Assert.That(
+                    owner.FactoryInstance.Id,
+                    Is.EqualTo(runtimeObject.InstanceId));
+            }
         }
 
         [Test]
@@ -405,6 +474,23 @@ namespace DingoGameObjectsCMS.Tests.Editor
         private void PlaybackEditingCommands()
         {
             _world.GetOrCreateSystemManaged<EndSimulationEntityCommandBufferSystem>().Update();
+        }
+
+        private EntityQuery CreateOwnedProductQuery()
+        {
+            return _entityManager.CreateEntityQuery(
+                new EntityQueryDesc
+                {
+                    All = new[]
+                    {
+                        ComponentType.ReadOnly<
+                            RuntimeEntityFactoryOwner>()
+                    },
+                    None = new[]
+                    {
+                        ComponentType.ReadOnly<Prefab>()
+                    }
+                });
         }
 
         private void UpdateProducts(EntityQuery query)

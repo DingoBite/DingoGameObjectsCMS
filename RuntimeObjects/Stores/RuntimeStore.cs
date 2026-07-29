@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
 using Bind;
 using DingoGameObjectsCMS.AssetLibrary;
 using DingoGameObjectsCMS.RuntimeObjects.Objects;
@@ -99,6 +100,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
 
         private readonly Dictionary<long, long> _parentByChild = new();
         private readonly Dictionary<long, List<long>> _childrenByParent = new();
+        private readonly Dictionary<long, ReadOnlyCollection<long>> _childrenViewsByParent = new();
         private readonly HashSet<long> _hierarchyProjectionDirty = new();
         private readonly List<long> _hierarchyProjectionWork = new();
 
@@ -128,7 +130,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
         public uint StoreGeneration { get; private set; }
         public ulong StoreRevision { get; private set; }
         public ulong DirtyPublishVersion { get; private set; }
-        public ulong TotalTouchedSortCount => 0;
         public ulong TotalFullSortCount { get; private set; }
         public bool Retired { get; private set; }
         
@@ -316,6 +317,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
                 _idByGuid.Clear();
                 _parentByChild.Clear();
                 _childrenByParent.Clear();
+                _childrenViewsByParent.Clear();
                 _hierarchyProjectionDirty.Clear();
                 _hierarchyProjectionWork.Clear();
                 _pendingTouched.Clear();
@@ -1237,7 +1239,13 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
         {
             if (_childrenByParent.TryGetValue(parentId, out var list))
             {
-                children = list;
+                if (!_childrenViewsByParent.TryGetValue(parentId, out var view))
+                {
+                    view = list.AsReadOnly();
+                    _childrenViewsByParent[parentId] = view;
+                }
+
+                children = view;
                 return true;
             }
 
@@ -1284,6 +1292,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
             {
                 list = new List<long>(capacity: 4);
                 _childrenByParent[parentId] = list;
+                _childrenViewsByParent[parentId] = list.AsReadOnly();
             }
 
             if (insertIndex < 0 || insertIndex > list.Count)
@@ -1480,7 +1489,10 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
                     list.RemoveAt(idx);
 
                 if (list.Count == 0)
+                {
                     _childrenByParent.Remove(parentId);
+                    _childrenViewsByParent.Remove(parentId);
+                }
             }
 
             MarkTouchedUpToRoot(parentId);
@@ -1494,6 +1506,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
         {
             if (!_childrenByParent.Remove(parentId, out var list))
                 return;
+            _childrenViewsByParent.Remove(parentId);
 
             foreach (var c in list)
             {
@@ -1533,20 +1546,18 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
 
         private long GetRootId(long id)
         {
+            _cycleVisited.Clear();
             var cur = id;
-
-            for (var i = 0; i < 1024; i++)
+            while (true)
             {
+                if (!_cycleVisited.Add(cur))
+                    throw new InvalidOperationException($"RuntimeStore '{Id}' hierarchy contains a cycle at object {cur}.");
                 if (!_parentByChild.TryGetValue(cur, out var p))
                     return cur;
-
                 if (p == cur)
-                    return cur;
-
+                    throw new InvalidOperationException($"RuntimeStore '{Id}' hierarchy contains a self-parent link for object {cur}.");
                 cur = p;
             }
-
-            return cur;
         }
 
         public void SetObjectTouched(long id) => MarkTouchedUpToRoot(id);

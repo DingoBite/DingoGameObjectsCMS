@@ -243,7 +243,7 @@ namespace DingoGameObjectsCMS.Modding.Editor
                 }).OrderBy(e => e.RelativeJsonPath, StringComparer.OrdinalIgnoreCase).ToList()
             };
 
-            var json = JsonConvert.SerializeObject(m, Formatting.Indented, GameAssetJson.Settings);
+            var json = JsonConvert.SerializeObject(m, Formatting.Indented, GameAssetJson.DataSettings);
 
             File.WriteAllText(Path.Combine(dstModRootAbs, "manifest.json"), json);
         }

@@ -48,8 +48,8 @@ is a persistent authored factory, while its products are ECS-only entities.
   `IComponentData`.
 - The root receives `RuntimeEntityFactoryTag`.
 - Products created with
-  `RuntimeEntityFactoryEcbExtensions.CreateOwnedEntity(...)` receive
-  `RuntimeEntityFactoryOwner`.
+  `RuntimeEntityFactoryEcbExtensions.CreateOwnedEntity(...)` or
+  `InstantiateOwnedEntity(...)` receive `RuntimeEntityFactoryOwner`.
 - The root and products form one `LinkedEntityGroup`, so destroying the root
   disposes all owned products.
 - Products do not receive individual GRO identity merely because they must be
@@ -72,12 +72,14 @@ public override void SetupForEntity(
     Entity factoryRoot)
 ```
 
-Create products either with the empty-entity overload or with a prepared
-`EntityArchetype`. Put the full reusable product signature on the Entity at this
-boundary. Ordinary simulation should change component values or enablement, not
-reconstruct what the object is. The archetype overload requires
-`RuntimeEntityFactoryOwner` in the prepared archetype and initializes it through
-`SetComponent`, avoiding a post-create structural add.
+Create products with the empty-entity overload, a prepared `EntityArchetype`,
+or a fully projected ECS prefab. Put the full reusable product signature on the
+Entity at this boundary. Ordinary simulation should change component values or
+enablement, not reconstruct what the object is. The archetype and prefab paths
+require `RuntimeEntityFactoryOwner` in the source signature and initialize it
+through `SetComponent`, avoiding a post-create structural add. The prefab path
+is useful when an authored component signature was projected once and many
+factory products must inherit it without a parallel type switch or builder DSL.
 
 Use normal `GameRuntimeComponent<TSelf>` when managed projection is useful.
 Factory projection is an opt-in performance profile, not the new default for
@@ -317,8 +319,8 @@ GA/GAC -> immutable Factory GRO -> ECS-only Entity
   `IComponentData`.
 - Root получает `RuntimeEntityFactoryTag`.
 - Продукты, созданные через
-  `RuntimeEntityFactoryEcbExtensions.CreateOwnedEntity(...)`, получают
-  `RuntimeEntityFactoryOwner`.
+  `RuntimeEntityFactoryEcbExtensions.CreateOwnedEntity(...)` или
+  `InstantiateOwnedEntity(...)`, получают `RuntimeEntityFactoryOwner`.
 - Root и продукты входят в один `LinkedEntityGroup`, поэтому уничтожение root
   освобождает все owned products.
 - Продуктам не нужен отдельный GRO только ради симуляции.
@@ -341,12 +343,15 @@ public override void SetupForEntity(
     Entity factoryRoot)
 ```
 
-Продукты можно создавать через перегрузку с пустой Entity или готовым
-`EntityArchetype`. Полная переиспользуемая сигнатура продукта задаётся на этой
-границе. Обычная симуляция изменяет значения или enablement компонентов, а не
-заново определяет, чем является объект. Готовый архетип обязан содержать
-`RuntimeEntityFactoryOwner`: перегрузка инициализирует его через `SetComponent`
-без структурного add после создания.
+Продукты можно создавать через перегрузку с пустой Entity, готовым
+`EntityArchetype` или полностью спроецированным ECS prefab. Полная
+переиспользуемая сигнатура продукта задаётся на этой границе. Обычная симуляция
+изменяет значения или enablement компонентов, а не заново определяет, чем
+является объект. Готовый архетип и prefab обязаны содержать
+`RuntimeEntityFactoryOwner`: helper инициализирует его через `SetComponent` без
+структурного add после создания. Prefab-путь подходит, когда authored
+component signature один раз проецируется и затем наследуется множеством
+продуктов фабрики без отдельного type switch или builder DSL.
 
 Обычный `GameRuntimeComponent<TSelf>` следует использовать там, где managed
 projection полезна. Factory projection — opt-in performance profile, а не новый

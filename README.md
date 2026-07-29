@@ -57,7 +57,7 @@ Version resolution rules:
 
 - `version == null` means an exact request to `0.0.0`
 - `version == ""` or a whitespace string means `latest`
-- `latest` resolves to the highest available semver within the same `(mod, type, key)`
+- `latest` resolves to the highest available canonical numeric `major.minor.patch` version within the same `(mod, type, key)`
 
 This gives you a useful balance:
 
@@ -278,6 +278,8 @@ For ECS projection there are now two distinct layers:
 - `GameRuntimeObject` / `GameRuntimeComponent` mutation, which changes authoritative runtime data;
 - ECS projection hooks on `GameRuntimeComponent`, which receive an `EntityCommandBuffer` and materialize or remove ECS-side representation.
 
+During initial ECB projection the root entity carries `RuntimeProjectionPending`. The final projection command removes the tag, so generic ECS consumers can explicitly exclude incomplete roots.
+
 This is intentionally not a generic always-live two-way sync. Runtime data can stay authoritative in `RuntimeStore`, while high-frequency simulation can still move into DOTS when needed.
 
 ### Asset -> Runtime -> View
@@ -439,7 +441,7 @@ The package ships with editor tools for the asset pipeline:
   - synchronizes `_key` with the asset path
 - `GameAssetVersioningTools`
   - duplicates the selected versioned asset
-  - bumps semver
+  - increments the numeric patch version
   - generates a new GUID
 - `ModBuilder`
   - exports a mod as JSON + `manifest.json`

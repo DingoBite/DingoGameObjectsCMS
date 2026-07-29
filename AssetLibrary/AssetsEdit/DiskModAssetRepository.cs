@@ -55,7 +55,7 @@ namespace DingoGameObjectsCMS.AssetLibrary.AssetsEdit
             }
 
             var relativeJsonPath = !string.IsNullOrWhiteSpace(request.RelativeJsonPath)
-                ? GameAssetPathPolicy.NormalizeSlashes(request.RelativeJsonPath)
+                ? request.RelativeJsonPath
                 : existingByKey?.RelativeJsonPath ?? GameAssetPathPolicy.BuildDefaultRelativeJsonPath(asset.Key);
             var jsonPath = GameAssetPathPolicy.CombineAbsolute(_modRootAbs, relativeJsonPath);
 
@@ -154,6 +154,8 @@ namespace DingoGameObjectsCMS.AssetLibrary.AssetsEdit
             {
                 throw new ArgumentException($"Full GameAssetKey is required: {key}");
             }
+
+            GameAssetVersionUtils.RequireCanonical(key.Version, nameof(key));
         }
 
     }

@@ -51,6 +51,25 @@ namespace DingoGameObjectsCMS.RuntimeObjects
             return entity;
         }
 
+        /// <summary>
+        /// Instantiates a product from a fully projected ECS prefab. The
+        /// prefab must contain <see cref="RuntimeEntityFactoryOwner"/>.
+        /// </summary>
+        public static Entity InstantiateOwnedEntity(
+            this EntityCommandBuffer ecb,
+            Entity factoryRoot,
+            RuntimeInstance factoryInstance,
+            Entity prefab)
+        {
+            var entity = ecb.Instantiate(prefab);
+            var owner = CreateOwner(factoryRoot, factoryInstance);
+            ecb.SetComponent(entity, owner);
+            ecb.AppendToBuffer(
+                factoryRoot,
+                new LinkedEntityGroup { Value = entity });
+            return entity;
+        }
+
         private static RuntimeEntityFactoryOwner CreateOwner(
             Entity factoryRoot,
             RuntimeInstance factoryInstance)

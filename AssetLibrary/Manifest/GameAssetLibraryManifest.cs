@@ -549,7 +549,7 @@ namespace DingoGameObjectsCMS.AssetLibrary
                     return;
 
                 var manifestJson = File.ReadAllText(manifestPath);
-                var manifest = JsonConvert.DeserializeObject<ModManifest>(manifestJson, GameAssetJson.Settings);
+                var manifest = JsonConvert.DeserializeObject<ModManifest>(manifestJson, GameAssetJson.DataSettings);
                 if (manifest == null)
                     return;
                 if (!string.Equals(manifest.Mod, mount.Mod, StringComparison.OrdinalIgnoreCase))
@@ -679,17 +679,7 @@ namespace DingoGameObjectsCMS.AssetLibrary
 
         private static int CompareVersions(string left, string right)
         {
-            var leftParsed = Version.TryParse(string.IsNullOrWhiteSpace(left) ? string.Empty : left.Trim(), out var leftVersion);
-            var rightParsed = Version.TryParse(string.IsNullOrWhiteSpace(right) ? string.Empty : right.Trim(), out var rightVersion);
-
-            if (leftParsed && rightParsed)
-                return leftVersion.CompareTo(rightVersion);
-            if (leftParsed)
-                return 1;
-            if (rightParsed)
-                return -1;
-
-            return StringComparer.OrdinalIgnoreCase.Compare(left ?? string.Empty, right ?? string.Empty);
+            return GameAssetVersionUtils.Compare(left, right);
         }
 
         private readonly struct MountInfo

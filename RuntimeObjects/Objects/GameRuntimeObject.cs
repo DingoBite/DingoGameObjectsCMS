@@ -144,6 +144,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
             entityManager.AddComponentData(_entity, new RuntimeRealm { Realm = Realm });
             entityManager.AddComponentData(_entity, RuntimeInstance);
             entityManager.AddComponentData(_entity, new RuntimeEntityDestroyState());
+            entityManager.AddComponent<RuntimeProjectionPending>(_entity);
             entityManager.AddBuffer<RuntimeChildEntity>(_entity);
             if (isEntityFactory)
             {
@@ -159,6 +160,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
 
             var ecb = _world.TakeGRCEditingECB();
             SetupEntityProjection(ecb);
+            ecb.RemoveComponent<RuntimeProjectionPending>(_entity);
             return _entity;
         }
 
@@ -202,6 +204,23 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
 
             var keyType = component.GetType();
             EnsureCache();
+            if (_componentsById.TryGetValue(typeId, out var existingById)
+                && existingById != null
+                && existingById.GetType() != keyType)
+            {
+                throw new InvalidOperationException(
+                    $"GameRuntimeObject {InstanceId} in store '{StoreId}' already uses runtime component type id {typeId} for '{existingById.GetType().FullName}'.");
+            }
+            foreach (var pair in _componentsById)
+            {
+                if (pair.Key != typeId
+                    && pair.Value != null
+                    && pair.Value.GetType() == keyType)
+                {
+                    throw new InvalidOperationException(
+                        $"GameRuntimeObject {InstanceId} in store '{StoreId}' already uses runtime component type '{keyType.FullName}' as type id {pair.Key}.");
+                }
+            }
 
             var shouldSyncEntity = TryTakeEditingEcb(out var ecb);
             var projectedEntity = shouldSyncEntity ? _entity : Entity.Null;
@@ -435,6 +454,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
 
         private void RebuildCache()
         {
+            _components ??= new List<GameRuntimeComponent>();
             _componentsByType ??= new Dictionary<Type, GameRuntimeComponent>();
             _componentsById ??= new Dictionary<uint, GameRuntimeComponent>();
             _componentsChanges ??= new Dictionary<uint, ComponentDirty>();
@@ -443,11 +463,12 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
             _componentsByType.Clear();
             _componentsById.Clear();
             _cacheHasRuntimeIds = RuntimeComponentTypeRegistry.IsInitialized;
+            RuntimeComponentCollectionValidator.Validate(
+                _components,
+                $"GameRuntimeObject {InstanceId} in store '{StoreId}'",
+                requireRegisteredTypeIds: _cacheHasRuntimeIds);
             foreach (var c in _components)
             {
-                if (c == null)
-                    continue;
-
                 var type = c.GetType();
                 _componentsByType[type] = c;
 

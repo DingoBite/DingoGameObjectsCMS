@@ -25,7 +25,7 @@ namespace DingoGameObjectsCMS.AssetLibrary.AssetsEdit
                 return CreateEmpty(mod);
 
             var json = await File.ReadAllTextAsync(path, ct);
-            var manifest = JsonConvert.DeserializeObject<ModManifest>(json, GameAssetJson.Settings) ?? CreateEmpty(mod);
+            var manifest = JsonConvert.DeserializeObject<ModManifest>(json, GameAssetJson.DataSettings) ?? CreateEmpty(mod);
             Normalize(manifest, mod);
             return manifest;
         }
@@ -38,7 +38,7 @@ namespace DingoGameObjectsCMS.AssetLibrary.AssetsEdit
                 return CreateEmpty(mod);
 
             var json = File.ReadAllText(path);
-            var manifest = JsonConvert.DeserializeObject<ModManifest>(json, GameAssetJson.Settings) ?? CreateEmpty(mod);
+            var manifest = JsonConvert.DeserializeObject<ModManifest>(json, GameAssetJson.DataSettings) ?? CreateEmpty(mod);
             Normalize(manifest, mod);
             return manifest;
         }
@@ -47,7 +47,7 @@ namespace DingoGameObjectsCMS.AssetLibrary.AssetsEdit
         {
             Directory.CreateDirectory(modRootAbs);
             Normalize(manifest, manifest?.Mod);
-            var json = JsonConvert.SerializeObject(manifest, Formatting.Indented, GameAssetJson.Settings);
+            var json = JsonConvert.SerializeObject(manifest, Formatting.Indented, GameAssetJson.DataSettings);
             await GameAssetJsonStore.WriteTextAtomicAsync(GetManifestPath(modRootAbs), json, ct);
         }
 

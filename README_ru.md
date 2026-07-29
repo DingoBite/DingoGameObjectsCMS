@@ -57,7 +57,7 @@ Assets/GameAssets/base/characters/player/player@1.2.0.asset
 
 - `version == null` означает точный запрос к `0.0.0`
 - `version == ""` или пробельная строка означает запрос `latest`
-- `latest` выбирается по максимальной доступной semver внутри того же `(mod, type, key)`
+- `latest` выбирается по максимальной канонической числовой версии `major.minor.patch` внутри того же `(mod, type, key)`
 
 Это даёт удобный компромисс:
 
@@ -278,6 +278,8 @@ GameAsset
 - мутация `GameRuntimeObject` / `GameRuntimeComponent`, которая меняет authoritative runtime data;
 - ECS projection hooks на `GameRuntimeComponent`, которые через `EntityCommandBuffer` материализуют или снимают ECS-side представление.
 
+Во время начальной ECB-проекции корневая entity содержит `RuntimeProjectionPending`. Последняя projection-команда удаляет tag, поэтому generic ECS consumers могут явно исключать ещё не полностью собранные roots.
+
 Это специально не universal always-live two-way sync. Runtime data может оставаться authoritative в `RuntimeStore`, а высокочастотная simulation при этом может жить в DOTS.
 
 ### Asset -> Runtime -> View
@@ -446,7 +448,7 @@ interest membership можно группировать и кодировать 
   - синхронизирует `_key` и путь asset-а
 - `GameAssetVersioningTools`
   - дублирует выбранный versioned asset
-  - повышает semver
+  - повышает числовую patch-версию
   - генерирует новый GUID
 - `ModBuilder`
   - экспортирует мод в JSON + `manifest.json`

@@ -119,6 +119,11 @@ namespace DingoGameObjectsCMS.AssetLibrary.Manifest
     {
         public const string PACKAGE_LOCK_FILE_NAME = "package.lock.json";
 
+        private static StringComparison FileSystemPathComparison =>
+            Path.DirectorySeparatorChar == '\\'
+                ? StringComparison.OrdinalIgnoreCase
+                : StringComparison.Ordinal;
+
         private static readonly JsonSerializerSettings PackageJsonSettings = new()
         {
             ContractResolver = new RequiredCamelCaseContractResolver(),
@@ -335,7 +340,7 @@ namespace DingoGameObjectsCMS.AssetLibrary.Manifest
             var prefix = root.EndsWith(Path.DirectorySeparatorChar.ToString(), StringComparison.Ordinal)
                 ? root
                 : root + Path.DirectorySeparatorChar;
-            if (!resolved.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            if (!resolved.StartsWith(prefix, FileSystemPathComparison))
             {
                 throw new InvalidDataException($"GameAsset package path '{relativePath}' escapes '{root}'.");
             }
@@ -454,7 +459,7 @@ namespace DingoGameObjectsCMS.AssetLibrary.Manifest
             {
                 manifest = JsonConvert.DeserializeObject<ModManifest>(
                     File.ReadAllText(manifestPath),
-                    GameAssetJson.Settings);
+                    GameAssetJson.DataSettings);
             }
             catch (Exception exception) when (exception is JsonException || exception is ArgumentException)
             {
@@ -519,7 +524,7 @@ namespace DingoGameObjectsCMS.AssetLibrary.Manifest
         private static void RejectReparsePoints(string root, string absolutePath)
         {
             var current = Path.GetFullPath(absolutePath);
-            while (!string.Equals(current, root, StringComparison.OrdinalIgnoreCase))
+            while (!string.Equals(current, root, FileSystemPathComparison))
             {
                 if ((File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0)
                 {

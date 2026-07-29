@@ -104,7 +104,7 @@ namespace DingoGameObjectsCMS.AssetObjects
             g.Key = Key;
             g.AssetGUID = GUID;
             if (_components == null)
-                return null;
+                return g;
 
             foreach (var component in _components)
             {

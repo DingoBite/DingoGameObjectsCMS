@@ -5,7 +5,6 @@ using DingoGameObjectsCMS;
 using DingoGameObjectsCMS.AssetObjects;
 using DingoGameObjectsCMS.RuntimeObjects;
 using DingoUnityExtensions.Utils;
-using UnityEngine;
 
 namespace DingoGameObjectsCMS.AssetLibrary.AssetsEdit
 {
@@ -58,13 +57,10 @@ namespace DingoGameObjectsCMS.AssetLibrary.AssetsEdit
 
         public static string IncrementPatchVersion(string version)
         {
-            if (!Version.TryParse(string.IsNullOrWhiteSpace(version) ? GameAssetKey.ZERO_V : version.Trim(), out var parsed))
-                return "0.0.1";
-
-            var major = Mathf.Max(0, parsed.Major);
-            var minor = Mathf.Max(0, parsed.Minor);
-            var patch = Mathf.Max(0, parsed.Build) + 1;
-            return $"{major}.{minor}.{patch}";
+            return GameAssetVersionUtils.IncrementPatch(
+                string.IsNullOrWhiteSpace(version)
+                    ? GameAssetKey.ZERO_V
+                    : version);
         }
 
         public static GameAssetKey CreateUniqueKey(GameAsset asset, string mod, string fallbackType, Func<GameAssetKey, bool> keyExists)

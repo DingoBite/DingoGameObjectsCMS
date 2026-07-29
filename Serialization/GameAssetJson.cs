@@ -10,15 +10,13 @@ namespace DingoGameObjectsCMS.Serialization
     public static class GameAssetJson
     {
         public static readonly JsonSerializerSettings Settings = new();
+        public static readonly JsonSerializerSettings DataSettings = new();
         public static readonly JsonSerializer JsonSerializer;
 
         static GameAssetJson()
         {
-            Settings.ReferenceLoopHandling = ReferenceLoopHandling.Ignore;
+            ConfigureBaseSettings(Settings);
             Settings.TypeNameHandling = TypeNameHandling.Auto;
-            Settings.MetadataPropertyHandling = MetadataPropertyHandling.ReadAhead;
-            Settings.ObjectCreationHandling = ObjectCreationHandling.Replace;
-            Settings.ContractResolver = new UnitySerializeFieldContractResolver();
 
             var known = AppDomain.CurrentDomain.GetAssemblies().SelectMany(a =>
             {
@@ -33,8 +31,9 @@ namespace DingoGameObjectsCMS.Serialization
             }).Where(t => t != null && !t.IsAbstract && (typeof(GameAssetScriptableObject).IsAssignableFrom(t) || typeof(GameAssetComponent).IsAssignableFrom(t)));
 
             Settings.SerializationBinder = new TypeAliasBinder(knownTypes: known, aliasSelector: t => t.Name);
-            Settings.Converters.Add(new UnityFixedStringJsonConverter());
-            GameRuntimeJson.AddUnityConverters(Settings);
+            ConfigureBaseSettings(DataSettings);
+            DataSettings.TypeNameHandling = TypeNameHandling.None;
+            DataSettings.SerializationBinder = Settings.SerializationBinder;
             JsonSerializer = JsonSerializer.Create(Settings);
         }
 
@@ -45,6 +44,16 @@ namespace DingoGameObjectsCMS.Serialization
         public static T FromJson<T>(this string json) where T : GameAssetScriptableObject
         {
             return JsonConvert.DeserializeObject<T>(json, Settings);
+        }
+
+        private static void ConfigureBaseSettings(JsonSerializerSettings settings)
+        {
+            settings.ReferenceLoopHandling = ReferenceLoopHandling.Ignore;
+            settings.MetadataPropertyHandling = MetadataPropertyHandling.ReadAhead;
+            settings.ObjectCreationHandling = ObjectCreationHandling.Replace;
+            settings.ContractResolver = new UnitySerializeFieldContractResolver();
+            settings.Converters.Add(new UnityFixedStringJsonConverter());
+            GameRuntimeJson.AddUnityConverters(settings);
         }
     }
 }

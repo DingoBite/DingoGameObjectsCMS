@@ -50,7 +50,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
             if (component == null)
                 return;
 
-            var keyType = typeof(T);
+            var keyType = component.GetType();
 
             if (_componentsByType.TryGetValue(keyType, out var existing) && existing != null)
             {
@@ -87,14 +87,16 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
 
         private void RebuildCache()
         {
+            _components ??= new List<GameRuntimeComponent>();
+            RuntimeComponentCollectionValidator.Validate(
+                _components,
+                $"GameRuntimeCommand '{Key}'",
+                requireRegisteredTypeIds: false);
             _componentsByType = new Dictionary<Type, GameRuntimeComponent>(_components.Count);
             _componentsById = new Dictionary<uint, GameRuntimeComponent>(_components.Count);
 
             foreach (var c in _components)
             {
-                if (c == null)
-                    continue;
-
                 var type = c.GetType();
                 _componentsByType[type] = c;
                 if (RuntimeComponentTypeRegistry.TryGetId(type, out var id))

@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using Newtonsoft.Json;
 using Newtonsoft.Json.Serialization;
 
 namespace DingoGameObjectsCMS.Serialization
@@ -51,19 +52,24 @@ namespace DingoGameObjectsCMS.Serialization
 
         public void BindToName(Type serializedType, out string assemblyName, out string typeName)
         {
+            if (serializedType == null)
+                throw new ArgumentNullException(nameof(serializedType));
+            if (!_typeToName.TryGetValue(serializedType, out var alias))
+                throw new JsonSerializationException($"Type '{serializedType.FullName}' is not registered for polymorphic serialization.");
+
             assemblyName = null;
-            typeName = _typeToName.TryGetValue(serializedType, out var alias) ? alias : (serializedType.FullName ?? serializedType.Name);
+            typeName = alias;
         }
 
         public Type BindToType(string assemblyName, string typeName)
         {
-            if (string.IsNullOrEmpty(typeName))
-                return null;
+            if (string.IsNullOrWhiteSpace(typeName))
+                throw new JsonSerializationException("A registered type alias is required for polymorphic deserialization.");
 
             if (_nameToType.TryGetValue(typeName, out var t))
                 return t;
 
-            return !string.IsNullOrEmpty(assemblyName) ? Type.GetType($"{typeName}, {assemblyName}") : Type.GetType(typeName);
+            throw new JsonSerializationException($"Type alias '{typeName}' is not registered for polymorphic deserialization.");
         }
 
         private static void ResolveCollisions(Dictionary<Type, string> current, Func<Type, string> disambiguate)

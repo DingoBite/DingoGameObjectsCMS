@@ -35,6 +35,11 @@ namespace DingoGameObjectsCMS.RuntimeObjects
     }
 
     [Serializable, Preserve]
+    public struct RuntimeProjectionPending : IComponentData
+    {
+    }
+
+    [Serializable, Preserve]
     public struct RuntimeRealm : IComponentData
     {
         public StoreRealm Realm;

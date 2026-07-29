@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using DingoGameObjectsCMS.AssetLibrary.AssetsEdit;
 using DingoGameObjectsCMS.AssetObjects;
 using DingoGameObjectsCMS.RuntimeObjects;
 using DingoGameObjectsCMS.Serialization;
@@ -18,13 +19,31 @@ namespace DingoGameObjectsCMS.Modding
 
         public ModPackage(string modRootAbs, ModManifest manifest)
         {
-            ModRootAbs = modRootAbs;
-            Manifest = manifest;
+            ModRootAbs = Path.GetFullPath(modRootAbs ?? throw new ArgumentNullException(nameof(modRootAbs)));
+            Manifest = manifest ?? throw new ArgumentNullException(nameof(manifest));
+            Manifest.Assets ??= new List<ModManifestEntry>();
 
             _byKey = new Dictionary<GameAssetKey, ModManifestEntry>(new GameAssetKeyComparer());
-            foreach (var e in manifest.Assets)
+            foreach (var e in Manifest.Assets)
             {
-                _byKey[e.Key] = e;
+                if (e == null)
+                    throw new InvalidDataException($"Mod manifest '{ModRootAbs}' contains a null asset entry.");
+
+                try
+                {
+                    GameAssetVersionUtils.RequireCanonical(
+                        e.Key.Version,
+                        nameof(e.Key.Version));
+                }
+                catch (ArgumentException exception)
+                {
+                    throw new InvalidDataException(
+                        $"Mod manifest '{ModRootAbs}' contains invalid asset version '{e.Key.Version}'.",
+                        exception);
+                }
+                GameAssetPathPolicy.CombineAbsolute(ModRootAbs, e.RelativeJsonPath);
+                if (!_byKey.TryAdd(e.Key, e))
+                    throw new InvalidDataException($"Mod manifest '{ModRootAbs}' contains duplicate asset key '{e.Key}'.");
             }
         }
 
@@ -44,7 +63,7 @@ namespace DingoGameObjectsCMS.Modding
                 return false;
             }
 
-            var jsonPath = Path.Combine(ModRootAbs, entry.RelativeJsonPath);
+            var jsonPath = GameAssetPathPolicy.CombineAbsolute(ModRootAbs, entry.RelativeJsonPath);
             var json = File.ReadAllText(jsonPath);
             asset = GameAssetJson.FromJson(json);
             if (asset == null)

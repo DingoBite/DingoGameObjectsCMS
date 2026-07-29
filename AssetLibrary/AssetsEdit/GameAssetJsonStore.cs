@@ -12,7 +12,7 @@ namespace DingoGameObjectsCMS.AssetLibrary.AssetsEdit
 {
     public static class GameAssetJsonStore
     {
-        private static readonly SemaphoreSerializer Serializer = new(GameAssetJson.Settings);
+        private static readonly SemaphoreSerializer Serializer = new(GameAssetJson.DataSettings);
 
         public static async Task WriteAsync(string jsonPathAbs, GameAssetScriptableObject asset, CancellationToken ct = default)
         {
