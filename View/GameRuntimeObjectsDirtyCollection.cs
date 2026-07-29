@@ -572,6 +572,13 @@ namespace DingoGameObjectsCMS.View
             if (!_activeEntries.Remove(key, out var activeEntry))
                 return;
 
+            // Scene teardown may destroy pooled view objects before a store
+            // presenter receives its final unbind callback. A destroyed Unity
+            // container has already detached its component views and must not
+            // receive a second synthetic Release operation.
+            if (activeEntry.Container == null)
+                return;
+
             ApplyOperation(activeEntry.Container, GameRuntimeObjectOperation.Release(store, key, activeEntry.Value));
             BeginRelease(key, activeEntry.Value, activeEntry.Container, spawnOptions);
         }

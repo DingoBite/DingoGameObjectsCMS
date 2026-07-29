@@ -48,6 +48,7 @@ namespace DingoGameObjectsCMS.AssetLibrary
 
         private bool _runtimeCacheBuilt;
         private string _sessionBasePackageRootOverride;
+        private string _sessionAssetsRootOverride;
 
         public bool ExternalOverridesBuiltIn => true;
 
@@ -98,6 +99,31 @@ namespace DingoGameObjectsCMS.AssetLibrary
         }
 
         public static bool HasConfiguredSessionBasePackage => Instance.HasSessionBasePackageRoot();
+
+        public static void ConfigureSessionAssetsRoot(string assetsRootAbs)
+        {
+            if (string.IsNullOrWhiteSpace(assetsRootAbs))
+            {
+                throw new ArgumentException(
+                    "A session GameAsset package root is required.",
+                    nameof(assetsRootAbs));
+            }
+
+            Instance.SetSessionAssetsRoot(Path.GetFullPath(assetsRootAbs));
+        }
+
+        public static void UseDefaultSessionAssetsRoot()
+        {
+            Instance.SetSessionAssetsRoot(null);
+        }
+
+        public static string GetSessionAssetsRootPath()
+        {
+            return Instance.TakeSessionAssetsRootPath();
+        }
+
+        public static bool HasConfiguredSessionAssetsRoot =>
+            Instance.HasSessionAssetsRoot();
 
         public static void ClearRuntimeCaches(bool clearExternalPackages = true, bool unloadUnusedAssets = false)
         {
@@ -345,6 +371,7 @@ namespace DingoGameObjectsCMS.AssetLibrary
             lock (_cacheLock)
             {
                 _sessionBasePackageRootOverride = null;
+                _sessionAssetsRootOverride = null;
             }
             ClearRuntimeCache();
         }
@@ -383,6 +410,43 @@ namespace DingoGameObjectsCMS.AssetLibrary
             lock (_cacheLock)
             {
                 return !string.IsNullOrWhiteSpace(_sessionBasePackageRootOverride);
+            }
+        }
+
+        private void SetSessionAssetsRoot(string assetsRootAbs)
+        {
+            lock (_cacheLock)
+            {
+                if (string.Equals(
+                        _sessionAssetsRootOverride,
+                        assetsRootAbs,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    return;
+                }
+                _sessionAssetsRootOverride = assetsRootAbs;
+            }
+            ClearRuntimeCache();
+        }
+
+        private string TakeSessionAssetsRootPath()
+        {
+            lock (_cacheLock)
+            {
+                if (!string.IsNullOrWhiteSpace(_sessionAssetsRootOverride))
+                {
+                    return _sessionAssetsRootOverride;
+                }
+            }
+
+            return GameAssetModPathPolicy.GetAssetsRootPath();
+        }
+
+        private bool HasSessionAssetsRoot()
+        {
+            lock (_cacheLock)
+            {
+                return !string.IsNullOrWhiteSpace(_sessionAssetsRootOverride);
             }
         }
 
@@ -430,7 +494,7 @@ namespace DingoGameObjectsCMS.AssetLibrary
                 }
             }
 
-            var assetsRoot = GameAssetModPathPolicy.GetAssetsRootPath();
+            var assetsRoot = TakeSessionAssetsRootPath();
             Directory.CreateDirectory(assetsRoot);
 
             var externalBaseRoot = usesExternalSessionBase
