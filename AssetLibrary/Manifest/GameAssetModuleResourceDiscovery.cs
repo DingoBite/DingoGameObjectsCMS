@@ -2,11 +2,42 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using DingoGameObjectsCMS.Modding;
+using DingoGameObjectsCMS.RuntimeObjects;
 using DingoGameObjectsCMS.Serialization;
 using Newtonsoft.Json.Linq;
 
 namespace DingoGameObjectsCMS.AssetLibrary.Manifest
 {
+    public readonly struct GameAssetModuleResourceUse : IEquatable<GameAssetModuleResourceUse>
+    {
+        public readonly GameAssetKey AssetKey;
+        public readonly GameAssetResourceRef Resource;
+
+        public GameAssetModuleResourceUse(
+            GameAssetKey assetKey,
+            GameAssetResourceRef resource)
+        {
+            AssetKey = assetKey;
+            Resource = resource;
+        }
+
+        public bool Equals(GameAssetModuleResourceUse other)
+        {
+            return AssetKey.Equals(other.AssetKey)
+                   && Resource.Equals(other.Resource);
+        }
+
+        public override bool Equals(object obj)
+        {
+            return obj is GameAssetModuleResourceUse other && Equals(other);
+        }
+
+        public override int GetHashCode()
+        {
+            return HashCode.Combine(AssetKey, Resource);
+        }
+    }
+
     /// <summary>
     /// Discovers physical resources from references serialized into GameAssets
     /// listed by the verified module manifest. Project code never supplies a
@@ -15,6 +46,22 @@ namespace DingoGameObjectsCMS.AssetLibrary.Manifest
     public static class GameAssetModuleResourceDiscovery
     {
         public static IReadOnlyList<GameAssetResourceRef> CollectLocalResources(
+            GameAssetVerifiedPackage package,
+            string requiredKind)
+        {
+            var uses = CollectLocalResourceUses(package, requiredKind);
+            var discovered = new HashSet<GameAssetResourceRef>();
+            for (var index = 0; index < uses.Count; index++)
+            {
+                discovered.Add(uses[index].Resource);
+            }
+
+            var result = new List<GameAssetResourceRef>(discovered);
+            result.Sort(CompareResources);
+            return result;
+        }
+
+        public static IReadOnlyList<GameAssetModuleResourceUse> CollectLocalResourceUses(
             GameAssetVerifiedPackage package,
             string requiredKind)
         {
@@ -36,7 +83,7 @@ namespace DingoGameObjectsCMS.AssetLibrary.Manifest
             }
 
             manifest.Assets ??= new List<ModManifestEntry>();
-            var discovered = new HashSet<GameAssetResourceRef>();
+            var discovered = new HashSet<GameAssetModuleResourceUse>();
             for (var index = 0; index < manifest.Assets.Count; index++)
             {
                 var entry = manifest.Assets[index]
@@ -61,11 +108,16 @@ namespace DingoGameObjectsCMS.AssetLibrary.Manifest
                         exception);
                 }
 
-                CollectFromToken(document, package, requiredKind, discovered);
+                CollectFromToken(
+                    document,
+                    package,
+                    requiredKind,
+                    entry.Key,
+                    discovered);
             }
 
-            var result = new List<GameAssetResourceRef>(discovered);
-            result.Sort(CompareResources);
+            var result = new List<GameAssetModuleResourceUse>(discovered);
+            result.Sort(CompareUses);
             return result;
         }
 
@@ -73,7 +125,8 @@ namespace DingoGameObjectsCMS.AssetLibrary.Manifest
             JToken token,
             GameAssetVerifiedPackage package,
             string requiredKind,
-            HashSet<GameAssetResourceRef> destination)
+            GameAssetKey assetKey,
+            HashSet<GameAssetModuleResourceUse> destination)
         {
             if (token is JObject value
                 && TryGetString(value, "moduleId", out var moduleId)
@@ -91,7 +144,9 @@ namespace DingoGameObjectsCMS.AssetLibrary.Manifest
                     }
                     if (string.Equals(package.RequireKind(resource), requiredKind, StringComparison.Ordinal))
                     {
-                        destination.Add(resource);
+                        destination.Add(new GameAssetModuleResourceUse(
+                            assetKey,
+                            resource));
                     }
                 }
             }
@@ -100,7 +155,12 @@ namespace DingoGameObjectsCMS.AssetLibrary.Manifest
             {
                 foreach (var child in container.Children())
                 {
-                    CollectFromToken(child, package, requiredKind, destination);
+                    CollectFromToken(
+                        child,
+                        package,
+                        requiredKind,
+                        assetKey,
+                        destination);
                 }
             }
         }
@@ -128,6 +188,28 @@ namespace DingoGameObjectsCMS.AssetLibrary.Manifest
         {
             var module = string.CompareOrdinal(left.ModuleId, right.ModuleId);
             return module != 0 ? module : string.CompareOrdinal(left.RelativePath, right.RelativePath);
+        }
+
+        private static int CompareUses(
+            GameAssetModuleResourceUse left,
+            GameAssetModuleResourceUse right)
+        {
+            var resource = CompareResources(left.Resource, right.Resource);
+            if (resource != 0)
+            {
+                return resource;
+            }
+            var type = string.CompareOrdinal(left.AssetKey.Type, right.AssetKey.Type);
+            if (type != 0)
+            {
+                return type;
+            }
+            var key = string.CompareOrdinal(left.AssetKey.Key, right.AssetKey.Key);
+            return key != 0
+                ? key
+                : string.CompareOrdinal(
+                    left.AssetKey.Version,
+                    right.AssetKey.Version);
         }
     }
 }
