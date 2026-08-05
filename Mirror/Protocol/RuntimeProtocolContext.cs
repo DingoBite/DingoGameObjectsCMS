@@ -33,6 +33,35 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
     /// </summary>
     public delegate RuntimeCheckpointBoundary?
         RuntimeCheckpointBoundaryProvider();
+    public delegate RuntimeRecoveryCheckpoint
+        RuntimeRecoveryCheckpointProvider();
+
+    /// <summary>
+    /// Transaction prepared by project checkpoint restore while replica
+    /// RuntimeStores are still staged. Commit is called only after grouped
+    /// store publication and retirement playback. Dispose without Commit must
+    /// restore any shared live state changed during preparation.
+    /// </summary>
+    public interface IRuntimeCheckpointStageRestoreTransaction : IDisposable
+    {
+        /// <summary>
+        /// Performs every validation and preparation step that can fail.
+        /// The protocol invokes this while RuntimeStores are still staged.
+        /// </summary>
+        void PrepareCommit();
+
+        /// <summary>
+        /// Applies only prevalidated, non-throwing state swaps. Implementations
+        /// must not invoke untrusted callbacks from this method.
+        /// </summary>
+        void Commit();
+    }
+
+    public delegate IRuntimeCheckpointStageRestoreTransaction
+        RuntimeCheckpointStageRestore(
+        World world,
+        RuntimeReplayCheckpointEnvelope checkpoint,
+        IReadOnlyList<RuntimeStore> stagedStores);
     public delegate void RuntimeJournalCatchupCompletion(World world);
 
     /// <summary>
@@ -57,6 +86,8 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
         public readonly RuntimeCommandEnvelopeEncoder CommandEncoder;
         public readonly RuntimeObjectVisibility IsObjectVisible;
         public readonly RuntimeCheckpointBoundaryProvider CheckpointBoundaryProvider;
+        public readonly RuntimeRecoveryCheckpointProvider RecoveryCheckpointProvider;
+        public readonly RuntimeCheckpointStageRestore RestoreCheckpointStage;
         public readonly RuntimeCommandJournalScope JournalSubscriptionScope;
         public readonly RuntimeJournalCatchupCompletion CompleteJournalCatchup;
 
@@ -75,7 +106,9 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             RuntimeObjectVisibility isObjectVisible = null,
             RuntimeCheckpointBoundaryProvider checkpointBoundaryProvider = null,
             RuntimeCommandJournalScope journalSubscriptionScope = null,
-            RuntimeJournalCatchupCompletion completeJournalCatchup = null)
+            RuntimeJournalCatchupCompletion completeJournalCatchup = null,
+            RuntimeRecoveryCheckpointProvider recoveryCheckpointProvider = null,
+            RuntimeCheckpointStageRestore restoreCheckpointStage = null)
             : this(
                 manifestTemplate,
                 RuntimeSessionClientExpectation.FromServerTemplate(manifestTemplate),
@@ -92,7 +125,9 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                 isObjectVisible,
                 checkpointBoundaryProvider,
                 journalSubscriptionScope,
-                completeJournalCatchup) { }
+                completeJournalCatchup,
+                recoveryCheckpointProvider,
+                restoreCheckpointStage) { }
 
         public RuntimeProtocolContext(
             RuntimeSessionClientExpectation clientExpectation,
@@ -109,7 +144,9 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             RuntimeObjectVisibility isObjectVisible = null,
             RuntimeCheckpointBoundaryProvider checkpointBoundaryProvider = null,
             RuntimeCommandJournalScope journalSubscriptionScope = null,
-            RuntimeJournalCatchupCompletion completeJournalCatchup = null)
+            RuntimeJournalCatchupCompletion completeJournalCatchup = null,
+            RuntimeRecoveryCheckpointProvider recoveryCheckpointProvider = null,
+            RuntimeCheckpointStageRestore restoreCheckpointStage = null)
             : this(
                 null,
                 clientExpectation,
@@ -126,7 +163,9 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                 isObjectVisible,
                 checkpointBoundaryProvider,
                 journalSubscriptionScope,
-                completeJournalCatchup) { }
+                completeJournalCatchup,
+                recoveryCheckpointProvider,
+                restoreCheckpointStage) { }
 
         private RuntimeProtocolContext(
             RuntimeSessionManifestTemplate manifestTemplate,
@@ -144,7 +183,9 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             RuntimeObjectVisibility isObjectVisible,
             RuntimeCheckpointBoundaryProvider checkpointBoundaryProvider,
             RuntimeCommandJournalScope journalSubscriptionScope,
-            RuntimeJournalCatchupCompletion completeJournalCatchup)
+            RuntimeJournalCatchupCompletion completeJournalCatchup,
+            RuntimeRecoveryCheckpointProvider recoveryCheckpointProvider,
+            RuntimeCheckpointStageRestore restoreCheckpointStage)
         {
             if (manifestTemplate == null && clientExpectation == null)
                 throw new ArgumentException("Protocol context requires a server manifest or client expectation.");
@@ -177,12 +218,23 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             CommandEncoder = commandEncoder;
             IsObjectVisible = isObjectVisible ?? AlwaysVisible;
             CheckpointBoundaryProvider = checkpointBoundaryProvider;
-            if (CheckpointBoundaryProvider != null && CommandsBus == null)
+            RecoveryCheckpointProvider = recoveryCheckpointProvider;
+            RestoreCheckpointStage = restoreCheckpointStage;
+            if (CheckpointBoundaryProvider != null
+                && RecoveryCheckpointProvider != null)
+            {
+                throw new InvalidOperationException(
+                    "Protocol context must use one checkpoint provider. The recovery provider already includes its boundary.");
+            }
+            var hasCheckpointProvider =
+                CheckpointBoundaryProvider != null
+                || RecoveryCheckpointProvider != null;
+            if (hasCheckpointProvider && CommandsBus == null)
             {
                 throw new InvalidOperationException(
                     "Checkpoint journal transport requires a RuntimeCommandsBus.");
             }
-            if (CheckpointBoundaryProvider != null
+            if (hasCheckpointProvider
                 && journalSubscriptionScope == null)
             {
                 throw new InvalidOperationException(
@@ -192,10 +244,28 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             CompleteJournalCatchup = completeJournalCatchup;
             if (ManifestTemplate != null
                 && JournalSubscriptionScope != null
-                && CheckpointBoundaryProvider == null)
+                && !hasCheckpointProvider)
             {
                 throw new InvalidOperationException(
-                    "A server journal subscription requires a checkpoint boundary provider.");
+                    "A server journal subscription requires a checkpoint provider.");
+            }
+            if (ManifestTemplate != null
+                && RestoreCheckpointStage != null)
+            {
+                throw new InvalidOperationException(
+                    "Checkpoint staging restore is a client-only protocol hook.");
+            }
+            if (ManifestTemplate == null
+                && RecoveryCheckpointProvider != null)
+            {
+                throw new InvalidOperationException(
+                    "A recovery checkpoint provider is a server-only protocol hook.");
+            }
+            if (RestoreCheckpointStage != null
+                && JournalSubscriptionScope == null)
+            {
+                throw new InvalidOperationException(
+                    "Checkpoint staging restore requires a journal subscription scope.");
             }
             if (JournalSubscriptionScope != null)
             {

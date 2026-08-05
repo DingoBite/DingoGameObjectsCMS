@@ -321,22 +321,38 @@ Current state:
 
 - the default serializer is `JsonRuntimePayloadSerializer`
 - the global swap point is `RuntimePayloadSerialization`
-- runtime components use a manifest-based type id mapping with explicit compact `Id`, stable `Key`, and `RegistryHash`
+- runtime components use a generated, compiled `Type -> Id` table with direct CLR `Type` handles, compact numeric ids, reserved numeric slots, and `RegistryHash`
 
-Required runtime artifact:
+Required project artifact:
 
 ```text
-Assets/StreamingAssets/runtime_component_types.json
+<project>/Generated/RuntimeComponentTypes.Generated.cs
+<project>/Generated/RuntimePatchCodecs.Generated.cs
 ```
 
-It is required for:
+It is compiled into the player and is used for:
 
 - network replication of runtime components;
 - deserialization of runtime components by `compTypeId`.
 
-Manifest entries use `Id` as the compact payload key. `Key` is the stable protocol name for the component type; add `[RuntimeComponentKey("...")]` to a `GameRuntimeComponent` when it needs an explicit name. `RegistryHash` is calculated from the canonical `(Id, Key, AssemblyName, TypeName)` list and is intended for compatibility checks between builds.
+Entries contain only the compact payload `Id` and a direct `RuntimeType = typeof(T)`. The CLR `Type` itself is the generator and runtime identity; there is no string component key, type name, assembly name, or alias contract. Removed slots are retained only as numeric `ReservedIds`, without removed CLR metadata. `RegistryHash` covers the active `Type -> Id` table and numeric reservations and is intended for compatibility checks between builds. Runtime never reads this table from JSON or discovers component types with reflection.
 
-During active development the manifest can be regenerated through `Tools/Runtime Types/Generate Manifest` or as part of build preprocessing. Before release, treat it as an append-only protocol table: keep existing ids stable, reserve removed/renamed entries deliberately, and use the hash for multiplayer compatibility validation.
+`GameRuntimeObject` and `GameRuntimeCommand` JSON encode each component as an explicit numeric `TypeId` plus `Payload`. They do not use Json.NET `$type`, a serialization binder, CLR names, assembly names, runtime assembly scans, or legacy aliases.
+
+During active development the table is regenerated through the project binding for `RuntimeComponentTypeManifestGenerator` or as part of build preprocessing. That binding supplies the project's explicit active-type scope and passes the previous generated static `CreateManifest` directly; there is no provider-name lookup. Types that leave the scope disappear from the active table while their ids become append-only numeric reservations. Diagnostic JSON, if a project wants it, belongs only in a disposable Editor `.temp` directory and is never runtime authority. This does not change external mod `manifest.json` files: those remain data owned by the mod packaging protocol.
+
+The generated patch-codec artifact follows the same rule. Active component
+entries are keyed by direct `Type` handles. Generated codecs address fields by
+compact numeric ids and direct member access. The patch schema contains active
+components and their current generated field layout only: removed patch fields
+do not leave tombstones or names behind. Persistent component-slot reservations
+belong to the separate runtime component type registry. Both runtime-binary and
+authoring patches persist only `ComponentTypeId`/`FieldId`; CLR types and
+`FieldInfo` exist only in the compiled lookup tables. The artifact contains no
+string component identity, CLR/assembly names, value signatures, or
+removed-entry records. `SchemaHash`, direct codecs, and static `CreateManifest`
+live in one compiled C# authority. Patch generation does not read or publish a
+mutable `runtime_patch_schema.json` file.
 
 ## Network synchronization
 
@@ -450,7 +466,7 @@ The package ships with editor tools for the asset pipeline:
 - `SubAssetFixer`
   - rebuilds sub-assets after import
 - `RuntimeComponentTypeManifestGenerator`
-  - updates the runtime component type id manifest and registry hash
+  - emits the compiled direct-`Type` runtime table, compact ids, numeric reservations, and registry hash
 
 These tools are not just editor conveniences. They protect the main contract of the framework: asset shape, versioning, serialization, and runtime reconstruction must stay aligned.
 
@@ -480,7 +496,7 @@ Notes:
 
 - the framework intentionally adds its own runtime layer on top of ECS instead of replacing ECS;
 - high-level code is expected to go through `RuntimeExecutionContext` / `RS`, while low-level infrastructure may still work with explicit realms;
-- the serialization manifest must stay up to date;
+- generated serialization schemas must stay up to date and checked in;
 - a full persistence service is not included out of the box;
 - the Mirror layer is optional, but if you use it, you must respect the snapshot/delta contract;
 - versioning helps with shape evolution, but migration policy still has to be designed at the project level.

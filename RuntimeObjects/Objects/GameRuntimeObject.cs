@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Runtime.Serialization;
 using DingoGameObjectsCMS.RuntimeObjects.Stores;
 using DingoGameObjectsCMS.RuntimeObjects.Overrides;
+using DingoGameObjectsCMS.Serialization;
 using Newtonsoft.Json;
 using Unity.Entities;
 using UnityEngine;
@@ -21,7 +22,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
         [SerializeField, JsonProperty("Origin")]
         private RuntimeObjectOrigin _origin;
 
-        [SerializeReference, JsonProperty("Components", ItemTypeNameHandling = TypeNameHandling.Auto)]
+        [SerializeReference, JsonProperty("Components", ItemConverterType = typeof(RuntimeComponentJsonConverter))]
         private List<GameRuntimeComponent> _components = new();
 
         [NonSerialized, JsonIgnore] private Dictionary<Type, GameRuntimeComponent> _componentsByType = new();
@@ -149,6 +150,12 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
             if (isEntityFactory)
             {
                 entityManager.AddComponent<RuntimeEntityFactoryTag>(_entity);
+                entityManager.AddComponentData(
+                    _entity,
+                    new RuntimeEntityFactoryProductIdentity
+                    {
+                        ProductId = 0
+                    });
                 var linkedEntities = entityManager.AddBuffer<LinkedEntityGroup>(_entity);
                 linkedEntities.Add(_entity);
             }

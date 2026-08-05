@@ -14,14 +14,14 @@ using UnityEngine;
 namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
 {
     /// <summary>
-    /// Converts between stable-key/canonical-JSON authored patches and the
-    /// numeric/generated-binary patches consumed by runtime and network code.
+    /// Converts between numeric-id/canonical-JSON authored patches and the
+    /// generated-binary patches consumed by runtime and network code.
     /// Reflection is deliberately confined to this authoring/materialization path.
     /// </summary>
     public sealed class RuntimeObjectPatchAuthoringCodec
     {
         private readonly RuntimePatchCodecRegistry _registry;
-        private readonly Dictionary<string, ComponentMetadata> _metadataByKey = new(StringComparer.Ordinal);
+        private readonly Dictionary<Type, ComponentMetadata> _metadataByType = new();
 
         public RuntimeObjectPatchAuthoringCodec(RuntimePatchCodecRegistry registry)
         {
@@ -46,33 +46,34 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
                 var codec = _registry.Get(runtimeComponent.ComponentTypeId);
                 var metadata = GetMetadata(codec);
                 TryGetComponent(current, codec.ComponentTypeId, out var currentComponent);
-                var authored = ComponentPatch.Authoring(codec.ComponentTypeKey, runtimeComponent.Kind);
+                var authored = ComponentPatch.Authoring(codec.ComponentTypeId, runtimeComponent.Kind);
                 switch (runtimeComponent.Kind)
                 {
                     case ComponentPatchKind.Add:
                     case ComponentPatchKind.Custom:
                         if (currentComponent == null)
-                            throw new InvalidOperationException($"Authored {runtimeComponent.Kind} component '{codec.ComponentTypeKey}' has no current value.");
+                            throw new InvalidOperationException($"Authored {runtimeComponent.Kind} component '{codec.ComponentRuntimeType.FullName}' has no current value.");
                         authored.CanonicalJson = EncodeComponent(metadata, currentComponent, context);
                         break;
 
                     case ComponentPatchKind.Remove:
+                    case ComponentPatchKind.AddPresence:
                         break;
 
                     case ComponentPatchKind.Fields:
                         if (currentComponent == null)
-                            throw new InvalidOperationException($"Authored fields component '{codec.ComponentTypeKey}' has no current value.");
+                            throw new InvalidOperationException($"Authored fields component '{codec.ComponentRuntimeType.FullName}' has no current value.");
                         var fields = runtimeComponent.Fields == null
                             ? new List<FieldPatch>()
                             : new List<FieldPatch>(runtimeComponent.Fields);
-                        fields.Sort((left, right) => string.CompareOrdinal(left?.FieldKey, right?.FieldKey));
+                        fields.Sort(CompareFieldsById);
                         for (var fieldIndex = 0; fieldIndex < fields.Count; fieldIndex++)
                         {
                             var runtimeField = fields[fieldIndex]
-                                ?? throw new InvalidOperationException($"Runtime component '{codec.ComponentTypeKey}' contains a null field patch.");
-                            var field = metadata.GetField(runtimeField.FieldKey, runtimeField.FieldId);
+                                ?? throw new InvalidOperationException($"Runtime component '{codec.ComponentRuntimeType.FullName}' contains a null field patch.");
+                            var field = metadata.GetField(runtimeField.FieldId);
                             authored.Fields.Add(FieldPatch.Authoring(
-                                field.Key,
+                                field.Id,
                                 runtimeField.Kind,
                                 runtimeField.Kind == FieldPatchKind.Set
                                     ? CanonicalJsonValueCodec.Encode(field.Field.FieldType, field.Field.GetValue(currentComponent), context)
@@ -87,7 +88,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
                 result.Components.Add(authored);
             }
 
-            result.Components.Sort((left, right) => string.CompareOrdinal(left.ComponentTypeKey, right.ComponentTypeKey));
+            result.Components.Sort(CompareComponentsById);
             ValidateAuthoringShape(result);
             return result;
         }
@@ -115,12 +116,12 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
 
             ValidateAuthoringShape(patch);
             var authoredComponents = new List<ComponentPatch>(patch.Components);
-            authoredComponents.Sort((left, right) => string.CompareOrdinal(left.ComponentTypeKey, right.ComponentTypeKey));
+            authoredComponents.Sort(CompareComponentsById);
             var result = new RuntimeObjectPatch(_registry.SchemaHash);
             for (var i = 0; i < authoredComponents.Count; i++)
             {
                 var authored = authoredComponents[i];
-                var codec = _registry.Get(authored.ComponentTypeKey);
+                var codec = _registry.Get(authored.ComponentTypeId);
                 var metadata = GetMetadata(codec);
                 TryGetComponent(baseline, codec.ComponentTypeId, out var baselineComponent);
                 ValidateComponentValue(codec, baselineComponent, "baseline");
@@ -130,41 +131,47 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
                 {
                     case ComponentPatchKind.Add:
                         if (baselineComponent != null)
-                            throw new InvalidOperationException($"Authored add component '{codec.ComponentTypeKey}' already exists in the baseline.");
+                            throw new InvalidOperationException($"Authored add component '{codec.ComponentRuntimeType.FullName}' already exists in the baseline.");
                         runtime = codec.BuildPatch(
                             null,
                             DecodeComponent(metadata, authored.CanonicalJson, context),
                             context);
-                        RequireKind(runtime, ComponentPatchKind.Add, codec.ComponentTypeKey);
+                        RequireKind(runtime, ComponentPatchKind.Add, codec.ComponentRuntimeType);
                         break;
 
                     case ComponentPatchKind.Remove:
                         if (baselineComponent == null)
-                            throw new InvalidOperationException($"Authored remove component '{codec.ComponentTypeKey}' is absent from the baseline.");
+                            throw new InvalidOperationException($"Authored remove component '{codec.ComponentRuntimeType.FullName}' is absent from the baseline.");
                         runtime = codec.BuildPatch(baselineComponent, null, context);
-                        RequireKind(runtime, ComponentPatchKind.Remove, codec.ComponentTypeKey);
+                        RequireKind(runtime, ComponentPatchKind.Remove, codec.ComponentRuntimeType);
+                        break;
+
+                    case ComponentPatchKind.AddPresence:
+                        if (baselineComponent != null)
+                            throw new InvalidOperationException($"Authored presence component '{codec.ComponentRuntimeType.FullName}' already exists in the baseline.");
+                        runtime = new ComponentPatch(codec.ComponentTypeId, ComponentPatchKind.AddPresence);
                         break;
 
                     case ComponentPatchKind.Custom:
                         if (baselineComponent == null)
-                            throw new InvalidOperationException($"Authored custom component '{codec.ComponentTypeKey}' is absent from the baseline.");
+                            throw new InvalidOperationException($"Authored custom component '{codec.ComponentRuntimeType.FullName}' is absent from the baseline.");
                         runtime = codec.BuildPatch(
                             baselineComponent,
                             DecodeComponent(metadata, authored.CanonicalJson, context),
                             context);
-                        RequireKind(runtime, ComponentPatchKind.Custom, codec.ComponentTypeKey);
+                        RequireKind(runtime, ComponentPatchKind.Custom, codec.ComponentRuntimeType);
                         break;
 
                     case ComponentPatchKind.Fields:
                         if (baselineComponent == null)
-                            throw new InvalidOperationException($"Authored fields component '{codec.ComponentTypeKey}' is absent from the baseline.");
+                            throw new InvalidOperationException($"Authored fields component '{codec.ComponentRuntimeType.FullName}' is absent from the baseline.");
                         var current = codec.Clone(baselineComponent);
                         var authoredFields = new List<FieldPatch>(authored.Fields);
-                        authoredFields.Sort((left, right) => string.CompareOrdinal(left.FieldKey, right.FieldKey));
+                        authoredFields.Sort(CompareFieldsById);
                         for (var fieldIndex = 0; fieldIndex < authoredFields.Count; fieldIndex++)
                         {
                             var authoredField = authoredFields[fieldIndex];
-                            var field = metadata.GetField(authoredField.FieldKey);
+                            var field = metadata.GetField(authoredField.FieldId);
                             var value = authoredField.Kind == FieldPatchKind.Remove
                                 ? DefaultValue(field.Field.FieldType)
                                 : CanonicalJsonValueCodec.Decode(
@@ -175,8 +182,8 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
                         }
 
                         runtime = codec.BuildPatch(baselineComponent, current, context);
-                        RequireKind(runtime, ComponentPatchKind.Fields, codec.ComponentTypeKey);
-                        RequireSameFieldKeys(authoredFields, runtime.Fields, codec.ComponentTypeKey);
+                        RequireKind(runtime, ComponentPatchKind.Fields, codec.ComponentRuntimeType);
+                        RequireSameFieldIds(authoredFields, runtime.Fields, codec.ComponentRuntimeType);
                         break;
 
                     default:
@@ -208,14 +215,14 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
             {
                 var sourceComponent = patch.Components[componentIndex];
                 var targetComponent = ComponentPatch.Authoring(
-                    sourceComponent.ComponentTypeKey,
+                    sourceComponent.ComponentTypeId,
                     sourceComponent.Kind,
                     sourceComponent.CanonicalJson);
                 for (var fieldIndex = 0; fieldIndex < sourceComponent.Fields.Count; fieldIndex++)
                 {
                     var sourceField = sourceComponent.Fields[fieldIndex];
                     targetComponent.Fields.Add(FieldPatch.Authoring(
-                        sourceField.FieldKey,
+                        sourceField.FieldId,
                         sourceField.Kind,
                         sourceField.CanonicalJson));
                 }
@@ -226,10 +233,10 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
 
         private ComponentMetadata GetMetadata(RuntimeComponentPatchCodec codec)
         {
-            if (_metadataByKey.TryGetValue(codec.ComponentTypeKey, out var cached))
+            if (_metadataByType.TryGetValue(codec.ComponentRuntimeType, out var cached))
                 return cached;
             var created = ComponentMetadata.Create(codec);
-            _metadataByKey.Add(codec.ComponentTypeKey, created);
+            _metadataByType.Add(codec.ComponentRuntimeType, created);
             return created;
         }
 
@@ -242,43 +249,43 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
             if (patch.Components == null)
                 throw new InvalidOperationException("Authored patch components cannot be null.");
 
-            var componentKeys = new HashSet<string>(StringComparer.Ordinal);
-            string previousComponentKey = null;
+            var componentIds = new HashSet<uint>();
+            uint previousComponentId = 0;
+            var hasPreviousComponent = false;
             for (var i = 0; i < patch.Components.Count; i++)
             {
                 var component = patch.Components[i]
                     ?? throw new InvalidOperationException("Authored patch cannot contain a null component.");
-                if (component.ComponentTypeId != 0 || component.Payload != null)
-                    throw new InvalidOperationException($"Authored component '{component.ComponentTypeKey}' cannot contain numeric ids or binary payload.");
-                if (string.IsNullOrWhiteSpace(component.ComponentTypeKey)
-                    || !componentKeys.Add(component.ComponentTypeKey))
-                {
-                    throw new InvalidOperationException($"Authored patch contains an empty or duplicate component key '{component.ComponentTypeKey}'.");
-                }
-                if (previousComponentKey != null
-                    && string.CompareOrdinal(previousComponentKey, component.ComponentTypeKey) >= 0)
-                {
-                    throw new InvalidOperationException("Authored patch component keys must be strictly ordered.");
-                }
-                previousComponentKey = component.ComponentTypeKey;
+                if (component.Payload != null)
+                    throw new InvalidOperationException($"Authored component {component.ComponentTypeId} cannot contain a binary payload.");
+                if (!componentIds.Add(component.ComponentTypeId))
+                    throw new InvalidOperationException($"Authored patch contains duplicate component id {component.ComponentTypeId}.");
+                if (hasPreviousComponent && previousComponentId >= component.ComponentTypeId)
+                    throw new InvalidOperationException("Authored patch component ids must be strictly ordered.");
+                previousComponentId = component.ComponentTypeId;
+                hasPreviousComponent = true;
 
                 if (component.Fields == null)
-                    throw new InvalidOperationException($"Authored component '{component.ComponentTypeKey}' fields cannot be null.");
+                    throw new InvalidOperationException($"Authored component {component.ComponentTypeId} fields cannot be null.");
                 var fieldCount = component.Fields.Count;
                 switch (component.Kind)
                 {
                     case ComponentPatchKind.Add:
                     case ComponentPatchKind.Custom:
                         if (component.CanonicalJson == null || fieldCount != 0)
-                            throw new InvalidOperationException($"Authored {component.Kind} component '{component.ComponentTypeKey}' requires full canonical JSON and no fields.");
+                            throw new InvalidOperationException($"Authored {component.Kind} component {component.ComponentTypeId} requires full canonical JSON and no fields.");
+                        break;
+                    case ComponentPatchKind.AddPresence:
+                        if (component.CanonicalJson != null || fieldCount != 0)
+                            throw new InvalidOperationException($"Authored presence component {component.ComponentTypeId} cannot contain values.");
                         break;
                     case ComponentPatchKind.Remove:
                         if (component.CanonicalJson != null || fieldCount != 0)
-                            throw new InvalidOperationException($"Authored remove component '{component.ComponentTypeKey}' cannot contain values.");
+                            throw new InvalidOperationException($"Authored remove component {component.ComponentTypeId} cannot contain values.");
                         break;
                     case ComponentPatchKind.Fields:
                         if (component.CanonicalJson != null || fieldCount == 0)
-                            throw new InvalidOperationException($"Authored fields component '{component.ComponentTypeKey}' requires fields and no component JSON.");
+                            throw new InvalidOperationException($"Authored fields component {component.ComponentTypeId} requires fields and no component JSON.");
                         ValidateAuthoringFields(component);
                         break;
                     default:
@@ -289,56 +296,56 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
 
         private static void ValidateAuthoringFields(ComponentPatch component)
         {
-            var keys = new HashSet<string>(StringComparer.Ordinal);
-            string previousFieldKey = null;
+            var ids = new HashSet<uint>();
+            uint previousFieldId = 0;
+            var hasPreviousField = false;
             for (var i = 0; i < component.Fields.Count; i++)
             {
                 var field = component.Fields[i]
-                    ?? throw new InvalidOperationException($"Authored component '{component.ComponentTypeKey}' contains a null field.");
-                if (field.FieldId != 0 || field.Payload != null)
-                    throw new InvalidOperationException($"Authored field '{field.FieldKey}' cannot contain numeric ids or binary payload.");
-                if (string.IsNullOrWhiteSpace(field.FieldKey) || !keys.Add(field.FieldKey))
-                    throw new InvalidOperationException($"Authored component '{component.ComponentTypeKey}' contains an empty or duplicate field key '{field.FieldKey}'.");
-                if (previousFieldKey != null && string.CompareOrdinal(previousFieldKey, field.FieldKey) >= 0)
-                {
+                    ?? throw new InvalidOperationException($"Authored component {component.ComponentTypeId} contains a null field.");
+                if (field.Payload != null)
+                    throw new InvalidOperationException($"Authored field {field.FieldId} cannot contain a binary payload.");
+                if (!ids.Add(field.FieldId))
+                    throw new InvalidOperationException($"Authored component {component.ComponentTypeId} contains duplicate field id {field.FieldId}.");
+                if (hasPreviousField && previousFieldId >= field.FieldId)
                     throw new InvalidOperationException(
-                        $"Authored component '{component.ComponentTypeKey}' field keys must be strictly ordered.");
-                }
-                previousFieldKey = field.FieldKey;
+                        $"Authored component {component.ComponentTypeId} field ids must be strictly ordered.");
+                previousFieldId = field.FieldId;
+                hasPreviousField = true;
                 if (field.Kind == FieldPatchKind.Set && field.CanonicalJson == null)
-                    throw new InvalidOperationException($"Authored field '{field.FieldKey}' set requires canonical JSON.");
+                    throw new InvalidOperationException($"Authored field {field.FieldId} set requires canonical JSON.");
                 if (field.Kind == FieldPatchKind.Remove && field.CanonicalJson != null)
-                    throw new InvalidOperationException($"Authored field '{field.FieldKey}' remove cannot contain JSON.");
+                    throw new InvalidOperationException($"Authored field {field.FieldId} remove cannot contain JSON.");
                 if (field.Kind != FieldPatchKind.Set && field.Kind != FieldPatchKind.Remove)
                     throw new InvalidOperationException($"Unsupported authored field patch kind {field.Kind}.");
             }
         }
 
-        private static void RequireKind(ComponentPatch patch, ComponentPatchKind expected, string componentKey)
+        private static void RequireKind(ComponentPatch patch, ComponentPatchKind expected, Type componentType)
         {
             if (patch == null || patch.Kind != expected)
             {
                 throw new InvalidOperationException(
-                    $"Authored component '{componentKey}' materialized as {patch?.Kind.ToString() ?? "no patch"}, expected {expected}. "
+                    $"Authored component '{componentType.FullName}' materialized as {patch?.Kind.ToString() ?? "no patch"}, expected {expected}. "
                     + "Redundant or schema-inconsistent overrides are not accepted.");
             }
         }
 
-        private static void RequireSameFieldKeys(
+        private static void RequireSameFieldIds(
             IReadOnlyList<FieldPatch> authored,
             IReadOnlyList<FieldPatch> runtime,
-            string componentKey)
+            Type componentType)
         {
             if (runtime == null || authored.Count != runtime.Count)
-                throw new InvalidOperationException($"Authored component '{componentKey}' materialized a different field set.");
-            var expected = new HashSet<string>(authored.Select(value => value.FieldKey), StringComparer.Ordinal);
+                throw new InvalidOperationException($"Authored component '{componentType.FullName}' materialized a different field set.");
+            var expected = new HashSet<uint>(authored.Select(value => value.FieldId));
             for (var i = 0; i < runtime.Count; i++)
             {
-                if (runtime[i] == null || !expected.Remove(runtime[i].FieldKey))
-                    throw new InvalidOperationException($"Authored component '{componentKey}' materialized unexpected field '{runtime[i]?.FieldKey}'.");
+                if (runtime[i] == null || !expected.Remove(runtime[i].FieldId))
+                    throw new InvalidOperationException($"Authored component '{componentType.FullName}' materialized unexpected field id {runtime[i]?.FieldId}.");
             }
             if (expected.Count != 0)
-                throw new InvalidOperationException($"Authored component '{componentKey}' did not materialize all authored fields.");
+                throw new InvalidOperationException($"Authored component '{componentType.FullName}' did not materialize all authored fields.");
         }
 
         private static void ValidateComponentValue(
@@ -349,8 +356,22 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
             if (component != null && component.GetType() != codec.ComponentRuntimeType)
             {
                 throw new InvalidOperationException(
-                    $"Component '{codec.ComponentTypeKey}' {label} has type '{component.GetType().FullName}', expected '{codec.ComponentRuntimeType.FullName}'.");
+                    $"Component '{codec.ComponentRuntimeType.FullName}' {label} has type '{component.GetType().FullName}', expected '{codec.ComponentRuntimeType.FullName}'.");
             }
+        }
+
+        private static int CompareComponentsById(ComponentPatch left, ComponentPatch right)
+        {
+            if (left == null || right == null)
+                return left == right ? 0 : left == null ? -1 : 1;
+            return left.ComponentTypeId.CompareTo(right.ComponentTypeId);
+        }
+
+        private static int CompareFieldsById(FieldPatch left, FieldPatch right)
+        {
+            if (left == null || right == null)
+                return left == right ? 0 : left == null ? -1 : 1;
+            return left.FieldId.CompareTo(right.FieldId);
         }
 
         private static string EncodeComponent(
@@ -359,12 +380,12 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
             RuntimePatchCodecContext context)
         {
             if (component == null || component.GetType() != metadata.RuntimeType)
-                throw new InvalidOperationException($"Cannot encode component '{metadata.ComponentKey}' from type '{component?.GetType().FullName ?? "null"}'.");
+                throw new InvalidOperationException($"Cannot encode component '{metadata.RuntimeType.FullName}' from type '{component?.GetType().FullName ?? "null"}'.");
             var json = new JObject();
             for (var i = 0; i < metadata.Fields.Count; i++)
             {
                 var field = metadata.Fields[i];
-                json.Add(field.Key, CanonicalJsonValueCodec.Write(field.Field.FieldType, field.Field.GetValue(component), context));
+                json.Add(field.JsonProperty, CanonicalJsonValueCodec.Write(field.Field.FieldType, field.Field.GetValue(component), context));
             }
             return json.ToString(Formatting.None);
         }
@@ -375,18 +396,21 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
             RuntimePatchCodecContext context)
         {
             var token = CanonicalJsonValueCodec.Parse(canonicalJson);
-            var json = CanonicalJsonValueCodec.RequireObject(token, metadata.ComponentKey);
-            CanonicalJsonValueCodec.RequireExactProperties(json, metadata.Fields.Select(field => field.Key), metadata.ComponentKey);
+            var json = CanonicalJsonValueCodec.RequireObject(token, metadata.RuntimeType.FullName);
+            CanonicalJsonValueCodec.RequireExactProperties(
+                json,
+                metadata.Fields.Select(field => field.JsonProperty),
+                metadata.RuntimeType.FullName);
             if (Activator.CreateInstance(metadata.RuntimeType) is not GameRuntimeComponent result)
                 throw new InvalidOperationException($"Component '{metadata.RuntimeType.FullName}' cannot be constructed from authoring JSON.");
             for (var i = 0; i < metadata.Fields.Count; i++)
             {
                 var field = metadata.Fields[i];
-                field.Field.SetValue(result, CanonicalJsonValueCodec.Read(field.Field.FieldType, json[field.Key], context));
+                field.Field.SetValue(result, CanonicalJsonValueCodec.Read(field.Field.FieldType, json[field.JsonProperty], context));
             }
             var normalized = EncodeComponent(metadata, result, context);
             if (!string.Equals(normalized, canonicalJson, StringComparison.Ordinal))
-                throw new FormatException($"Component '{metadata.ComponentKey}' JSON is valid but not canonical.");
+                throw new FormatException($"Component '{metadata.RuntimeType.FullName}' JSON is valid but not canonical.");
             return result;
         }
 
@@ -405,22 +429,22 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
 
         private sealed class ComponentMetadata
         {
-            private readonly Dictionary<string, FieldMetadata> _fieldsByKey;
+            private readonly Dictionary<uint, FieldMetadata> _fieldsById;
 
-            public string ComponentKey { get; }
+            public uint ComponentId { get; }
             public Type RuntimeType { get; }
             public IReadOnlyList<FieldMetadata> Fields { get; }
 
             private ComponentMetadata(
-                string componentKey,
+                uint componentId,
                 Type runtimeType,
                 List<FieldMetadata> fields)
             {
-                ComponentKey = componentKey;
+                ComponentId = componentId;
                 RuntimeType = runtimeType;
-                fields.Sort((left, right) => string.CompareOrdinal(left.Key, right.Key));
+                fields.Sort((left, right) => left.Id.CompareTo(right.Id));
                 Fields = fields.AsReadOnly();
-                _fieldsByKey = fields.ToDictionary(field => field.Key, field => field, StringComparer.Ordinal);
+                _fieldsById = fields.ToDictionary(field => field.Id, field => field);
             }
 
             public static ComponentMetadata Create(RuntimeComponentPatchCodec codec)
@@ -429,58 +453,51 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
                     || codec.ComponentRuntimeType.IsAbstract
                     || !typeof(GameRuntimeComponent).IsAssignableFrom(codec.ComponentRuntimeType))
                 {
-                    throw new InvalidOperationException($"Patch codec '{codec.ComponentTypeKey}' has invalid runtime type metadata.");
+                    throw new InvalidOperationException($"Patch codec {codec.ComponentTypeId} has invalid runtime type metadata.");
                 }
 
-                var fields = CollectSerializableFields(codec.ComponentRuntimeType);
-                var result = new List<FieldMetadata>(fields.Count);
-                for (var i = 0; i < fields.Count; i++)
+                var expectedFields = CollectSerializableFields(codec.ComponentRuntimeType);
+                if (codec.FieldCount != expectedFields.Count)
                 {
-                    var field = fields[i];
-                    var attribute = field.GetCustomAttribute<RuntimePatchFieldKeyAttribute>(inherit: false);
-                    var key = attribute == null
-                        ? $"{codec.ComponentTypeKey}/{field.Name}"
-                        : attribute.Key?.Trim();
-                    if (string.IsNullOrWhiteSpace(key)
-                        || !codec.TryGetFieldId(key, out var fieldId)
-                        || !codec.TryGetFieldKey(fieldId, out var roundTrip)
-                        || !string.Equals(key, roundTrip, StringComparison.Ordinal))
+                    throw new InvalidOperationException(
+                        $"Generated codec {codec.ComponentTypeId} exposes {codec.FieldCount} fields, "
+                        + $"but '{codec.ComponentRuntimeType.FullName}' has {expectedFields.Count} serializable fields.");
+                }
+                var result = new List<FieldMetadata>(expectedFields.Count);
+                for (uint fieldId = 0; fieldId < codec.FieldCount; fieldId++)
+                {
+                    if (!codec.TryGetFieldInfo(fieldId, out var field)
+                        || field == null
+                        || !field.Equals(expectedFields[(int)fieldId]))
                     {
                         throw new InvalidOperationException(
-                            $"Generated codec '{codec.ComponentTypeKey}' has no exact active schema mapping for field '{field.Name}' key '{key}'.");
+                            $"Generated codec {codec.ComponentTypeId} has no exact field mapping for id {fieldId} "
+                            + $"on '{codec.ComponentRuntimeType.FullName}'.");
                     }
                     CanonicalJsonValueCodec.ValidateSupportedType(field.FieldType, new HashSet<Type>());
-                    result.Add(new FieldMetadata(fieldId, key, field));
+                    result.Add(new FieldMetadata(fieldId, field));
                 }
-                return new ComponentMetadata(codec.ComponentTypeKey, codec.ComponentRuntimeType, result);
+                return new ComponentMetadata(codec.ComponentTypeId, codec.ComponentRuntimeType, result);
             }
 
-            public FieldMetadata GetField(string key)
+            public FieldMetadata GetField(uint id)
             {
-                if (_fieldsByKey.TryGetValue(key, out var field))
+                if (_fieldsById.TryGetValue(id, out var field))
                     return field;
-                throw new InvalidOperationException($"Component '{ComponentKey}' has no active authored field key '{key}'.");
-            }
-
-            public FieldMetadata GetField(string key, uint fieldId)
-            {
-                var field = GetField(key);
-                if (field.Id != fieldId)
-                    throw new InvalidOperationException($"Component '{ComponentKey}' field key '{key}' maps to id {field.Id}, not {fieldId}.");
-                return field;
+                throw new InvalidOperationException($"Component '{RuntimeType.FullName}' has no field id {id}.");
             }
         }
 
         private sealed class FieldMetadata
         {
             public uint Id { get; }
-            public string Key { get; }
+            public string JsonProperty { get; }
             public FieldInfo Field { get; }
 
-            public FieldMetadata(uint id, string key, FieldInfo field)
+            public FieldMetadata(uint id, FieldInfo field)
             {
                 Id = id;
-                Key = key;
+                JsonProperty = id.ToString(CultureInfo.InvariantCulture);
                 Field = field;
             }
         }

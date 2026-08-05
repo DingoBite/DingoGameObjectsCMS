@@ -81,25 +81,100 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
     {
         public readonly uint SectionId;
         public readonly uint SectionVersion;
-        public readonly byte[] Payload;
+        public readonly int PayloadLength;
+        public readonly IReadOnlyList<RuntimeReplayCheckpointPage> Pages;
+
+        public byte[] Payload => CopyPayload();
 
         public RuntimeReplayCheckpointPreparedSection(
             uint sectionId,
             uint sectionVersion,
             byte[] payload)
+            : this(
+                sectionId,
+                sectionVersion,
+                RuntimeReplayCheckpointPageUtils.Split(payload),
+                payload?.Length ?? 0)
+        {
+        }
+
+        public RuntimeReplayCheckpointPreparedSection(
+            uint sectionId,
+            uint sectionVersion,
+            IReadOnlyList<RuntimeReplayCheckpointPage> pages,
+            int payloadLength)
         {
             if (sectionVersion == 0)
             {
                 throw new ArgumentOutOfRangeException(nameof(sectionVersion));
             }
-            if (payload == null)
+            if (pages == null)
             {
-                throw new ArgumentNullException(nameof(payload));
+                throw new ArgumentNullException(nameof(pages));
+            }
+            if (payloadLength < 0
+                || payloadLength > RuntimeReplayCheckpointCodec.MAX_SECTION_BYTES)
+            {
+                throw new ArgumentOutOfRangeException(nameof(payloadLength));
             }
 
             SectionId = sectionId;
             SectionVersion = sectionVersion;
-            Payload = (byte[])payload.Clone();
+            PayloadLength = payloadLength;
+            if (pages.Count == 0
+                || pages.Count
+                > RuntimeReplayCheckpointCodec.MAX_PAGES_PER_SECTION)
+            {
+                throw new ArgumentOutOfRangeException(nameof(pages));
+            }
+            var copy = new RuntimeReplayCheckpointPage[pages.Count];
+            var actualLength = 0;
+            for (var i = 0; i < pages.Count; i++)
+            {
+                copy[i] = pages[i]
+                          ?? throw new ArgumentException(
+                              $"Prepared checkpoint page {i} is null.",
+                              nameof(pages));
+                if (copy[i].PageIndex != i
+                    || i + 1 < pages.Count
+                    && copy[i].PayloadLength
+                    != RuntimeReplayCheckpointCodec.PAGE_BYTES)
+                {
+                    throw new ArgumentException(
+                        $"Prepared checkpoint page {i} has invalid layout.",
+                        nameof(pages));
+                }
+                actualLength = checked(
+                    actualLength + copy[i].PayloadLength);
+            }
+            if (actualLength != payloadLength)
+            {
+                throw new ArgumentException(
+                    $"Prepared checkpoint pages contain {actualLength} bytes, expected {payloadLength}.",
+                    nameof(payloadLength));
+            }
+            Pages = Array.AsReadOnly(copy);
+        }
+
+        public byte[] CopyPayload()
+        {
+            var result = new byte[PayloadLength];
+            var offset = 0;
+            for (var i = 0; i < Pages.Count; i++)
+            {
+                var payload = Pages[i].UnsafePayload;
+                if (payload.Length > 0)
+                {
+                    Buffer.BlockCopy(
+                        payload,
+                        0,
+                        result,
+                        offset,
+                        payload.Length);
+                }
+                offset += payload.Length;
+            }
+            return result;
         }
     }
 
@@ -290,12 +365,15 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
                 using var writer = new RuntimeReplayCheckpointWriter(
                     maxBytes: RuntimeReplayCheckpointCodec.MAX_SECTION_BYTES);
                 participant.Capture(writer);
-                var payload = writer.ToArray();
+                var pages = writer.ToPages();
                 sections[i] = new RuntimeReplayCheckpointSection(
                     participant.SectionId,
                     participant.CurrentVersion,
-                    payload,
-                    RuntimeReplayHash.CalculateSha256(payload));
+                    pages,
+                    writer.Length,
+                    RuntimeReplayHash.CalculateSha256(
+                        pages,
+                        writer.Length));
             }
 
             return RuntimeReplayCheckpointCodec.Create(
@@ -320,11 +398,13 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
                         maxBytes:
                         RuntimeReplayCheckpointCodec.MAX_SECTION_BYTES);
                 participant.AppendFingerprint(writer);
+                var pages = writer.ToPages();
                 sections[i] =
                     new RuntimeReplayCheckpointFingerprintSection(
                         participant.SectionId,
                         RuntimeReplayHash.CalculateSha256(
-                            writer.ToArray()));
+                            pages,
+                            writer.Length));
             }
 
             return RuntimeReplayCheckpointFingerprintCodec.Create(
@@ -380,23 +460,21 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
             {
                 var participant = _orderedParticipants[i];
                 var source = checkpoint.Sections[i];
-                var payload = MigrateToCurrentVersion(
+                var preparedSection = MigrateToCurrentVersion(
                     source,
                     participant.CurrentVersion);
                 if (participant is IRuntimeReplayCheckpointPrevalidator
                     prevalidator)
                 {
                     using var reader = new RuntimeReplayCheckpointReader(
-                        payload,
+                        preparedSection.Pages,
+                        preparedSection.PayloadLength,
                         RuntimeReplayCheckpointCodec.MAX_SECTION_BYTES);
                     prevalidator.Prevalidate(reader);
                     reader.RequireEnd();
                 }
 
-                prepared[i] = new RuntimeReplayCheckpointPreparedSection(
-                    participant.SectionId,
-                    participant.CurrentVersion,
-                    payload);
+                prepared[i] = preparedSection;
             }
 
             var validationContext =
@@ -412,7 +490,8 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
                 }
 
                 using var reader = new RuntimeReplayCheckpointReader(
-                    prepared[i].Payload,
+                    prepared[i].Pages,
+                    prepared[i].PayloadLength,
                     RuntimeReplayCheckpointCodec.MAX_SECTION_BYTES);
                 contributor.ContributeValidationContext(
                     reader,
@@ -430,7 +509,8 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
                 }
 
                 using var reader = new RuntimeReplayCheckpointReader(
-                    prepared[i].Payload,
+                    prepared[i].Pages,
+                    prepared[i].PayloadLength,
                     RuntimeReplayCheckpointCodec.MAX_SECTION_BYTES);
                 prevalidator.Prevalidate(
                     reader,
@@ -486,7 +566,8 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
                 }
 
                 using var reader = new RuntimeReplayCheckpointReader(
-                    section.Payload,
+                    section.Pages,
+                    section.PayloadLength,
                     RuntimeReplayCheckpointCodec.MAX_SECTION_BYTES);
                 participant.Restore(reader);
                 reader.RequireEnd();
@@ -520,7 +601,8 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
             }
         }
 
-        private byte[] MigrateToCurrentVersion(
+        private RuntimeReplayCheckpointPreparedSection
+            MigrateToCurrentVersion(
             RuntimeReplayCheckpointSection source,
             uint targetVersion)
         {
@@ -532,7 +614,16 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
             }
 
             var version = source.SectionVersion;
-            var payload = (byte[])source.Payload.Clone();
+            if (version == targetVersion)
+            {
+                return new RuntimeReplayCheckpointPreparedSection(
+                    source.SectionId,
+                    source.SectionVersion,
+                    source.Pages,
+                    source.PayloadLength);
+            }
+
+            var payload = source.CopyPayload();
             while (version < targetVersion)
             {
                 var key = new RuntimeReplayCheckpointMigrationKey(
@@ -555,7 +646,10 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
                 payload = writer.ToArray();
                 version = step.ToVersion;
             }
-            return payload;
+            return new RuntimeReplayCheckpointPreparedSection(
+                source.SectionId,
+                targetVersion,
+                payload);
         }
 
         private Dictionary<uint, string> CalculateSectionSchemaHashes()
@@ -569,11 +663,27 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
                     new RuntimeReplayCheckpointWriter();
                 sectionWriter.WriteString(
                     "cms.runtime-replay.checkpoint-section");
-                sectionWriter.WriteUInt32(1);
+                sectionWriter.WriteUInt32(2);
                 sectionWriter.WriteUInt32(participant.SectionId);
                 sectionWriter.WriteUInt32(participant.CurrentVersion);
                 sectionWriter.WriteString(
                     GetParticipantTypeKey(participant));
+
+                if (participant
+                    is IRuntimeReplayCheckpointSchemaFingerprintContributor
+                    schemaContributor)
+                {
+                    sectionWriter.WriteBoolean(true);
+                    var schemaBlock =
+                        sectionWriter.BeginLengthPrefixedBlock();
+                    schemaContributor.AppendCheckpointSchemaFingerprint(
+                        sectionWriter);
+                    sectionWriter.EndLengthPrefixedBlock(schemaBlock);
+                }
+                else
+                {
+                    sectionWriter.WriteBoolean(false);
+                }
 
                 var migrations = _migrations.Values
                     .Where(value =>
@@ -617,7 +727,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
             using var writer = new RuntimeReplayCheckpointWriter();
             writer.WriteString(
                 "cms.runtime-replay.checkpoint-registry");
-            writer.WriteUInt32(1);
+            writer.WriteUInt32(2);
             writer.WriteInt32(_orderedParticipants.Length);
             for (var i = 0; i < _orderedParticipants.Length; i++)
             {

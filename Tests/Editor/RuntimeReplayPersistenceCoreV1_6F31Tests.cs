@@ -70,6 +70,33 @@ namespace DingoGameObjectsCMS.Tests.Editor
         }
     }
 
+    public class ReplayCheckpointSchemaFingerprintParticipant6F31 :
+        ReplayCheckpointTestParticipant6F31,
+        IRuntimeReplayCheckpointSchemaFingerprintContributor
+    {
+        private readonly string _schemaFingerprint;
+
+        public ReplayCheckpointSchemaFingerprintParticipant6F31(
+            uint sectionId,
+            uint currentVersion,
+            string schemaFingerprint)
+            : base(
+                sectionId,
+                currentVersion,
+                value: 0,
+                fingerprintValue: 0)
+        {
+            _schemaFingerprint = schemaFingerprint;
+        }
+
+        public void AppendCheckpointSchemaFingerprint(
+            RuntimeReplayCheckpointWriter writer)
+        {
+            writer.WriteString("test.generated-state-schema");
+            writer.WriteString(_schemaFingerprint);
+        }
+    }
+
     public class RuntimeReplayPersistenceCoreV1_6F31Tests
     {
         private string _temporaryDirectory;
@@ -232,6 +259,45 @@ namespace DingoGameObjectsCMS.Tests.Editor
             Assert.That(
                 roundTrip.OverallHash,
                 Is.EqualTo(firstFingerprint.OverallHash));
+        }
+
+        [Test]
+        public void Registry_ParticipantSchemaFingerprintChangesSectionAndOverallSchema()
+        {
+            var first = new RuntimeReplayCheckpointRegistry();
+            first.RegisterParticipant(
+                new ReplayCheckpointSchemaFingerprintParticipant6F31(
+                    sectionId: 10,
+                    currentVersion: 1,
+                    schemaFingerprint: new string('a', 64)));
+            first.Seal();
+
+            var same = new RuntimeReplayCheckpointRegistry();
+            same.RegisterParticipant(
+                new ReplayCheckpointSchemaFingerprintParticipant6F31(
+                    sectionId: 10,
+                    currentVersion: 1,
+                    schemaFingerprint: new string('a', 64)));
+            same.Seal();
+
+            var changed = new RuntimeReplayCheckpointRegistry();
+            changed.RegisterParticipant(
+                new ReplayCheckpointSchemaFingerprintParticipant6F31(
+                    sectionId: 10,
+                    currentVersion: 1,
+                    schemaFingerprint: new string('b', 64)));
+            changed.Seal();
+
+            Assert.That(
+                first.SectionSchemaHashes[10],
+                Is.EqualTo(same.SectionSchemaHashes[10]));
+            Assert.That(first.SchemaHash, Is.EqualTo(same.SchemaHash));
+            Assert.That(
+                first.SectionSchemaHashes[10],
+                Is.Not.EqualTo(changed.SectionSchemaHashes[10]));
+            Assert.That(
+                first.SchemaHash,
+                Is.Not.EqualTo(changed.SchemaHash));
         }
 
         [Test]

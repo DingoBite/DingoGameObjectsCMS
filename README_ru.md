@@ -326,22 +326,38 @@ View-слой может подписываться на runtime-объекты 
 
 - дефолтный serializer — `JsonRuntimePayloadSerializer`
 - глобальная точка подмены — `RuntimePayloadSerialization`
-- для runtime-компонентов используется manifest type id с явным компактным `Id`, стабильным `Key` и `RegistryHash`
+- для runtime-компонентов используется generated compiled таблица `Type -> Id` с прямыми CLR `Type`, компактными числовыми ids, числовыми резервациями и `RegistryHash`
 
-Обязательный runtime artifact:
+Обязательный project artifact:
 
 ```text
-Assets/StreamingAssets/runtime_component_types.json
+<project>/Generated/RuntimeComponentTypes.Generated.cs
+<project>/Generated/RuntimePatchCodecs.Generated.cs
 ```
 
-Он нужен для:
+Он компилируется в player и нужен для:
 
 - сетевой репликации runtime-компонентов
 - десериализации runtime-компонентов по `compTypeId`
 
-В manifest entry поле `Id` является компактным ключом payload-а. `Key` — стабильное protocol-имя типа компонента; если компоненту нужно явное имя, добавьте `[RuntimeComponentKey("...")]` на `GameRuntimeComponent`. `RegistryHash` считается по canonical списку `(Id, Key, AssemblyName, TypeName)` и предназначен для проверки совместимости между build-ами.
+Entry содержит только компактный payload `Id` и прямой `RuntimeType = typeof(T)`. Идентичностью для генератора и runtime является сам CLR `Type`; строковых component key, type name, assembly name и alias-контракта нет. Удалённые слоты сохраняются только как числовые `ReservedIds`, без метаданных удалённого CLR-типа. `RegistryHash` покрывает активную таблицу `Type -> Id` и числовые резервации и предназначен для проверки совместимости между build-ами. Runtime не читает эту таблицу из JSON и не ищет типы компонентов reflection-ом.
 
-Во время активной разработки manifest можно регенерировать через `Tools/Runtime Types/Generate Manifest` или через build preprocess. Перед релизом относитесь к нему как к append-only protocol table: сохраняйте существующие id, осознанно резервируйте removed/renamed entries и используйте hash для multiplayer compatibility validation.
+JSON `GameRuntimeObject` и `GameRuntimeCommand` кодирует каждый компонент явной парой: числовой `TypeId` и `Payload`. Json.NET `$type`, serialization binder, CLR-имена, имена assembly, runtime-сканирование assembly и legacy aliases не используются.
+
+Во время активной разработки таблица регенерируется через project binding для `RuntimeComponentTypeManifestGenerator` или build preprocess. Эта привязка задаёт явный project scope активных типов и напрямую передаёт предыдущий generated static `CreateManifest`; поиска provider по имени нет. Типы, вышедшие из scope, исчезают из активной таблицы, а их ids становятся append-only числовыми резервациями. Диагностический JSON при необходимости допустим только в удаляемой Editor `.temp` папке и никогда не является runtime-authority. Это не относится к внешним `manifest.json` модов: они остаются данными mod packaging protocol.
+
+Generated artifact с patch-кодеками следует тому же правилу. Активные записи
+компонентов keyed by прямыми `Type`. Generated codecs адресуют поля компактными
+числовыми ids и прямым доступом к членам. Patch-схема содержит только активные
+компоненты и их текущую generated-разметку полей: удалённые patch-поля не
+оставляют tombstones или имена. Постоянные резервации component slots относятся
+к отдельному runtime component type registry. Runtime-binary и authoring patches
+сохраняют только `ComponentTypeId`/`FieldId`; CLR-типы и `FieldInfo` существуют
+только в compiled lookup-таблицах. Artifact не содержит строковой идентичности
+компонентов, CLR/assembly names, value signatures или записей об удалённых
+элементах. `SchemaHash`, прямые кодеки и static `CreateManifest` лежат в одном
+compiled C# authority. Генератор patch-схемы не читает/не публикует mutable
+`runtime_patch_schema.json`.
 
 ## Сетевая синхронизация
 
@@ -457,7 +473,7 @@ interest membership можно группировать и кодировать 
 - `SubAssetFixer`
   - пересобирает sub-assets после импорта
 - `RuntimeComponentTypeManifestGenerator`
-  - обновляет manifest runtime component type id и registry hash
+  - генерирует compiled direct-`Type` runtime table, компактные ids, числовые резервации и registry hash
 
 Эти инструменты нужны не только для удобства редактора. Они поддерживают главный контракт системы: asset shape, versioning, serialization и runtime reconstruction должны совпадать.
 
@@ -487,7 +503,7 @@ interest membership можно группировать и кодировать 
 
 - фреймворк сознательно добавляет свой runtime-слой поверх ECS, а не заменяет его
 - high-level код должен идти через `RuntimeExecutionContext` / `RS`, а low-level infrastructure всё ещё может работать с explicit realm
-- serialization manifest нужно держать в актуальном состоянии
+- generated serialization schemas нужно держать актуальными и checked-in
 - persistent storage service не входит в поставку
 - Mirror-слой опционален, но при его использовании нужно соблюдать контракт snapshot/delta
 - versioning помогает с shape evolution, но migration policy всё равно должна быть продумана на уровне проекта

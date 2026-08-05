@@ -15,7 +15,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
         public const int MAX_NESTED_PATCH_BYTES = 64 * 1024 * 1024;
 
         private const uint AUTHORING_PATCH_MAGIC = 0x31415047;
-        private const uint AUTHORING_PATCH_VERSION = 1;
+        private const uint AUTHORING_PATCH_VERSION = 2;
 
         public static void RequireCollectionCountForWrite(int count)
         {
@@ -177,7 +177,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
             for (var componentIndex = 0; componentIndex < canonical.Components.Count; componentIndex++)
             {
                 var component = canonical.Components[componentIndex];
-                writer.WriteString(component.ComponentTypeKey);
+                writer.WriteUInt32(component.ComponentTypeId);
                 writer.WriteByte((byte)component.Kind);
                 writer.WriteString(component.CanonicalJson);
                 RuntimePatchGeneratedValueCodec.RequireCollectionCountForWrite(component.Fields.Count);
@@ -185,7 +185,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
                 for (var fieldIndex = 0; fieldIndex < component.Fields.Count; fieldIndex++)
                 {
                     var field = component.Fields[fieldIndex];
-                    writer.WriteString(field.FieldKey);
+                    writer.WriteUInt32(field.FieldId);
                     writer.WriteByte((byte)field.Kind);
                     writer.WriteString(field.CanonicalJson);
                 }
@@ -213,14 +213,14 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
             for (var componentIndex = 0; componentIndex < componentCount; componentIndex++)
             {
                 var component = ComponentPatch.Authoring(
-                    reader.ReadString(),
+                    reader.ReadUInt32(),
                     (ComponentPatchKind)reader.ReadByte(),
                     reader.ReadString());
                 var fieldCount = ReadRequiredCount(reader, "field");
                 for (var fieldIndex = 0; fieldIndex < fieldCount; fieldIndex++)
                 {
                     component.Fields.Add(FieldPatch.Authoring(
-                        reader.ReadString(),
+                        reader.ReadUInt32(),
                         (FieldPatchKind)reader.ReadByte(),
                         reader.ReadString()));
                 }

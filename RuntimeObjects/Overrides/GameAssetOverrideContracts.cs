@@ -117,27 +117,25 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
     [Serializable, Preserve]
     public class FieldPatch
     {
-        [NonSerialized, JsonIgnore] public uint FieldId;
-        public string FieldKey;
+        public uint FieldId;
         public FieldPatchKind Kind;
         [NonSerialized, JsonIgnore] public byte[] Payload;
         public string CanonicalJson;
 
         public FieldPatch() { }
 
-        public FieldPatch(uint fieldId, string fieldKey, FieldPatchKind kind, byte[] payload = null)
+        public FieldPatch(uint fieldId, FieldPatchKind kind, byte[] payload = null)
         {
             FieldId = fieldId;
-            FieldKey = fieldKey;
             Kind = kind;
             Payload = payload;
         }
 
-        public static FieldPatch Authoring(string fieldKey, FieldPatchKind kind, string canonicalJson = null)
+        public static FieldPatch Authoring(uint fieldId, FieldPatchKind kind, string canonicalJson = null)
         {
             return new FieldPatch
             {
-                FieldKey = fieldKey,
+                FieldId = fieldId,
                 Kind = kind,
                 CanonicalJson = canonicalJson,
             };
@@ -147,8 +145,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
     [Serializable, Preserve]
     public class ComponentPatch
     {
-        [NonSerialized, JsonIgnore] public uint ComponentTypeId;
-        public string ComponentTypeKey;
+        public uint ComponentTypeId;
         public ComponentPatchKind Kind;
         [NonSerialized, JsonIgnore] public byte[] Payload;
         public string CanonicalJson;
@@ -156,22 +153,21 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
 
         public ComponentPatch() { }
 
-        public ComponentPatch(uint componentTypeId, string componentTypeKey, ComponentPatchKind kind, byte[] payload = null)
+        public ComponentPatch(uint componentTypeId, ComponentPatchKind kind, byte[] payload = null)
         {
             ComponentTypeId = componentTypeId;
-            ComponentTypeKey = componentTypeKey;
             Kind = kind;
             Payload = payload;
         }
 
         public static ComponentPatch Authoring(
-            string componentTypeKey,
+            uint componentTypeId,
             ComponentPatchKind kind,
             string canonicalJson = null)
         {
             return new ComponentPatch
             {
-                ComponentTypeKey = componentTypeKey,
+                ComponentTypeId = componentTypeId,
                 Kind = kind,
                 CanonicalJson = canonicalJson,
             };

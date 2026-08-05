@@ -8,29 +8,18 @@ using Unity.Entities;
 
 namespace DingoGameObjectsCMS.RuntimeObjects.Replay
 {
-    public interface IRuntimeDotsCheckpointExporter
-    {
-        uint ExporterId { get; }
-
-        void Export(in RuntimeDotsCheckpointContext context);
-    }
-
     public class RuntimeDotsCheckpointGroup
     {
-        private readonly IRuntimeDotsCheckpointExporter[] _exporters;
-
         public string GroupId { get; }
         public RuntimeReplayStoreScope StoreScope { get; }
         public RuntimeCommandJournalScope JournalScope { get; }
         public RuntimeCommandJournalRetentionPolicy RetentionPolicy { get; }
-        public int ExporterCount => _exporters.Length;
 
         public RuntimeDotsCheckpointGroup(
             string groupId,
             RuntimeReplayStoreScope storeScope,
             RuntimeCommandJournalScope journalScope,
-            in RuntimeCommandJournalRetentionPolicy retentionPolicy,
-            IEnumerable<IRuntimeDotsCheckpointExporter> exporters = null)
+            in RuntimeCommandJournalRetentionPolicy retentionPolicy)
         {
             RuntimeReplayId.Validate(groupId, nameof(groupId));
             if (journalScope == null)
@@ -45,12 +34,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
             StoreScope = storeScope;
             JournalScope = journalScope;
             RetentionPolicy = retentionPolicy;
-            _exporters = OrderAndValidateExporters(exporters);
-        }
-
-        public IRuntimeDotsCheckpointExporter TakeExporter(int index)
-        {
-            return _exporters[index];
         }
 
         private static void ValidateJournalCoverage(
@@ -95,123 +78,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
             }
         }
 
-        private static IRuntimeDotsCheckpointExporter[]
-            OrderAndValidateExporters(
-                IEnumerable<IRuntimeDotsCheckpointExporter> exporters)
-        {
-            if (exporters == null)
-            {
-                return Array.Empty<IRuntimeDotsCheckpointExporter>();
-            }
-
-            var ordered = new List<IRuntimeDotsCheckpointExporter>();
-            foreach (var exporter in exporters)
-            {
-                if (exporter == null)
-                {
-                    throw new ArgumentException(
-                        "A DOTS checkpoint exporter cannot be null.",
-                        nameof(exporters));
-                }
-
-                ordered.Add(exporter);
-            }
-
-            ordered.Sort(
-                (left, right) => left.ExporterId.CompareTo(right.ExporterId));
-            for (var i = 1; i < ordered.Count; i++)
-            {
-                if (ordered[i - 1].ExporterId != ordered[i].ExporterId)
-                {
-                    continue;
-                }
-
-                throw new ArgumentException(
-                    $"DOTS checkpoint exporter id '{ordered[i].ExporterId}' is registered twice.",
-                    nameof(exporters));
-            }
-
-            return ordered.ToArray();
-        }
-    }
-
-    public readonly struct RuntimeDotsCheckpointContext
-    {
-        public readonly RuntimeDotsCheckpointGroup Group;
-        public readonly World World;
-        public readonly StoreRealm Realm;
-        public readonly long CompletedTick;
-        public readonly ulong JournalCursor;
-        private readonly RuntimeStoresReplayCheckpointStage _storeStage;
-
-        public RuntimeDotsCheckpointContext(
-            RuntimeDotsCheckpointGroup group,
-            World world,
-            StoreRealm realm,
-            long completedTick,
-            ulong journalCursor,
-            RuntimeStoresReplayCheckpointStage storeStage = null)
-        {
-            Group = group
-                    ?? throw new ArgumentNullException(nameof(group));
-            World = world != null && world.IsCreated
-                ? world
-                : throw new ArgumentException(
-                    "A DOTS checkpoint context requires a created ECS World.",
-                    nameof(world));
-            if (completedTick < 0)
-            {
-                throw new ArgumentOutOfRangeException(nameof(completedTick));
-            }
-
-            Realm = realm;
-            CompletedTick = completedTick;
-            JournalCursor = journalCursor;
-            _storeStage = storeStage;
-        }
-
-        public bool TryTakeStore(
-            FixedString32Bytes storeId,
-            out RuntimeStore store)
-        {
-            if (Group.StoreScope != null
-                && !Group.StoreScope.Contains(storeId))
-            {
-                store = null;
-                return false;
-            }
-
-            return _storeStage != null
-                ? _storeStage.TryTakeStore(storeId, out store)
-                : RuntimeStores.TryGetRuntimeStore(
-                    storeId,
-                    Realm,
-                    out store);
-        }
-
-        public RuntimeStore TakeStore(FixedString32Bytes storeId)
-        {
-            if (Group.StoreScope != null
-                && !Group.StoreScope.Contains(storeId))
-            {
-                throw new InvalidOperationException(
-                    $"RuntimeStore '{storeId}' is outside checkpoint group '{Group.GroupId}'.");
-            }
-            RuntimeStore store;
-            var hasStore = _storeStage != null
-                ? _storeStage.TryTakeStore(storeId, out store)
-                : RuntimeStores.TryGetRuntimeStore(
-                    storeId,
-                    Realm,
-                    out store);
-            if (!hasStore)
-            {
-                throw new InvalidOperationException(
-                    $"RuntimeStore '{storeId}' is not active in realm {Realm}.");
-            }
-
-            return store;
-        }
     }
 
     public readonly struct RuntimeCheckpointBoundary
@@ -246,6 +112,36 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
         }
     }
 
+    public class RuntimeRecoveryCheckpoint
+    {
+        public readonly RuntimeCheckpointBoundary Boundary;
+        public readonly RuntimeReplayCheckpointEnvelope Envelope;
+
+        public RuntimeRecoveryCheckpoint(
+            in RuntimeCheckpointBoundary boundary,
+            RuntimeReplayCheckpointEnvelope envelope)
+        {
+            Envelope = envelope
+                       ?? throw new ArgumentNullException(nameof(envelope));
+            RuntimeReplayCheckpointCodec.Validate(envelope);
+            var checkpointHash = RuntimeReplayHash.ToHex(
+                envelope.OverallHash);
+            if (boundary.CompletedTick != envelope.CompletedTick
+                || boundary.JournalCursor != envelope.Cursor
+                || !string.Equals(
+                    boundary.CheckpointHash,
+                    checkpointHash,
+                    StringComparison.Ordinal))
+            {
+                throw new ArgumentException(
+                    "Recovery boundary does not identify the supplied checkpoint envelope.",
+                    nameof(boundary));
+            }
+
+            Boundary = boundary;
+        }
+    }
+
     public class RuntimeDotsCheckpointCoordinator
     {
         private readonly struct RuntimeCheckpointStoreVersion
@@ -268,8 +164,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
         private readonly RuntimeCommandsBus _commandsBus;
         private readonly RuntimeCommandJournal _journal;
         private readonly RuntimeReplayCheckpointRegistry _checkpointRegistry;
-        private readonly RuntimeStoresReplayCheckpointParticipant
-            _storeCheckpointParticipant;
         private readonly World _world;
         private readonly StoreRealm _realm;
 
@@ -311,10 +205,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
                 throw new InvalidOperationException(
                     "A DOTS checkpoint coordinator requires a sealed checkpoint registry.");
             }
-            checkpointRegistry.TryTakeParticipant<
-                RuntimeStoresReplayCheckpointParticipant>(
-                out var storeCheckpointParticipant);
-            _storeCheckpointParticipant = storeCheckpointParticipant;
             _world = world != null && world.IsCreated
                 ? world
                 : throw new ArgumentException(
@@ -339,57 +229,14 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
             }
 
             _captureInProgress = true;
-            RuntimeStoresReplayCheckpointStage storeStage = null;
             try
             {
                 var journalCursor = _journal.Cursor;
                 _world.EntityManager.CompleteAllTrackedJobs();
-                storeStage = PrepareStoreStage();
-
-                var context = new RuntimeDotsCheckpointContext(
-                    _group,
-                    _world,
-                    _realm,
+                FlushScopedStoresToQuiescence();
+                var checkpoint = _checkpointRegistry.Capture(
                     completedTick,
-                    journalCursor,
-                    storeStage);
-                for (var i = 0; i < _group.ExporterCount; i++)
-                {
-                    _group.TakeExporter(i).Export(in context);
-                }
-
-                if (storeStage != null)
-                {
-                    storeStage.FlushToQuiescence();
-                }
-                else
-                {
-                    FlushScopedStoresToQuiescence();
-                }
-
-                RuntimeReplayCheckpointEnvelope checkpoint;
-                if (storeStage != null)
-                {
-                    _storeCheckpointParticipant.BeginCaptureFromStage(
-                        storeStage);
-                    try
-                    {
-                        checkpoint = _checkpointRegistry.Capture(
-                            completedTick,
-                            journalCursor);
-                    }
-                    finally
-                    {
-                        _storeCheckpointParticipant.EndCaptureFromStage(
-                            storeStage);
-                    }
-                }
-                else
-                {
-                    checkpoint = _checkpointRegistry.Capture(
-                        completedTick,
-                        journalCursor);
-                }
+                    journalCursor);
                 if (_journal.Cursor != journalCursor)
                 {
                     throw new InvalidOperationException(
@@ -400,11 +247,9 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
                     completedTick,
                     journalCursor,
                     RuntimeReplayHash.ToHex(checkpoint.OverallHash));
-                var storeRevisions =
-                    CaptureScopedStoreRevisions(storeStage);
+                var storeRevisions = CaptureScopedStoreRevisions();
                 ValidateJournalCommit(journalCursor);
 
-                storeStage?.Publish();
                 _journal.CommitCheckpoint(
                     _group.GroupId,
                     journalCursor);
@@ -416,7 +261,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
             }
             finally
             {
-                storeStage?.Dispose();
                 _captureInProgress = false;
             }
         }
@@ -492,35 +336,13 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
                 : null;
         }
 
-        private RuntimeStoresReplayCheckpointStage PrepareStoreStage()
+        public RuntimeRecoveryCheckpoint ProvideRecoveryCheckpoint()
         {
-            if (_group.StoreScope == null)
-            {
-                var hasActiveStore = false;
-                foreach (var unused in RuntimeStores.EnumerateStores(_realm))
-                {
-                    hasActiveStore = true;
-                    break;
-                }
-                if (!hasActiveStore)
-                {
-                    return null;
-                }
-            }
-
-            if (_storeCheckpointParticipant == null)
-            {
-                throw new InvalidOperationException(
-                    "A DOTS checkpoint that exports RuntimeStore state requires RuntimeStoresReplayCheckpointParticipant in its checkpoint registry.");
-            }
-            if (_storeCheckpointParticipant.Realm != _realm)
-            {
-                throw new InvalidOperationException(
-                    $"DOTS checkpoint realm {_realm} does not match its RuntimeStore replay participant realm {_storeCheckpointParticipant.Realm}.");
-            }
-
-            return _storeCheckpointParticipant.PrepareCheckpointStage(
-                _group.StoreScope);
+            return TryTakeRecoveryBoundary(out var boundary)
+                ? new RuntimeRecoveryCheckpoint(
+                    boundary,
+                    CurrentCheckpoint)
+                : null;
         }
 
         private void ValidateJournalCommit(ulong cursor)
@@ -603,40 +425,13 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
         }
 
         private Dictionary<FixedString32Bytes, RuntimeCheckpointStoreVersion>
-            CaptureScopedStoreRevisions(
-                RuntimeStoresReplayCheckpointStage storeStage)
+            CaptureScopedStoreRevisions()
         {
             var revisions =
                 new Dictionary<
                     FixedString32Bytes,
                     RuntimeCheckpointStoreVersion>();
             var storeScope = _group.StoreScope;
-            if (storeStage != null)
-            {
-                if (storeScope == null)
-                {
-                    for (var i = 0; i < storeStage.Stores.Count; i++)
-                    {
-                        var store = storeStage.Stores[i];
-                        revisions.Add(
-                            store.Id,
-                            new RuntimeCheckpointStoreVersion(store));
-                    }
-
-                    return revisions;
-                }
-
-                for (var i = 0; i < storeScope.Count; i++)
-                {
-                    var storeId = storeScope.TakeStoreId(i);
-                    var store = storeStage.TakeStore(storeId);
-                    revisions.Add(
-                        storeId,
-                        new RuntimeCheckpointStoreVersion(store));
-                }
-
-                return revisions;
-            }
             if (storeScope == null)
             {
                 var stores = new List<RuntimeStore>(

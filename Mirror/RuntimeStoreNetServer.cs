@@ -49,7 +49,8 @@ namespace DingoGameObjectsCMS.Mirror
                     SendCommandResult,
                     RuntimeReliableDeltaTransportBudget.Fits,
                     SendStateStreamMessage,
-                    SendJournalBatch));
+                    SendJournalBatch,
+                    SendCheckpointChunk));
             _coordinator.ConnectionInvalidated += DisconnectInvalidatedConnection;
 
             NetworkServer.RegisterHandler<RtSessionHello>(OnHello, requireAuthentication: true);
@@ -218,6 +219,15 @@ namespace DingoGameObjectsCMS.Mirror
         private static void SendBaselineChunk(int connectionId, RuntimeBaselineChunk chunk)
         {
             RequireConnection(connectionId).Send(new RtBaselineChunk { Value = chunk }, Channels.Reliable);
+        }
+
+        private static void SendCheckpointChunk(
+            int connectionId,
+            RuntimeCheckpointChunk chunk)
+        {
+            RequireConnection(connectionId).Send(
+                new RtCheckpointChunk { Value = chunk },
+                Channels.Reliable);
         }
 
         private static void SendDelta(int connectionId, RuntimeClientDeltaEnvelope delta)

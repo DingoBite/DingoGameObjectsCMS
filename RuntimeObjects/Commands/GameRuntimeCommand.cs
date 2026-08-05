@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Runtime.Serialization;
 using DingoGameObjectsCMS.RuntimeObjects.Objects;
 using DingoGameObjectsCMS.RuntimeObjects.Stores;
+using DingoGameObjectsCMS.Serialization;
 using Newtonsoft.Json;
 using Unity.Collections;
 using UnityEngine;
@@ -16,7 +17,8 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
         public GameAssetKey Key;
         public Hash128 AssetGUID;
 
-        [SerializeReference, JsonProperty("Components", ItemTypeNameHandling = TypeNameHandling.Auto)] private List<GameRuntimeComponent> _components = new();
+        [SerializeReference, JsonProperty("Components", ItemConverterType = typeof(RuntimeComponentJsonConverter))]
+        private List<GameRuntimeComponent> _components = new();
         [NonSerialized, JsonIgnore] private Dictionary<Type, GameRuntimeComponent> _componentsByType;
         [NonSerialized, JsonIgnore] private Dictionary<uint, GameRuntimeComponent> _componentsById;
 

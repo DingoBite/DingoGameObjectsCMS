@@ -51,12 +51,15 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
         private readonly Dictionary<NetStoreRef, InitialStoreState> _initialStores = new();
         private readonly Dictionary<NetStoreRef, RuntimeClientLogicalEnvelopeReceiver> _receivers = new();
         private readonly List<RuntimeCommandJournalBatch> _pendingJournalBatches = new();
+        private readonly RuntimeCheckpointChunkAssembler _checkpointAssembler = new();
         private ulong _nextCommandSequence;
         private RuntimeCheckpointBoundary? _initialCheckpointBoundary;
+        private RuntimeRecoveryCheckpoint _initialRecoveryCheckpoint;
         private RuntimeCommandJournalCatchupReceiver _journalReceiver;
         private int _pendingJournalEntryCount;
         private int _pendingJournalPayloadBytes;
         private bool _initialCheckpointBoundaryObserved;
+        private double _checkpointWaitStartedAt;
         private bool _baselineGroupPublished;
         private bool _journalCatchupObserved;
         private bool _journalFullBaselineRequested;
@@ -161,7 +164,10 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             _journalCatchupObserved = false;
             _journalFullBaselineRequested = false;
             _initialCheckpointBoundary = null;
+            _initialRecoveryCheckpoint = null;
             _initialCheckpointBoundaryObserved = false;
+            _checkpointWaitStartedAt = 0;
+            _checkpointAssembler.Reset();
             for (var i = 0; i < _handshake.Manifest.Stores.Count; i++)
             {
                 var entry = _handshake.Manifest.Stores[i];
@@ -284,6 +290,85 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             var result = receiver.ReceiveDelta(delta, nowSeconds);
             ProcessReceiveResult(receiver, result);
             return result;
+        }
+
+        public RuntimeClientReceiveResult ReceiveCheckpointChunk(
+            in RuntimeCheckpointChunk chunk,
+            double nowSeconds)
+        {
+            ThrowIfDisposed();
+            if (_handshake.Manifest == null
+                || chunk.SessionId != _handshake.Manifest.SessionId)
+            {
+                return Rejected(
+                    RuntimeProtocolRejectCode.SessionNotReady);
+            }
+            if (_context.RestoreCheckpointStage == null)
+            {
+                return Rejected(
+                    RuntimeProtocolRejectCode.InvalidManifest);
+            }
+
+            RuntimeCheckpointBoundary chunkBoundary;
+            try
+            {
+                chunkBoundary = TakeCheckpointBoundary(chunk);
+            }
+            catch (Exception exception) when (
+                exception is ArgumentException
+                || exception is InvalidOperationException)
+            {
+                return RequestInitialCheckpointGroupResync();
+            }
+            if (_initialCheckpointBoundaryObserved
+                && !CheckpointBoundariesEqual(
+                    _initialCheckpointBoundary,
+                    chunkBoundary))
+            {
+                return RequestInitialCheckpointGroupResync();
+            }
+
+            var result = _checkpointAssembler.Accept(
+                chunk,
+                nowSeconds,
+                out var checkpoint);
+            switch (result)
+            {
+                case RuntimeCheckpointChunkResult.Accepted:
+                case RuntimeCheckpointChunkResult.Duplicate:
+                    return Accepted(
+                        RuntimeClientReceiveResultKind.Accepted);
+                case RuntimeCheckpointChunkResult.DuplicateCompleted:
+                    return Accepted(
+                        RuntimeClientReceiveResultKind.Duplicate);
+                case RuntimeCheckpointChunkResult.Completed:
+                    if (!_initialCheckpointBoundaryObserved)
+                    {
+                        _initialCheckpointBoundary =
+                            checkpoint.Boundary;
+                        _initialCheckpointBoundaryObserved = true;
+                    }
+                    else if (!CheckpointBoundariesEqual(
+                                 _initialCheckpointBoundary,
+                                 checkpoint.Boundary))
+                    {
+                        return RequestInitialCheckpointGroupResync();
+                    }
+
+                    _initialRecoveryCheckpoint = checkpoint;
+                    _checkpointWaitStartedAt = 0;
+                    return TryPublishInitialGroup(nowSeconds);
+                case RuntimeCheckpointChunkResult.TimedOut:
+                case RuntimeCheckpointChunkResult.Invalid:
+                case RuntimeCheckpointChunkResult.ConflictingTransfer:
+                case RuntimeCheckpointChunkResult.Corrupt:
+                    return RequestInitialCheckpointGroupResync();
+                default:
+                    throw new ArgumentOutOfRangeException(
+                        nameof(result),
+                        result,
+                        null);
+            }
         }
 
         public void ReceiveCommandResult(in RuntimeCommandResult result)
@@ -410,6 +495,18 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                         RequestInitialResync(initial);
                     }
                 }
+                if (_checkpointAssembler.Tick(nowSeconds)
+                    == RuntimeCheckpointChunkResult.TimedOut)
+                {
+                    RequestInitialCheckpointGroupResync();
+                    return;
+                }
+                if (_checkpointWaitStartedAt > 0
+                    && nowSeconds - _checkpointWaitStartedAt
+                    > RuntimeProtocol.BASELINE_TIMEOUT_SECONDS)
+                {
+                    RequestInitialCheckpointGroupResync();
+                }
                 return;
             }
 
@@ -442,6 +539,8 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             _receivers.Clear();
             _pendingJournalBatches.Clear();
             _journalReceiver = null;
+            _initialRecoveryCheckpoint = null;
+            _checkpointAssembler.Reset();
             _pendingJournalEntryCount = 0;
             _pendingJournalPayloadBytes = 0;
             _baselineGroupPublished = false;
@@ -455,8 +554,18 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                 if (!pair.Value.IsComplete)
                     return Accepted(RuntimeClientReceiveResultKind.Buffered);
             }
+            if (_context.RestoreCheckpointStage != null
+                && _initialRecoveryCheckpoint == null)
+            {
+                if (_checkpointWaitStartedAt <= 0)
+                {
+                    _checkpointWaitStartedAt = nowSeconds;
+                }
+                return Accepted(RuntimeClientReceiveResultKind.Buffered);
+            }
 
             var stages = new List<RuntimeReplicaBaselineStage>(_initialStores.Count);
+            IRuntimeCheckpointStageRestoreTransaction restoreTransaction = null;
             try
             {
                 foreach (var pair in _initialStores)
@@ -514,10 +623,50 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                         throw new InvalidOperationException($"Prepared initial receiver for '{initial.Store}' did not apply its baseline.");
                 }
 
+                // Build and staged catch-up enqueue Factory-GRC projection in
+                // EndSimulation. Materialize the complete staged topology
+                // before the project checkpoint participant binds its roots.
+                RuntimeCheckpointProjectionBarrier.Playback(_context.World);
+
+                if (_initialRecoveryCheckpoint != null)
+                {
+                    if (!_initialCheckpointBoundary.HasValue
+                        || !CheckpointBoundariesEqual(
+                            _initialCheckpointBoundary,
+                            _initialRecoveryCheckpoint.Boundary))
+                    {
+                        throw new InvalidOperationException(
+                            "Prepared checkpoint does not match the grouped baseline boundary.");
+                    }
+
+                    var stagedStores = new RuntimeStore[stages.Count];
+                    for (var i = 0; i < stages.Count; i++)
+                    {
+                        stagedStores[i] = stages[i].Store;
+                    }
+                    restoreTransaction = _context.RestoreCheckpointStage(
+                        _context.World,
+                        _initialRecoveryCheckpoint.Envelope,
+                        Array.AsReadOnly(stagedStores));
+                    if (restoreTransaction == null)
+                    {
+                        throw new InvalidOperationException(
+                            "Checkpoint staging restore returned no transaction.");
+                    }
+                    restoreTransaction.PrepareCommit();
+                }
+
                 _baselineApplier.PublishGroup(stages, StoreNetDir.S2C);
+                // Group publication retires the previous live stores through
+                // the same EndSimulation ECB. Do not expose a committed
+                // checkpoint while old and new ECS products coexist.
+                RuntimeCheckpointProjectionBarrier.Playback(_context.World);
+                restoreTransaction?.Commit();
             }
             catch
             {
+                restoreTransaction?.Dispose();
+                restoreTransaction = null;
                 for (var i = 0; i < stages.Count; i++)
                 {
                     if (stages[i].State != RuntimeReplicaBaselineStageState.Published
@@ -527,6 +676,7 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                         stages[i].Abort();
                     }
                 }
+                RuntimeCheckpointProjectionBarrier.Playback(_context.World);
                 foreach (var pair in _initialStores)
                 {
                     pair.Value.Receiver = null;
@@ -534,6 +684,10 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                     RequestInitialResync(pair.Value, forceNewBaseline: true);
                 }
                 return Accepted(RuntimeClientReceiveResultKind.ResyncRequested);
+            }
+            finally
+            {
+                restoreTransaction?.Dispose();
             }
 
             foreach (var pair in _initialStores)
@@ -751,7 +905,10 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             RequestInitialCheckpointGroupResync()
         {
             _initialCheckpointBoundary = null;
+            _initialRecoveryCheckpoint = null;
             _initialCheckpointBoundaryObserved = false;
+            _checkpointWaitStartedAt = 0;
+            _checkpointAssembler.Reset();
             _pendingJournalBatches.Clear();
             _pendingJournalEntryCount = 0;
             _pendingJournalPayloadBytes = 0;
@@ -851,7 +1008,10 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             _pendingJournalPayloadBytes = 0;
             _journalReceiver = null;
             _initialCheckpointBoundary = null;
+            _initialRecoveryCheckpoint = null;
             _initialCheckpointBoundaryObserved = false;
+            _checkpointWaitStartedAt = 0;
+            _checkpointAssembler.Reset();
             _baselineGroupPublished = false;
             _journalCatchupObserved = false;
             _journalFullBaselineRequested = false;
@@ -936,6 +1096,16 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                 return null;
             }
 
+            return new RuntimeCheckpointBoundary(
+                chunk.CheckpointGroupId,
+                chunk.CompletedTick,
+                chunk.JournalCursor,
+                chunk.CheckpointHash);
+        }
+
+        private static RuntimeCheckpointBoundary TakeCheckpointBoundary(
+            in RuntimeCheckpointChunk chunk)
+        {
             return new RuntimeCheckpointBoundary(
                 chunk.CheckpointGroupId,
                 chunk.CompletedTick,

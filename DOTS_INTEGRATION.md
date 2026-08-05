@@ -17,7 +17,7 @@ GA/GAC -> immutable Factory GRO -> ECS-only entities
                                       |
                             batched inputs/outcomes
                                       |
-                     checkpoint barrier -> Snapshot GROs
+                 checkpoint barrier -> generated state pages
 ```
 
 ## Authority
@@ -31,8 +31,8 @@ Every piece of state has exactly one declared authority.
 - Commands carry intent. They do not become an alternative state authority.
 - Typed hot-state streams carry disposable observations or corrections. They do
   not become a persistent state authority.
-- Snapshot GROs are checkpoint representations of DOTS state. They are not live
-  managed mirrors.
+- Generated DOTS state pages are checkpoint representations of DOTS state.
+  They are not live managed mirrors and are not GROs.
 
 Never keep the same mutable value authoritative in both DOTS and RuntimeStore.
 If ownership changes, define an explicit handoff boundary.
@@ -46,10 +46,17 @@ is a persistent authored factory, while its products are ECS-only entities.
   `SetupForEntity(...)`.
 - The factory component is not added to the root Entity as managed
   `IComponentData`.
-- The root receives `RuntimeEntityFactoryTag`.
+- The root receives `RuntimeEntityFactoryTag` and
+  `RuntimeEntityFactoryProductIdentity { ProductId = 0 }`.
 - Products created with
   `RuntimeEntityFactoryEcbExtensions.CreateOwnedEntity(...)` or
-  `InstantiateOwnedEntity(...)` receive `RuntimeEntityFactoryOwner`.
+  `InstantiateOwnedEntity(...)` receive `RuntimeEntityFactoryOwner` and a
+  non-zero `RuntimeEntityFactoryProductIdentity`.
+- Every factory product has a `ProductId`, whether or not its current signature
+  contains persisted state. The id is unique inside the factory and remains
+  stable for that logical product. Product id `0` is reserved for the factory
+  root. `Entity`, pool slot, and slot generation are physical runtime details
+  and are not persistent identity.
 - The root and products form one `LinkedEntityGroup`, so destroying the root
   disposes all owned products.
 - Products do not receive individual GRO identity merely because they must be
@@ -76,14 +83,69 @@ Create products with the empty-entity overload, a prepared `EntityArchetype`,
 or a fully projected ECS prefab. Put the full reusable product signature on the
 Entity at this boundary. Ordinary simulation should change component values or
 enablement, not reconstruct what the object is. The archetype and prefab paths
-require `RuntimeEntityFactoryOwner` in the source signature and initialize it
-through `SetComponent`, avoiding a post-create structural add. The prefab path
-is useful when an authored component signature was projected once and many
-factory products must inherit it without a parallel type switch or builder DSL.
+require `RuntimeEntityFactoryOwner` and
+`RuntimeEntityFactoryProductIdentity` in the source signature and initialize
+both through `SetComponent`, avoiding post-create structural adds. The prefab
+path is useful when an authored component signature was projected once and
+many factory products must inherit it without a parallel type switch or builder
+DSL.
 
 Use normal `GameRuntimeComponent<TSelf>` when managed projection is useful.
 Factory projection is an opt-in performance profile, not the new default for
 the whole library.
+
+## Generated DOTS state schema
+
+Every project-owned ECS component in the hybrid contour has exactly one state
+classification:
+
+- `[RuntimeDotsPersisted]` is authoritative state that
+  must survive save, join/resync, and checkpoint restore;
+- `[RuntimeDotsDerived]` is recreated from Factory GROs or rebuilt by a
+  deterministic post-restore system;
+- `[RuntimeDotsTransient]` is a request, accumulator, or other tick-local value
+  that is reset instead of restored;
+- `[RuntimeDotsPresentation]` belongs only to presentation and is rebuilt after
+  restore.
+
+The Editor generator discovers these attributes, rejects missing or duplicate
+classification in the project-defined component scope, reconciles active
+`Type -> id` entries against the previous generated static `CreateManifest`,
+and emits the component catalog, numeric layout hashes, schema hash, and
+canonical codecs as C#. Removed components leave only numeric reserved ids;
+no removed-component metadata is retained.
+Every active component entry carries a direct `RuntimeType = typeof(T)`, and
+runtime lookup is keyed by that `Type`. The generated/runtime schema contains
+no string type identity, CLR/assembly names, or value signatures and never
+resolves a CLR type by string.
+There is no mutable DOTS type-schema JSON in `StreamingAssets`. Runtime
+capture never discovers component types through reflection and never switches
+on a gameplay enum or asset key. Adding a persisted component changes the one
+generated schema used by disk saves, network checkpoints, and replay coverage.
+An optional human-readable dump may be written to an Editor-only disposable
+`.temp` directory, but it is never an input or runtime authority. External mod
+manifests are a separate packaging contract and remain data files.
+
+The schema is the one logical state model, not a mandatory physical layout.
+Persistent save/network uses bounded canonical pages. Hot rollback may use
+preallocated project-specific `NativeList`/`NativeArray` records and Burst jobs
+for a dense archetype, but it must declare and validate complete coverage of
+the same generated persisted component set. A project coverage guard must
+fail when a new persisted component has neither a hot-backend record nor an
+explicit deterministic immutable-factory-baseline justification. This keeps
+the hot path dense without creating a second authority or a separately
+maintained save model.
+
+Factory topology and component values are separate concerns. A checkpoint row
+is framed by store id, persistent factory id, and product id. Inside that row,
+generated cold codecs process persisted components in fixed
+`ComponentTypeId` order and encode presence, enablement where applicable, and
+the component value or buffer contents. Rows are written into bounded hashed
+section pages; the canonical format is not a set of per-component columns.
+Factories must deterministically recreate the product signature, or provide a
+project topology/materialization hook for dynamic membership before rows are
+prevalidated and applied. Entity-reference buffers and renderer caches are
+normally derived, not serialized.
 
 ## Systems are laws over signatures
 
@@ -150,47 +212,49 @@ completed-tick barrier:
 
 1. Verify the `ExternalTickBarrier` and completed tick.
 2. Complete the relevant DOTS jobs.
-3. Clone the selected Snapshot RuntimeStores into a hidden replay stage.
-4. Run registered `IRuntimeDotsCheckpointExporter` implementations against
-   that stage and bring it to quiescence.
-5. Capture the existing `RuntimeReplayCheckpointEnvelope` from the staged
-   stores and validate that the journal cursor did not move.
-6. Use its `OverallHash` as checkpoint identity.
-7. Atomically publish the staged stores, `RuntimeCheckpointBoundary`, and trim
-   the journal through
-   its cursor.
+3. Bring the selected immutable Factory RuntimeStores to quiescence without
+   cloning, replacing, or publishing them.
+4. Capture their ordinary RuntimeStore baseline section.
+5. Capture generated fixed-order DOTS entity rows into bounded pages and
+   validate that the journal cursor did not move.
+6. Build the existing `RuntimeReplayCheckpointEnvelope` and use its
+   `OverallHash` as checkpoint identity.
+7. Atomically replace the retained envelope/boundary and trim the journal
+   through its cursor.
 
-`RuntimeDotsCheckpointContext` is the only normal window in which a hybrid
-snapshot exporter writes DOTS state into Snapshot GROs or shards. An export or
-capture failure leaves the previous checkpoint boundary and recovery window
-unchanged. It also disposes the hidden stage, so the active RuntimeStore
-reference, epoch, generation, revision, contents, and dirty streams are not
-touched by the failed attempt.
+Capture is read-only with respect to live Factory GROs. A capture or page/hash
+failure leaves the previous checkpoint envelope, boundary, and recovery window
+unchanged. There is no Snapshot GRO mirror and no
+`IRuntimeDotsCheckpointExporter`/`RuntimeDotsCheckpointContext` write phase;
+immutable factory stores are not republished merely to checkpoint their ECS
+products.
 
-A checkpoint group that contains RuntimeStores must register one
-`RuntimeStoresReplayCheckpointParticipant` with the exact same store scope.
-Only those selected RuntimeStores are transactionally staged; arbitrary custom
-checkpoint participants are not automatically rolled back. Use dedicated,
-reference-closed Snapshot stores for this profile. The current replay
-publication contract advances their epoch and generation after every successful
-checkpoint, so connected replicas require the corresponding grouped baseline.
-Do not include ordinary managed stores, immutable factory stores, or stores
-holding external live `RuntimeInstance` references unless that generation
-replacement is intentional.
+A checkpoint group that contains RuntimeStores registers one
+`RuntimeStoresReplayCheckpointParticipant` with the exact same store scope and
+the generated DOTS-state participant for its ECS products. The RuntimeStore
+section recreates persistent factories; the generated section then resolves
+`store + factory + product` addresses, prevalidates the fixed-order rows, and
+applies them. Derived, transient, and presentation state is rebuilt only after
+authoritative values have been restored.
 
-`ProvideRecoveryBoundary()` returns a boundary only while the journal recovery
-window remains valid and every scoped RuntimeStore still has the revision
-captured at that checkpoint. Use this validated provider for network recovery.
-RuntimeStore revision drift means the immutable hybrid-store contract was
-violated, so join/resync must wait for the next explicit checkpoint.
+`ProvideRecoveryCheckpoint()` returns a `RuntimeRecoveryCheckpoint` containing
+both the validated boundary and its exact envelope, but only while the journal
+recovery window remains valid and every scoped RuntimeStore still has the
+revision captured at that checkpoint. Configure it as the server-side
+`RuntimeRecoveryCheckpointProvider`; a boundary-only provider cannot transport
+generated checkpoint pages. RuntimeStore revision drift means the immutable
+hybrid-store contract was violated, so join/resync must wait for the next
+explicit checkpoint.
 
 The replay envelope already owns completed tick and journal cursor. A project
 may put domain clock, RNG, singleton state, or other useful data on its own root
 GRO; the integration does not require a synthetic `StateRoot` or clock GRO.
 
-Large snapshots should be split into project-defined shards/pages or captured by
-a focused checkpoint participant. Generic collection patching remains atomic;
-the framework does not infer sparse item-level diffs for arbitrary lists.
+Large snapshots are encoded as bounded hashed pages. Disk and network may
+stream or compress those pages differently, but both carry the same logical
+component sections. Hot replay does not pass through managed page encoding.
+Generic collection patching remains atomic; the framework does not infer sparse
+item-level diffs for arbitrary lists.
 
 ## Network recovery
 
@@ -200,7 +264,14 @@ introducing another transport:
 - Checkpoint and journal interest is whole-`RuntimeStore`.
 - Ordinary replication and typed hot streams may retain object-level interest.
 - A grouped baseline carries checkpoint hash, completed tick, and journal
-  cursor and is published atomically.
+  cursor together with the generated checkpoint pages.
+- The server obtains boundary plus envelope from
+  `RuntimeDotsCheckpointCoordinator.ProvideRecoveryCheckpoint` through
+  `RuntimeRecoveryCheckpointProvider`.
+- The client stages RuntimeStore baselines and projects factory roots/products.
+  Its project-supplied `RuntimeCheckpointStageRestore` materializes dynamic
+  topology, prevalidates and applies the generated rows against those staged
+  stores, and only then may the protocol publish the group.
 - The client applies journal entries after that cursor in tick/sequence order.
 - A replica becomes ready only after baseline publication, journal catch-up, and
   required ECB playback.
@@ -288,7 +359,7 @@ GA/GAC -> immutable Factory GRO -> ECS-only Entity
                                       |
                          batched inputs/outcomes
                                       |
-                    checkpoint barrier -> Snapshot GRO
+              checkpoint barrier -> generated state pages
 ```
 
 ## Authority
@@ -302,8 +373,8 @@ GA/GAC -> immutable Factory GRO -> ECS-only Entity
 - Команды переносят намерение, но не становятся альтернативным authority.
 - Typed hot-state streams переносят одноразовые наблюдения и коррекции, но не
   persistent state.
-- Snapshot GRO — checkpoint-представление DOTS-состояния, а не постоянно
-  синхронизируемая managed-копия.
+- Generated DOTS state pages — checkpoint-представление DOTS-состояния, а не
+  постоянно синхронизируемая managed-копия и не GRO.
 
 Нельзя одновременно считать одно изменяемое значение authoritative и в DOTS,
 и в RuntimeStore. Смена владельца требует явной handoff-границы.
@@ -317,10 +388,17 @@ GA/GAC -> immutable Factory GRO -> ECS-only Entity
   `SetupForEntity(...)`.
 - Factory component не добавляется на root Entity как managed
   `IComponentData`.
-- Root получает `RuntimeEntityFactoryTag`.
+- Root получает `RuntimeEntityFactoryTag` и
+  `RuntimeEntityFactoryProductIdentity { ProductId = 0 }`.
 - Продукты, созданные через
   `RuntimeEntityFactoryEcbExtensions.CreateOwnedEntity(...)` или
-  `InstantiateOwnedEntity(...)`, получают `RuntimeEntityFactoryOwner`.
+  `InstantiateOwnedEntity(...)`, получают `RuntimeEntityFactoryOwner` и
+  ненулевой `RuntimeEntityFactoryProductIdentity`.
+- Каждый продукт фабрики имеет `ProductId`, даже если в его текущей сигнатуре
+  нет persisted state. Id уникален внутри фабрики и стабилен для данного
+  логического продукта. Значение `0` зарезервировано за factory root. `Entity`,
+  pool slot и slot generation остаются физическими runtime-деталями и не
+  являются persistent identity.
 - Root и продукты входят в один `LinkedEntityGroup`, поэтому уничтожение root
   освобождает все owned products.
 - Продуктам не нужен отдельный GRO только ради симуляции.
@@ -348,14 +426,69 @@ public override void SetupForEntity(
 переиспользуемая сигнатура продукта задаётся на этой границе. Обычная симуляция
 изменяет значения или enablement компонентов, а не заново определяет, чем
 является объект. Готовый архетип и prefab обязаны содержать
-`RuntimeEntityFactoryOwner`: helper инициализирует его через `SetComponent` без
-структурного add после создания. Prefab-путь подходит, когда authored
-component signature один раз проецируется и затем наследуется множеством
-продуктов фабрики без отдельного type switch или builder DSL.
+`RuntimeEntityFactoryOwner` и `RuntimeEntityFactoryProductIdentity`: helper
+инициализирует оба через `SetComponent` без структурных add после создания.
+Prefab-путь подходит, когда authored component signature один раз проецируется
+и затем наследуется множеством продуктов фабрики без отдельного type switch или
+builder DSL.
 
 Обычный `GameRuntimeComponent<TSelf>` следует использовать там, где managed
 projection полезна. Factory projection — opt-in performance profile, а не новый
 обязательный режим библиотеки.
+
+## Generated-схема DOTS-состояния
+
+Каждый project-owned ECS-компонент hybrid-контура имеет ровно одну
+классификацию состояния:
+
+- `[RuntimeDotsPersisted]` — authoritative state,
+  которое переживает save, join/resync и checkpoint restore;
+- `[RuntimeDotsDerived]` — состояние, которое создаётся Factory GRO или
+  детерминированно пересобирается post-restore системой;
+- `[RuntimeDotsTransient]` — request, accumulator или другое tick-local
+  значение, которое сбрасывается, а не восстанавливается;
+- `[RuntimeDotsPresentation]` — presentation-only состояние, пересобираемое
+  после restore.
+
+Editor generator находит эти атрибуты, отклоняет отсутствующую или двойную
+классификацию в заданном проектом scope, согласует активные записи `Type -> id`
+с предыдущим generated static `CreateManifest` и генерирует в C# component
+catalog, числовые layout hashes, schema hash и canonical codecs. Удалённые
+компоненты оставляют только зарезервированные числовые ids; метаданные
+удалённого компонента не сохраняются.
+Каждая активная запись содержит прямой `RuntimeType = typeof(T)`, и runtime
+lookup keyed by этим `Type`. Generated/runtime schema не содержит строковой
+идентичности типа, CLR/assembly names или value signatures и никогда не
+разрешает CLR-тип по строке.
+Mutable JSON-схемы типов
+DOTS в `StreamingAssets` нет. Runtime capture не использует
+reflection для поиска типов и не делает switches по gameplay enum или asset
+key. Добавление persisted-компонента изменяет единую generated schema,
+используемую disk save, network checkpoint и replay coverage.
+Опциональный человекочитаемый dump может лежать только в удаляемой Editor
+`.temp` папке и не является input или runtime-authority. Внешние manifests модов
+относятся к отдельному packaging-контракту и остаются data files.
+
+Schema — единая логическая модель состояния, а не обязательный физический
+layout. Persistent save/network использует bounded canonical pages. Hot rollback
+может хранить плотные project-specific записи в заранее выделенных
+`NativeList`/`NativeArray` и захватывать их Burst jobs, но обязан объявить и
+проверить полное покрытие того же generated persisted component set. Project
+coverage guard обязан падать, если новый persisted-компонент не попал в запись
+hot backend и для него нет явного обоснования deterministic immutable factory
+baseline. Так hot path остаётся плотным, не создавая второй authority или
+отдельно поддерживаемую save-модель.
+
+Factory topology и значения компонентов — разные задачи. Строка checkpoint
+обрамляется store id, persistent factory id и product id. Внутри строки
+generated cold codecs обрабатывают persisted-компоненты в фиксированном порядке
+`ComponentTypeId` и кодируют presence, enablement при его наличии, а затем
+значение компонента или содержимое buffer. Строки записываются в bounded hashed
+pages секции; canonical format не является набором per-component columns.
+Фабрика должна детерминированно пересоздать product signature либо предоставить
+project topology/materialization hook для динамического membership до
+prevalidation и применения строк. Буферы Entity-ссылок и renderer caches обычно
+derived и не сериализуются.
 
 ## Системы — законы над сигнатурами
 
@@ -423,35 +556,35 @@ completed-tick barrier:
 
 1. Проверяет `ExternalTickBarrier` и завершённый tick.
 2. Завершает нужные DOTS jobs.
-3. Клонирует выбранные Snapshot RuntimeStore в скрытый replay stage.
-4. Запускает зарегистрированные `IRuntimeDotsCheckpointExporter` над stage и
-   доводит его до quiescence.
-5. Захватывает существующий `RuntimeReplayCheckpointEnvelope` из staged stores
-   и проверяет, что journal cursor не изменился.
-6. Использует его `OverallHash` как checkpoint identity.
-7. Атомарно публикует staged stores, `RuntimeCheckpointBoundary` и обрезает
-   journal по cursor.
+3. Доводит выбранные immutable Factory RuntimeStore до quiescence без clone,
+   replace или publish.
+4. Захватывает их обычную RuntimeStore baseline section.
+5. Захватывает generated fixed-order DOTS entity rows в bounded pages и
+   проверяет, что journal cursor не сдвинулся.
+6. Собирает существующий `RuntimeReplayCheckpointEnvelope` и использует его
+   `OverallHash` как checkpoint identity.
+7. Атомарно заменяет retained envelope/boundary и обрезает journal по cursor.
 
-`RuntimeDotsCheckpointContext` — единственное обычное окно, в котором
-hybrid snapshot exporter пишет DOTS-состояние в Snapshot GRO или shards. Ошибка
-export/capture оставляет предыдущую checkpoint boundary и recovery window без
-изменений. Скрытый stage уничтожается, поэтому активные RuntimeStore reference,
-epoch, generation, revision, содержимое и dirty streams не меняются.
+Capture остаётся read-only относительно живых Factory GRO. Ошибка capture,
+страницы или hash оставляет предыдущий checkpoint envelope, boundary и recovery
+window без изменений. Нет Snapshot GRO mirror и фазы записи через
+`IRuntimeDotsCheckpointExporter`/`RuntimeDotsCheckpointContext`; immutable
+factory stores не перепубликуются только ради checkpoint своих ECS-продуктов.
 
-Checkpoint-группа с RuntimeStore обязана зарегистрировать один
-`RuntimeStoresReplayCheckpointParticipant` с точно таким же store scope.
-Транзакционно staging применяется только к этим RuntimeStore; произвольные
-custom checkpoint participants автоматически не откатываются. Для профиля
-нужны выделенные, замкнутые по ссылкам Snapshot stores. Текущий replay publish
-после каждого успешного checkpoint повышает их epoch и generation, поэтому
-подключённым репликам нужен соответствующий grouped baseline. Обычные managed
-stores, immutable factory stores и stores с внешними живыми `RuntimeInstance`
-ссылками нельзя включать в группу, если такая смена generation не задумана.
+Checkpoint-группа с RuntimeStore регистрирует один
+`RuntimeStoresReplayCheckpointParticipant` с тем же store scope и generated
+DOTS-state participant для ECS-продуктов. RuntimeStore section пересоздаёт
+persistent factories; generated section затем разрешает адреса
+`store + factory + product`, prevalidate-ит fixed-order rows и применяет их.
+Derived, transient и presentation state пересобирается только после
+authoritative values.
 
-`ProvideRecoveryBoundary()` возвращает boundary только пока journal recovery
-window доступно и revision каждого scoped RuntimeStore совпадает со значением на
-checkpoint. Именно этот проверенный provider следует передавать сетевому
-recovery-контуру.
+`ProvideRecoveryCheckpoint()` возвращает `RuntimeRecoveryCheckpoint`, который
+содержит и проверенный boundary, и его точный envelope, только пока journal
+recovery window доступно и revision каждого scoped RuntimeStore совпадает со
+значением на checkpoint. Его следует передавать как server-side
+`RuntimeRecoveryCheckpointProvider`; boundary-only provider не переносит
+generated checkpoint pages.
 Revision drift означает нарушение immutable hybrid-store контракта, поэтому
 join/resync должен ждать следующий явный checkpoint.
 
@@ -460,9 +593,11 @@ Replay envelope уже хранит completed tick и journal cursor. Проек
 собственный root GRO; интеграция не требует искусственного `StateRoot` или
 отдельного clock GRO.
 
-Большие snapshots следует делить на project-defined shards/pages или захватывать
-через focused checkpoint participant. Generic collection patching остаётся
-атомарным; framework не выводит sparse item-level diff для произвольных списков.
+Большие snapshots кодируются bounded hashed pages. Disk и network могут по-разному
+стримить или сжимать эти страницы, но переносят одинаковые логические component
+sections. Hot replay не проходит через managed page encoding. Generic collection
+patching остаётся атомарным; framework не выводит sparse item-level diff для
+произвольных списков.
 
 ## Сетевое восстановление
 
@@ -471,8 +606,15 @@ Mirror protocol DingoCMS расширяет существующий grouped bas
 
 - Interest для checkpoint и journal задаётся целыми `RuntimeStore`.
 - Обычная replication и typed hot streams могут сохранить object-level interest.
-- Grouped baseline содержит checkpoint hash, completed tick и journal cursor и
-  публикуется атомарно.
+- Grouped baseline содержит checkpoint hash, completed tick и journal cursor
+  вместе с generated checkpoint pages.
+- Сервер получает boundary и envelope через
+  `RuntimeDotsCheckpointCoordinator.ProvideRecoveryCheckpoint`, переданный как
+  `RuntimeRecoveryCheckpointProvider`.
+- Клиент staging-ит RuntimeStore baselines и проецирует factory roots/products.
+  Project-supplied `RuntimeCheckpointStageRestore` материализует динамическую
+  topology, prevalidate-ит и применяет generated rows к staged stores; только
+  после этого protocol может опубликовать группу.
 - После cursor клиент применяет journal entries в порядке tick/sequence.
 - Replica становится ready только после публикации baseline, journal catch-up и
   необходимого ECB playback.

@@ -4,8 +4,8 @@ using System.Collections.Generic;
 namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
 {
     /// <summary>
-    /// Protocol patch encoding. Stable authoring keys deliberately do not
-    /// travel on the wire: the session schema hash fixes the numeric id table.
+    /// Protocol patch encoding. The session schema hash fixes the numeric id
+    /// table, therefore no CLR or authoring names travel on the wire.
     /// </summary>
     public sealed class RuntimeObjectPatchNetworkCodec
     {
@@ -83,8 +83,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
             if (component.CanonicalJson != null)
                 throw new InvalidOperationException($"Runtime-binary component {component.ComponentTypeId} cannot contain authoring JSON.");
             var codec = _registry.Get(component.ComponentTypeId);
-            if (!string.Equals(component.ComponentTypeKey, codec.ComponentTypeKey, StringComparison.Ordinal))
-                throw new InvalidOperationException($"Component id {component.ComponentTypeId} has authoring key '{component.ComponentTypeKey}', expected '{codec.ComponentTypeKey}'.");
 
             writer.WriteUInt32(component.ComponentTypeId);
             writer.WriteByte((byte)component.Kind);
@@ -128,7 +126,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
             var componentTypeId = reader.ReadUInt32();
             var codec = _registry.Get(componentTypeId);
             var kind = (ComponentPatchKind)reader.ReadByte();
-            var result = new ComponentPatch(componentTypeId, codec.ComponentTypeKey, kind);
+            var result = new ComponentPatch(componentTypeId, kind);
             switch (kind)
             {
                 case ComponentPatchKind.Add:
@@ -173,13 +171,8 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
                 throw new InvalidOperationException("Component patch cannot contain null fields.");
             if (field.CanonicalJson != null)
                 throw new InvalidOperationException($"Runtime-binary field {field.FieldId} cannot contain authoring JSON.");
-            if (!codec.TryGetFieldKey(field.FieldId, out var expectedKey))
+            if (!codec.TryGetFieldInfo(field.FieldId, out _))
                 throw new InvalidOperationException($"Component {codec.ComponentTypeId} has no field id {field.FieldId}.");
-            if (!string.Equals(field.FieldKey, expectedKey, StringComparison.Ordinal))
-            {
-                throw new InvalidOperationException(
-                    $"Field id {field.FieldId} has authoring key '{field.FieldKey}', expected '{expectedKey}'.");
-            }
             writer.WriteUInt32(field.FieldId);
             writer.WriteByte((byte)field.Kind);
             switch (field.Kind)
@@ -204,13 +197,13 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
             uint componentTypeId)
         {
             var fieldId = reader.ReadUInt32();
-            if (!codec.TryGetFieldKey(fieldId, out var fieldKey))
+            if (!codec.TryGetFieldInfo(fieldId, out _))
                 throw new FormatException($"Component {componentTypeId} has no field id {fieldId} in the active runtime schema.");
             var kind = (FieldPatchKind)reader.ReadByte();
             return kind switch
             {
-                FieldPatchKind.Set => new FieldPatch(fieldId, fieldKey, kind, RequirePayload(reader.ReadBytes(), fieldId)),
-                FieldPatchKind.Remove => new FieldPatch(fieldId, fieldKey, kind),
+                FieldPatchKind.Set => new FieldPatch(fieldId, kind, RequirePayload(reader.ReadBytes(), fieldId)),
+                FieldPatchKind.Remove => new FieldPatch(fieldId, kind),
                 _ => throw new FormatException($"Unsupported field patch kind {kind}.")
             };
         }

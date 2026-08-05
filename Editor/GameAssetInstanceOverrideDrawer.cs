@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Reflection;
 using DingoGameObjectsCMS.RuntimeObjects.Objects;
 using DingoGameObjectsCMS.RuntimeObjects.Overrides;
 using DingoGameObjectsCMS.RuntimeObjects.Stores;
@@ -20,7 +19,7 @@ namespace DingoGameObjectsCMS.Editor
         private readonly Dictionary<uint, GameAssetInstanceRuntimeComponentEditHost> _componentHosts = new();
         private readonly Dictionary<uint, SerializedObject> _serializedHosts = new();
         private readonly Dictionary<uint, bool> _expanded = new();
-        private readonly HashSet<string> _editingInheritedFields = new(StringComparer.Ordinal);
+        private readonly HashSet<ulong> _editingInheritedFields = new();
 
         private GameAssetInstanceOverrideHost _host;
         private Vector2 _scroll;
@@ -134,22 +133,21 @@ namespace DingoGameObjectsCMS.Editor
             var serializedHost = _serializedHosts[typeId];
             serializedHost.Update();
             var valueProperty = serializedHost.FindProperty(nameof(GameAssetInstanceRuntimeComponentEditHost.Value));
-            var fields = current.GetType()
-                .GetFields(BindingFlags.Instance | BindingFlags.Public)
-                .Where(field => !field.IsStatic)
-                .OrderBy(field => field.MetadataToken)
-                .ToArray();
-            if (fields.Length == 0)
+            var codec = _host.Registry.Get(typeId);
+            if (codec.FieldCount == 0)
             {
                 EditorGUILayout.LabelField("Tag component (zero payload)", EditorStyles.miniLabel);
                 return;
             }
 
-            var codec = _host.Registry.Get(typeId);
             var componentPatch = baseline == null ? null : _host.BuildComponentPatch(typeId);
-            for (var i = 0; i < fields.Length; i++)
+            for (uint fieldId = 0; fieldId < codec.FieldCount; fieldId++)
             {
-                var field = fields[i];
+                if (!codec.TryGetFieldInfo(fieldId, out var field) || field == null)
+                {
+                    EditorGUILayout.HelpBox($"Generated field id {fieldId} cannot be resolved.", MessageType.Error);
+                    continue;
+                }
                 var property = valueProperty?.FindPropertyRelative(field.Name);
                 if (property == null)
                 {
@@ -157,9 +155,9 @@ namespace DingoGameObjectsCMS.Editor
                     continue;
                 }
 
-                var fieldKey = $"{codec.ComponentTypeKey}/{field.Name}";
-                var isPersistedOverride = baseline == null || IsFieldOverridden(componentPatch, fieldKey);
-                var isEditing = isPersistedOverride || _editingInheritedFields.Contains(fieldKey);
+                var selectionId = BuildFieldSelectionId(typeId, fieldId);
+                var isPersistedOverride = baseline == null || IsFieldOverridden(componentPatch, fieldId);
+                var isEditing = isPersistedOverride || _editingInheritedFields.Contains(selectionId);
                 EditorGUILayout.BeginHorizontal();
                 EditorGUI.BeginChangeCheck();
                 var enabled = EditorGUILayout.Toggle(isEditing, GUILayout.Width(18));
@@ -167,12 +165,12 @@ namespace DingoGameObjectsCMS.Editor
                 {
                     if (enabled)
                     {
-                        _editingInheritedFields.Add(fieldKey);
+                        _editingInheritedFields.Add(selectionId);
                     }
                     else if (baseline != null)
                     {
                         _host.RevertField(typeId, field);
-                        _editingInheritedFields.Remove(fieldKey);
+                        _editingInheritedFields.Remove(selectionId);
                         RebuildComponentHost(typeId);
                         EditorGUILayout.EndHorizontal();
                         return;
@@ -192,7 +190,7 @@ namespace DingoGameObjectsCMS.Editor
                 if (isPersistedOverride && baseline != null && GUILayout.Button("Revert", GUILayout.Width(54)))
                 {
                     _host.RevertField(typeId, field);
-                    _editingInheritedFields.Remove(fieldKey);
+                    _editingInheritedFields.Remove(selectionId);
                     RebuildComponentHost(typeId);
                     EditorGUILayout.EndHorizontal();
                     return;
@@ -235,14 +233,19 @@ namespace DingoGameObjectsCMS.Editor
             RebuildComponentHost(typeId);
         }
 
-        private static bool IsFieldOverridden(ComponentPatch componentPatch, string fieldKey)
+        private static bool IsFieldOverridden(ComponentPatch componentPatch, uint fieldId)
         {
             if (componentPatch == null)
                 return false;
             if (componentPatch.Kind != ComponentPatchKind.Fields)
                 return true;
             return componentPatch.Fields != null
-                   && componentPatch.Fields.Any(field => string.Equals(field.FieldKey, fieldKey, StringComparison.Ordinal));
+                   && componentPatch.Fields.Any(field => field != null && field.FieldId == fieldId);
+        }
+
+        private static ulong BuildFieldSelectionId(uint componentTypeId, uint fieldId)
+        {
+            return ((ulong)componentTypeId << 32) | fieldId;
         }
 
         private void RebuildComponentHost(uint typeId)

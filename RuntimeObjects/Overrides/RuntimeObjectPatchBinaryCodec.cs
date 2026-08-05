@@ -6,7 +6,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
     public class RuntimeObjectPatchBinaryCodec
     {
         public const uint FORMAT_MAGIC = 0x31504147;
-        public const uint FORMAT_VERSION = 1;
+        public const uint FORMAT_VERSION = 2;
 
         public byte[] Encode(RuntimeObjectPatch patch)
         {
@@ -61,7 +61,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
             ValidateComponentKind(component.Kind);
             ValidateComponentShape(component);
             writer.WriteUInt32(component.ComponentTypeId);
-            writer.WriteString(component.ComponentTypeKey);
             writer.WriteByte((byte)component.Kind);
             writer.WriteBytes(component.Payload);
 
@@ -76,7 +75,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
                 ValidateFieldKind(field.Kind);
                 ValidateFieldShape(field);
                 writer.WriteUInt32(field.FieldId);
-                writer.WriteString(field.FieldKey);
                 writer.WriteByte((byte)field.Kind);
                 writer.WriteBytes(field.Payload);
             }
@@ -85,18 +83,16 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
         private static ComponentPatch ReadComponentPatch(CanonicalPatchBinaryReader reader)
         {
             var componentTypeId = reader.ReadUInt32();
-            var componentTypeKey = reader.ReadString();
             var kind = (ComponentPatchKind)reader.ReadByte();
             ValidateComponentKind(kind);
-            var result = new ComponentPatch(componentTypeId, componentTypeKey, kind, reader.ReadBytes());
+            var result = new ComponentPatch(componentTypeId, kind, reader.ReadBytes());
             var fieldCount = ReadCount(reader, "field patch");
             for (var i = 0; i < fieldCount; i++)
             {
                 var fieldId = reader.ReadUInt32();
-                var fieldKey = reader.ReadString();
                 var fieldKind = (FieldPatchKind)reader.ReadByte();
                 ValidateFieldKind(fieldKind);
-                result.Fields.Add(new FieldPatch(fieldId, fieldKey, fieldKind, reader.ReadBytes()));
+                result.Fields.Add(new FieldPatch(fieldId, fieldKind, reader.ReadBytes()));
             }
             NormalizeFields(result.Fields);
             ValidateComponentShape(result);
@@ -113,15 +109,10 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
 
         private static void NormalizeComponents(List<ComponentPatch> components)
         {
-            var keys = new HashSet<string>(StringComparer.Ordinal);
             for (var i = 0; i < components.Count; i++)
             {
                 if (components[i] == null)
                     throw new InvalidOperationException("Runtime object patch cannot contain null component patches.");
-                if (string.IsNullOrWhiteSpace(components[i].ComponentTypeKey))
-                    throw new InvalidOperationException($"Runtime object component patch {components[i].ComponentTypeId} has no stable component key.");
-                if (!keys.Add(components[i].ComponentTypeKey))
-                    throw new InvalidOperationException($"Runtime object patch contains duplicate component type key '{components[i].ComponentTypeKey}'.");
             }
             components.Sort(CompareComponents);
             for (var i = 1; i < components.Count; i++)
@@ -133,15 +124,10 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
 
         private static void NormalizeFields(List<FieldPatch> fields)
         {
-            var keys = new HashSet<string>(StringComparer.Ordinal);
             for (var i = 0; i < fields.Count; i++)
             {
                 if (fields[i] == null)
                     throw new InvalidOperationException("Component patch cannot contain null field patches.");
-                if (string.IsNullOrWhiteSpace(fields[i].FieldKey))
-                    throw new InvalidOperationException($"Component field patch {fields[i].FieldId} has no stable field key.");
-                if (!keys.Add(fields[i].FieldKey))
-                    throw new InvalidOperationException($"Component patch contains duplicate field key '{fields[i].FieldKey}'.");
             }
             fields.Sort(CompareFields);
             for (var i = 1; i < fields.Count; i++)
@@ -212,14 +198,12 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
 
         private static int CompareComponents(ComponentPatch first, ComponentPatch second)
         {
-            var byId = first.ComponentTypeId.CompareTo(second.ComponentTypeId);
-            return byId != 0 ? byId : string.CompareOrdinal(first.ComponentTypeKey, second.ComponentTypeKey);
+            return first.ComponentTypeId.CompareTo(second.ComponentTypeId);
         }
 
         private static int CompareFields(FieldPatch first, FieldPatch second)
         {
-            var byId = first.FieldId.CompareTo(second.FieldId);
-            return byId != 0 ? byId : string.CompareOrdinal(first.FieldKey, second.FieldKey);
+            return first.FieldId.CompareTo(second.FieldId);
         }
     }
 }

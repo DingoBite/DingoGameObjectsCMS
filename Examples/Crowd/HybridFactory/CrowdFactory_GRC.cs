@@ -9,7 +9,7 @@ using UnityEngine.Scripting;
 
 namespace DingoGameObjectsCMS.Examples.Crowd.HybridFactory
 {
-    [Serializable, Preserve, RuntimeComponentKey("dingo.examples.crowd.hybrid-factory")]
+    [Serializable, Preserve]
     public class CrowdFactory_GRC : GameRuntimeEntityFactoryComponent
     {
         public int Count = 1000;
@@ -23,6 +23,8 @@ namespace DingoGameObjectsCMS.Examples.Crowd.HybridFactory
             var entityManager = store.World.EntityManager;
             var archetype = entityManager.CreateArchetype(
                 ComponentType.ReadWrite<RuntimeEntityFactoryOwner>(),
+                ComponentType.ReadWrite<
+                    RuntimeEntityFactoryProductIdentity>(),
                 ComponentType.ReadWrite<CrowdOrbit>(),
                 ComponentType.ReadWrite<CrowdVelocity>(),
                 ComponentType.ReadWrite<LocalTransform>());
@@ -35,7 +37,11 @@ namespace DingoGameObjectsCMS.Examples.Crowd.HybridFactory
             for (var i = 0; i < count; i++)
             {
                 var phase = count > 0 ? math.PI * 2f * i / count : 0f;
-                var product = ecb.CreateOwnedEntity(e, g.RuntimeInstance, archetype);
+                var product = ecb.CreateOwnedEntity(
+                    e,
+                    g.RuntimeInstance,
+                    checked((ulong)i + 1UL),
+                    archetype);
                 ecb.SetComponent(product, new CrowdOrbit
                 {
                     Radius = radius,

@@ -70,7 +70,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
 
     public sealed class GameAssetTemplateCache
     {
-        public const uint MATERIALIZER_VERSION = 2;
+        public const uint MATERIALIZER_VERSION = 3;
 
         private readonly RuntimePatchCodecRegistry _registry;
         private readonly RuntimePatchCodecContext _context;
@@ -354,8 +354,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
             foreach (var pair in componentPayloads.OrderBy(pair => pair.Key))
             {
                 writer.WriteUInt32(pair.Key);
-                var componentType = pair.Key.GetRegisteredType();
-                writer.WriteString(RuntimeComponentTypeRegistry.GetKey(componentType));
                 writer.WriteBytes(pair.Value);
             }
 

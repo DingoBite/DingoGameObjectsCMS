@@ -20,50 +20,90 @@ namespace DingoGameObjectsCMS.RuntimeObjects
         public RuntimeInstance FactoryInstance;
     }
 
+    [Serializable, Preserve]
+    public struct RuntimeEntityFactoryProductIdentity : IComponentData
+    {
+        public ulong ProductId;
+    }
+
     public static class RuntimeEntityFactoryEcbExtensions
     {
         public static Entity CreateOwnedEntity(
             this EntityCommandBuffer ecb,
             Entity factoryRoot,
-            RuntimeInstance factoryInstance)
+            RuntimeInstance factoryInstance,
+            ulong productId)
         {
+            RequireProductId(productId);
             var entity = ecb.CreateEntity();
-            var owner = CreateOwner(factoryRoot, factoryInstance);
-            ecb.AddComponent(entity, owner);
-            ecb.AppendToBuffer(factoryRoot, new LinkedEntityGroup { Value = entity });
+            ecb.AddComponent(
+                entity,
+                CreateOwner(factoryRoot, factoryInstance));
+            ecb.AddComponent(
+                entity,
+                new RuntimeEntityFactoryProductIdentity
+                {
+                    ProductId = productId
+                });
+            ecb.AppendToBuffer(
+                factoryRoot,
+                new LinkedEntityGroup { Value = entity });
             return entity;
         }
 
         /// <summary>
-        /// Creates a product from its final archetype. The archetype must
-        /// contain <see cref="RuntimeEntityFactoryOwner"/>.
+        /// Creates an identified product from its final archetype. The
+        /// archetype must contain <see cref="RuntimeEntityFactoryOwner"/> and
+        /// <see cref="RuntimeEntityFactoryProductIdentity"/>.
         /// </summary>
         public static Entity CreateOwnedEntity(
             this EntityCommandBuffer ecb,
             Entity factoryRoot,
             RuntimeInstance factoryInstance,
+            ulong productId,
             EntityArchetype archetype)
         {
+            RequireProductId(productId);
             var entity = ecb.CreateEntity(archetype);
-            var owner = CreateOwner(factoryRoot, factoryInstance);
-            ecb.SetComponent(entity, owner);
-            ecb.AppendToBuffer(factoryRoot, new LinkedEntityGroup { Value = entity });
+            ecb.SetComponent(
+                entity,
+                CreateOwner(factoryRoot, factoryInstance));
+            ecb.SetComponent(
+                entity,
+                new RuntimeEntityFactoryProductIdentity
+                {
+                    ProductId = productId
+                });
+            ecb.AppendToBuffer(
+                factoryRoot,
+                new LinkedEntityGroup { Value = entity });
             return entity;
         }
 
         /// <summary>
-        /// Instantiates a product from a fully projected ECS prefab. The
-        /// prefab must contain <see cref="RuntimeEntityFactoryOwner"/>.
+        /// Instantiates an identified product from a fully projected ECS
+        /// prefab. The prefab must contain
+        /// <see cref="RuntimeEntityFactoryOwner"/> and
+        /// <see cref="RuntimeEntityFactoryProductIdentity"/>.
         /// </summary>
         public static Entity InstantiateOwnedEntity(
             this EntityCommandBuffer ecb,
             Entity factoryRoot,
             RuntimeInstance factoryInstance,
+            ulong productId,
             Entity prefab)
         {
+            RequireProductId(productId);
             var entity = ecb.Instantiate(prefab);
-            var owner = CreateOwner(factoryRoot, factoryInstance);
-            ecb.SetComponent(entity, owner);
+            ecb.SetComponent(
+                entity,
+                CreateOwner(factoryRoot, factoryInstance));
+            ecb.SetComponent(
+                entity,
+                new RuntimeEntityFactoryProductIdentity
+                {
+                    ProductId = productId
+                });
             ecb.AppendToBuffer(
                 factoryRoot,
                 new LinkedEntityGroup { Value = entity });
@@ -79,6 +119,16 @@ namespace DingoGameObjectsCMS.RuntimeObjects
                 FactoryRoot = factoryRoot,
                 FactoryInstance = factoryInstance
             };
+        }
+
+        private static void RequireProductId(ulong productId)
+        {
+            if (productId == 0)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(productId),
+                    "Product id 0 is reserved for the factory root.");
+            }
         }
     }
 
@@ -170,10 +220,20 @@ namespace DingoGameObjectsCMS.RuntimeObjects
             var entityManager = store.World.EntityManager;
             if (!entityManager.Exists(root)
                 || !entityManager.HasComponent<RuntimeEntityFactoryTag>(root)
+                || !entityManager.HasComponent<
+                    RuntimeEntityFactoryProductIdentity>(root)
                 || !entityManager.HasBuffer<LinkedEntityGroup>(root))
             {
                 error =
                     $"Factory GRO {runtimeObject.InstanceId} in store '{runtimeObject.StoreId}' root is missing its factory signature.";
+                return false;
+            }
+
+            if (entityManager.GetComponentData<
+                    RuntimeEntityFactoryProductIdentity>(root).ProductId != 0)
+            {
+                error =
+                    $"Factory GRO {runtimeObject.InstanceId} in store '{runtimeObject.StoreId}' root must use reserved product id 0.";
                 return false;
             }
 
@@ -189,6 +249,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects
 
             var expectedOwner = runtimeObject.RuntimeInstance;
             var linkedProducts = new HashSet<Entity>();
+            var productIds = new HashSet<ulong>();
             for (var i = 1; i < linkedEntities.Length; i++)
             {
                 var product = linkedEntities[i].Value;
@@ -217,6 +278,29 @@ namespace DingoGameObjectsCMS.RuntimeObjects
                 {
                     error =
                         $"Factory GRO {runtimeObject.InstanceId} in store '{runtimeObject.StoreId}' has a linked product with mismatched ownership.";
+                    return false;
+                }
+
+                if (!entityManager.HasComponent<
+                        RuntimeEntityFactoryProductIdentity>(product))
+                {
+                    error =
+                        $"Factory GRO {runtimeObject.InstanceId} in store '{runtimeObject.StoreId}' has a linked product without RuntimeEntityFactoryProductIdentity.";
+                    return false;
+                }
+
+                var identity = entityManager.GetComponentData<
+                    RuntimeEntityFactoryProductIdentity>(product);
+                if (identity.ProductId == 0)
+                {
+                    error =
+                        $"Factory GRO {runtimeObject.InstanceId} in store '{runtimeObject.StoreId}' has a product using reserved id 0.";
+                    return false;
+                }
+                if (!productIds.Add(identity.ProductId))
+                {
+                    error =
+                        $"Factory GRO {runtimeObject.InstanceId} in store '{runtimeObject.StoreId}' has duplicate product id {identity.ProductId}.";
                     return false;
                 }
             }

@@ -32,10 +32,8 @@ namespace DingoGameObjectsCMS.Tests.Editor
         {
             var descriptor = RuntimePatchSchemaDiscovery.DescribeComponent(
                 typeof(RuntimePatchCollectionFixture_GRC),
-                9901,
-                "tests:cms-generic-list");
+                9901);
             var manifest = RuntimePatchSchemaReconciler.Reconcile(
-                null,
                 new[] { descriptor.Schema },
                 "cms-tests",
                 1);
@@ -45,8 +43,7 @@ namespace DingoGameObjectsCMS.Tests.Editor
             Assert.That(field.ValueType.Kind, Is.EqualTo(RuntimePatchGeneratedValueKind.List));
             Assert.That(field.ValueType.ElementType.RuntimeType, Is.EqualTo(typeof(RuntimePatchPlacementFixture)));
             Assert.That(field.Schema.Encoding, Is.EqualTo(RuntimePatchFieldEncoding.CustomList));
-            Assert.That(field.Schema.FieldTypeSignature, Does.Contain("UnityEngine.Hash128:canonical-hex:v1"));
-            Assert.That(field.Schema.FieldTypeSignature, Does.Contain("runtime-object-patch:canonical:v1"));
+            Assert.That(field.Schema.FieldId, Is.Zero);
 
             var source = RuntimePatchCodeEmitter.Generate(
                 manifest,
@@ -61,21 +58,19 @@ namespace DingoGameObjectsCMS.Tests.Editor
             Assert.That(source, Does.Contain("RuntimePatchGeneratedValueCodec.CloneRuntimeObjectPatch"));
             Assert.That(source, Does.Contain(
                 "global::System.Collections.Generic.List<global::DingoGameObjectsCMS.Tests.Editor.RuntimePatchPlacementFixture>"));
-            Assert.That(source, Does.Not.Contain("System.Reflection"));
             Assert.That(source, Does.Not.Contain("Newtonsoft"));
         }
 
         [Test]
-        public void LegacyVector2IntList_KeepsItsPublishedSchemaSignatureAndEncoding()
+        public void Vector2IntList_KeepsItsSpecializedEncoding()
         {
             var descriptor = RuntimePatchSchemaDiscovery.DescribeComponent(
                 typeof(RuntimePatchLegacyListFixture_GRC),
-                9902,
-                "tests:cms-legacy-list");
+                9902);
             var field = descriptor.Fields[0];
 
             Assert.That(field.ValueType.Kind, Is.EqualTo(RuntimePatchGeneratedValueKind.ListVector2Int));
-            Assert.That(field.Schema.FieldTypeSignature, Is.EqualTo("list-atomic:UnityEngine.Vector2Int:v1"));
+            Assert.That(field.Schema.FieldId, Is.Zero);
             Assert.That(field.Schema.Encoding, Is.EqualTo(RuntimePatchFieldEncoding.CustomListVector2Int));
         }
 
@@ -127,7 +122,6 @@ namespace DingoGameObjectsCMS.Tests.Editor
             var patch = new RuntimeObjectPatch("runtime-schema");
             patch.Components.Add(new ComponentPatch(
                 7,
-                "tests:runtime-component",
                 ComponentPatchKind.Add,
                 new byte[] { 1, 2, 3 }));
             return patch;
@@ -139,7 +133,7 @@ namespace DingoGameObjectsCMS.Tests.Editor
                 "authoring-schema",
                 RuntimeObjectPatchRepresentation.AuthoringCanonicalJson);
             patch.Components.Add(ComponentPatch.Authoring(
-                "tests:authoring-component",
+                8,
                 ComponentPatchKind.Add,
                 "{}"));
             return patch;

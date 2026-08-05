@@ -54,6 +54,8 @@ namespace DingoGameObjectsCMS.Mirror
             NetworkClient.RegisterHandler<RtSessionManifest>(OnManifest);
             NetworkClient.RegisterHandler<RtProtocolReject>(OnReject);
             NetworkClient.RegisterHandler<RtBaselineChunk>(OnBaselineChunk);
+            NetworkClient.RegisterHandler<RtCheckpointChunk>(
+                OnCheckpointChunk);
             NetworkClient.RegisterHandler<RtStoreDelta>(OnDelta);
             NetworkClient.RegisterHandler<RtCommandResult>(OnCommandResult);
             NetworkClient.RegisterHandler<RtStateStreamFrame>(OnStateStream);
@@ -87,6 +89,7 @@ namespace DingoGameObjectsCMS.Mirror
             NetworkClient.UnregisterHandler<RtSessionManifest>();
             NetworkClient.UnregisterHandler<RtProtocolReject>();
             NetworkClient.UnregisterHandler<RtBaselineChunk>();
+            NetworkClient.UnregisterHandler<RtCheckpointChunk>();
             NetworkClient.UnregisterHandler<RtStoreDelta>();
             NetworkClient.UnregisterHandler<RtCommandResult>();
             NetworkClient.UnregisterHandler<RtStateStreamFrame>();
@@ -122,6 +125,13 @@ namespace DingoGameObjectsCMS.Mirror
         private void OnBaselineChunk(RtBaselineChunk message)
         {
             _coordinator.ReceiveBaselineChunk(message.Value, NetworkTime.localTime);
+        }
+
+        private void OnCheckpointChunk(RtCheckpointChunk message)
+        {
+            _coordinator.ReceiveCheckpointChunk(
+                message.Value,
+                NetworkTime.localTime);
         }
 
         private void OnDelta(RtStoreDelta message)

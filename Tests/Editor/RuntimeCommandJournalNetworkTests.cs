@@ -40,6 +40,41 @@ namespace DingoGameObjectsCMS.Tests.Editor
 
     public class RuntimeCommandJournalNetworkTests
     {
+        private sealed class RecordingRestoreTransaction :
+            IRuntimeCheckpointStageRestoreTransaction
+        {
+            public bool IsCommitted { get; private set; }
+            public bool IsPrepared { get; private set; }
+            public bool IsDisposed { get; private set; }
+            public bool ThrowOnPrepare { get; set; }
+
+            public void PrepareCommit()
+            {
+                if (IsDisposed)
+                    throw new ObjectDisposedException(nameof(RecordingRestoreTransaction));
+                if (ThrowOnPrepare)
+                {
+                    throw new InvalidOperationException(
+                        "Expected project checkpoint commit preparation failure.");
+                }
+                IsPrepared = true;
+            }
+
+            public void Commit()
+            {
+                if (IsDisposed)
+                    throw new ObjectDisposedException(nameof(RecordingRestoreTransaction));
+                if (!IsPrepared)
+                    throw new InvalidOperationException("Restore transaction was not prepared.");
+                IsCommitted = true;
+            }
+
+            public void Dispose()
+            {
+                IsDisposed = true;
+            }
+        }
+
         private const uint COMMAND_TYPE_ID = 4301;
         private const string CHECKPOINT_HASH =
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -61,6 +96,8 @@ namespace DingoGameObjectsCMS.Tests.Editor
             EnsureCoroutineParent();
             _world = new World(nameof(RuntimeCommandJournalNetworkTests));
             RuntimeStores.SetupWorld(_world);
+            _world.GetOrCreateSystemManaged<
+                EndSimulationEntityCommandBufferSystem>();
         }
 
         [TearDown]
@@ -127,6 +164,255 @@ namespace DingoGameObjectsCMS.Tests.Editor
             Assert.That(
                 assembler.Accept(conflicting, 0d, out _),
                 Is.EqualTo(RuntimeBaselineChunkResult.ConflictingTransfer));
+        }
+
+        [Test]
+        public void ClientCoordinator_RestoresCheckpointWhileStoresAreStagedBeforeJournal()
+        {
+            var store = new NetStoreRef(
+                new FixedString32Bytes("map"),
+                1);
+            var fixture = CreateProtocolFixture(store);
+            var bus = CreateBus();
+            var recovery = CreateRecoveryCheckpoint(
+                "world",
+                completedTick: 5,
+                cursor: 0,
+                payload: new byte[] { 1, 2, 3 });
+            var restoreCalls = 0;
+            var playbackCalls = 0;
+            RecordingRestoreTransaction restoreTransaction = null;
+            using var coordinator =
+                new RuntimeProtocolClientCoordinator(
+                    fixture.CreateClientContext(
+                        bus,
+                        new RuntimeCommandJournalScope("map"),
+                        _ => playbackCalls++,
+                        (world, checkpoint, stagedStores) =>
+                        {
+                            restoreCalls++;
+                            Assert.That(
+                                RuntimeReplayHash.ToHex(
+                                    checkpoint.OverallHash),
+                                Is.EqualTo(
+                                    recovery.Boundary.CheckpointHash));
+                            Assert.That(stagedStores, Has.Count.EqualTo(1));
+                            Assert.That(
+                                RuntimeStores.TryGetRuntimeStore(
+                                    store.StoreId,
+                                    store.StoreGeneration,
+                                    StoreRealm.Client,
+                                    out _),
+                                Is.False,
+                                "Checkpoint restore must run while grouped stores are still invisible.");
+                            restoreTransaction =
+                                new RecordingRestoreTransaction();
+                            return restoreTransaction;
+                        }),
+                    new RuntimeProtocolClientOutput(
+                        (_, _) => { },
+                        _ => { },
+                        (_, _) => { },
+                        _ => { },
+                        _ => { },
+                        _ => { },
+                        _ => { }),
+                    clientNonce: 23);
+            var session = BeginClientSession(
+                coordinator,
+                fixture,
+                sessionId: 35);
+
+            var baselineResult = SendBaseline(
+                coordinator,
+                fixture,
+                session.SessionId,
+                store,
+                baselineId: 1,
+                deliverySequence: 1,
+                recovery.Boundary);
+            Assert.That(
+                baselineResult.Kind,
+                Is.EqualTo(RuntimeClientReceiveResultKind.Buffered));
+            Assert.That(restoreCalls, Is.Zero);
+
+            var chunks = RuntimeCheckpointChunker.Split(
+                session.SessionId,
+                recovery);
+            RuntimeClientReceiveResult checkpointResult = default;
+            for (var i = 0; i < chunks.Count; i++)
+            {
+                checkpointResult = coordinator.ReceiveCheckpointChunk(
+                    chunks[i],
+                    nowSeconds: i + 1);
+            }
+
+            Assert.That(restoreCalls, Is.EqualTo(1));
+            Assert.That(restoreTransaction, Is.Not.Null);
+            Assert.That(restoreTransaction.IsPrepared, Is.True);
+            Assert.That(restoreTransaction.IsCommitted, Is.True);
+            Assert.That(restoreTransaction.IsDisposed, Is.True);
+            Assert.That(
+                checkpointResult.Kind,
+                Is.EqualTo(RuntimeClientReceiveResultKind.Buffered));
+            Assert.That(
+                RuntimeStores.TryGetRuntimeStore(
+                    store.StoreId,
+                    store.StoreGeneration,
+                    StoreRealm.Client,
+                    out _),
+                Is.True);
+            Assert.That(coordinator.IsReplicaReady, Is.False);
+
+            var journalResult = coordinator.ReceiveJournalBatch(
+                new RuntimeCommandJournalBatch(
+                    session.SessionId,
+                    recovery.Boundary.GroupId,
+                    recovery.Boundary.CheckpointHash,
+                    recovery.Boundary.JournalCursor,
+                    recovery.Boundary.JournalCursor,
+                    Array.Empty<RuntimeCommandJournalEntry>(),
+                    completesCatchup: true));
+            Assert.That(journalResult.Succeeded, Is.True);
+            Assert.That(playbackCalls, Is.EqualTo(1));
+            Assert.That(coordinator.IsReplicaReady, Is.True);
+        }
+
+        [Test]
+        public void ClientCoordinator_ProjectCommitPreparationFailureDoesNotPublishOrBecomeReady()
+        {
+            var store = new NetStoreRef(
+                new FixedString32Bytes("map"),
+                1);
+            var fixture = CreateProtocolFixture(store);
+            var bus = CreateBus();
+            var recovery = CreateRecoveryCheckpoint(
+                "world",
+                completedTick: 5,
+                cursor: 0,
+                payload: new byte[] { 1, 2, 3 });
+            var transaction = new RecordingRestoreTransaction
+            {
+                ThrowOnPrepare = true,
+            };
+            using var coordinator = new RuntimeProtocolClientCoordinator(
+                fixture.CreateClientContext(
+                    bus,
+                    new RuntimeCommandJournalScope("map"),
+                    _ => { },
+                    (_, _, _) => transaction),
+                new RuntimeProtocolClientOutput(
+                    (_, _) => { },
+                    _ => { },
+                    (_, _) => { },
+                    _ => { },
+                    _ => { },
+                    _ => { },
+                    _ => { }),
+                clientNonce: 24);
+            var session = BeginClientSession(
+                coordinator,
+                fixture,
+                sessionId: 36);
+
+            Assert.That(
+                SendBaseline(
+                    coordinator,
+                    fixture,
+                    session.SessionId,
+                    store,
+                    baselineId: 1,
+                    deliverySequence: 1,
+                    recovery.Boundary).Kind,
+                Is.EqualTo(RuntimeClientReceiveResultKind.Buffered));
+            var chunks = RuntimeCheckpointChunker.Split(
+                session.SessionId,
+                recovery);
+            RuntimeClientReceiveResult result = default;
+            for (var i = 0; i < chunks.Count; i++)
+            {
+                result = coordinator.ReceiveCheckpointChunk(
+                    chunks[i],
+                    nowSeconds: i + 1);
+            }
+
+            Assert.That(
+                result.Kind,
+                Is.EqualTo(RuntimeClientReceiveResultKind.ResyncRequested));
+            Assert.That(transaction.IsDisposed, Is.True);
+            Assert.That(transaction.IsCommitted, Is.False);
+            Assert.That(coordinator.IsReplicaReady, Is.False);
+            Assert.That(
+                RuntimeStores.TryGetRuntimeStore(
+                    store.StoreId,
+                    store.StoreGeneration,
+                    StoreRealm.Client,
+                    out _),
+                Is.False,
+                "A fallible project commit preparation must run before grouped publication.");
+        }
+
+        [Test]
+        public void ServerCoordinator_SendsBaselineThenCheckpointThenJournal()
+        {
+            var store = RegisterServerStore("map");
+            var fixture = CreateProtocolFixture(store);
+            var journal = new RuntimeCommandJournal(() => 0d);
+            var scope = new RuntimeCommandJournalScope("map");
+            journal.ConfigureWindow(
+                "world",
+                scope,
+                new RuntimeCommandJournalRetentionPolicy(
+                    maxEntries: 32,
+                    maxPayloadBytes: 1024,
+                    maxAgeSeconds: 60d));
+            var bus = CreateBus(journal);
+            var recovery = CreateRecoveryCheckpoint(
+                "world",
+                completedTick: 0,
+                cursor: 0,
+                payload: new byte[] { 7, 8, 9 });
+            var order = new List<string>();
+            RuntimeSessionManifestSnapshot manifest = null;
+            using var coordinator =
+                new RuntimeProtocolServerCoordinator(
+                    fixture.CreateServerRecoveryContext(
+                        bus,
+                        scope,
+                        () => recovery),
+                    new RuntimeProtocolServerOutput(
+                        (_, value) => manifest = value,
+                        (_, _, _) => { },
+                        (_, _) => order.Add("baseline"),
+                        (_, _) => { },
+                        (_, _) => { },
+                        (in RuntimeReliableDeltaTransportEnvelope _) => true,
+                        journalBatch: (_, _) => order.Add("journal"),
+                        checkpointChunk: (_, _) =>
+                            order.Add("checkpoint")),
+                    firstSessionId: 41);
+            coordinator.AddConnection(1);
+            Assert.That(
+                coordinator.ReceiveHello(
+                    1,
+                    fixture.Manifest.Descriptor,
+                    clientNonce: 2).Accepted,
+                Is.True);
+            Assert.That(
+                coordinator.ReceiveReady(
+                    1,
+                    manifest.SessionId).Accepted,
+                Is.True);
+
+            Assert.That(order, Does.Contain("baseline"));
+            Assert.That(order, Does.Contain("checkpoint"));
+            Assert.That(order, Does.Contain("journal"));
+            Assert.That(
+                order.LastIndexOf("baseline"),
+                Is.LessThan(order.IndexOf("checkpoint")));
+            Assert.That(
+                order.LastIndexOf("checkpoint"),
+                Is.LessThan(order.IndexOf("journal")));
         }
 
         [Test]
@@ -1263,6 +1549,38 @@ namespace DingoGameObjectsCMS.Tests.Editor
             Assert.That(receiver.NeedsResync, Is.True);
         }
 
+        private static RuntimeRecoveryCheckpoint
+            CreateRecoveryCheckpoint(
+                string groupId,
+                long completedTick,
+                ulong cursor,
+                byte[] payload)
+        {
+            var pages = RuntimeReplayCheckpointPageUtils.Split(
+                payload);
+            var section = new RuntimeReplayCheckpointSection(
+                1,
+                1,
+                pages,
+                payload.Length,
+                RuntimeReplayHash.CalculateSha256(
+                    pages,
+                    payload.Length));
+            var envelope = RuntimeReplayCheckpointCodec.Create(
+                completedTick,
+                cursor,
+                CHECKPOINT_HASH,
+                new[] { section });
+            return new RuntimeRecoveryCheckpoint(
+                new RuntimeCheckpointBoundary(
+                    groupId,
+                    completedTick,
+                    cursor,
+                    RuntimeReplayHash.ToHex(
+                        envelope.OverallHash)),
+                envelope);
+        }
+
         private static RuntimeCommandJournalEntry Entry(
             long tick,
             ulong sequence,
@@ -1424,7 +1742,9 @@ namespace DingoGameObjectsCMS.Tests.Editor
                     RuntimeCommandsBus bus,
                     RuntimeCommandJournalScope scope,
                     RuntimeJournalCatchupCompletion
-                        completeJournalCatchup)
+                        completeJournalCatchup,
+                    RuntimeCheckpointStageRestore
+                        restoreCheckpointStage = null)
             {
                 return new RuntimeProtocolContext(
                     RuntimeSessionClientExpectation
@@ -1439,7 +1759,31 @@ namespace DingoGameObjectsCMS.Tests.Editor
                     commandsBus: bus,
                     journalSubscriptionScope: scope,
                     completeJournalCatchup:
-                        completeJournalCatchup);
+                        completeJournalCatchup,
+                    restoreCheckpointStage:
+                        restoreCheckpointStage);
+            }
+
+            public RuntimeProtocolContext
+                CreateServerRecoveryContext(
+                    RuntimeCommandsBus bus,
+                    RuntimeCommandJournalScope scope,
+                    RuntimeRecoveryCheckpointProvider
+                        recoveryCheckpointProvider)
+            {
+                return new RuntimeProtocolContext(
+                    Manifest,
+                    AssetCatalog,
+                    AssetLock,
+                    Templates,
+                    PatchCodecs,
+                    Policies,
+                    _world,
+                    Streams,
+                    commandsBus: bus,
+                    journalSubscriptionScope: scope,
+                    recoveryCheckpointProvider:
+                        recoveryCheckpointProvider);
             }
 
             public RuntimeProtocolContext

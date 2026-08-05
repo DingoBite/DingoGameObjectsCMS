@@ -18,7 +18,6 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
     public readonly struct RuntimeReplicationPolicyEntry
     {
         public readonly Type ComponentType;
-        public readonly string ComponentTypeKey;
         public readonly RuntimeReplicationPolicy Policy;
 
         public RuntimeReplicationPolicyEntry(Type componentType, RuntimeReplicationPolicy policy)
@@ -33,7 +32,6 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             }
 
             ComponentType = componentType;
-            ComponentTypeKey = RuntimeComponentTypeRegistry.GetKey(componentType);
             Policy = policy;
         }
 
@@ -72,7 +70,7 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                 if (!RuntimeComponentTypeRegistry.TryGetId(entry.ComponentType, out var componentTypeId))
                 {
                     throw new InvalidOperationException(
-                        $"Runtime component '{entry.ComponentTypeKey}' has a replication policy but is missing from the active runtime type manifest.");
+                        $"Runtime component '{entry.ComponentType.FullName}' has a replication policy but is missing from the active runtime type manifest.");
                 }
                 registry.Register(componentTypeId, entry.Policy);
             }
@@ -191,12 +189,12 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             in RuntimeReplicationPolicyEntry entry,
             HashSet<Type> registeredTypes)
         {
-            if (entry.ComponentType == null || string.IsNullOrWhiteSpace(entry.ComponentTypeKey))
+            if (entry.ComponentType == null)
                 throw new InvalidOperationException("Replication policy entries cannot contain a default value.");
             if (!registeredTypes.Add(entry.ComponentType))
             {
                 throw new InvalidOperationException(
-                    $"Runtime component '{entry.ComponentTypeKey}' has duplicate replication policy entries.");
+                    $"Runtime component '{entry.ComponentType.FullName}' has duplicate replication policy entries.");
             }
         }
     }
@@ -218,26 +216,25 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             string coverageName)
         {
             var policiesById = CreateManifestPolicyMap(runtimeManifest, policyEntries);
-            var componentIdByKey = CreateManifestComponentIdByKey(runtimeManifest);
+            var componentIdByType = CreateManifestComponentIdByType(runtimeManifest);
             if (coveredComponentTypes == null)
                 throw new ArgumentNullException(nameof(coveredComponentTypes));
 
             var coveredIds = new List<uint>();
-            var coveredKeys = new HashSet<string>(StringComparer.Ordinal);
+            var coveredTypes = new HashSet<Type>();
             foreach (var componentType in coveredComponentTypes)
             {
                 if (componentType == null)
                     throw new InvalidOperationException($"{RequireCoverageName(coverageName)} contains a null component type.");
-                var componentTypeKey = RuntimeComponentTypeRegistry.GetKey(componentType);
-                if (!coveredKeys.Add(componentTypeKey))
+                if (!coveredTypes.Add(componentType))
                 {
                     throw new InvalidOperationException(
-                        $"{RequireCoverageName(coverageName)} contains duplicate component '{componentTypeKey}'.");
+                        $"{RequireCoverageName(coverageName)} contains duplicate component '{componentType.FullName}'.");
                 }
-                if (!componentIdByKey.TryGetValue(componentTypeKey, out var componentTypeId))
+                if (!componentIdByType.TryGetValue(componentType, out var componentTypeId))
                 {
                     throw new InvalidOperationException(
-                        $"{RequireCoverageName(coverageName)} contains component '{componentTypeKey}' that is missing from the runtime type manifest.");
+                        $"{RequireCoverageName(coverageName)} contains component '{componentType.FullName}' that is missing from the runtime type manifest.");
                 }
                 coveredIds.Add(componentTypeId);
             }
@@ -292,44 +289,44 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             if (policyEntries == null)
                 throw new ArgumentNullException(nameof(policyEntries));
 
-            var componentIdByKey = CreateManifestComponentIdByKey(runtimeManifest);
+            var componentIdByType = CreateManifestComponentIdByType(runtimeManifest);
             var result = new Dictionary<uint, RuntimeReplicationPolicy>();
-            var policyKeys = new HashSet<string>(StringComparer.Ordinal);
+            var policyTypes = new HashSet<Type>();
             for (var i = 0; i < policyEntries.Count; i++)
             {
                 var entry = policyEntries[i];
-                if (entry.ComponentType == null || string.IsNullOrWhiteSpace(entry.ComponentTypeKey))
+                if (entry.ComponentType == null)
                     throw new InvalidOperationException("Replication policy entries cannot contain a default value.");
-                if (!policyKeys.Add(entry.ComponentTypeKey))
+                if (!policyTypes.Add(entry.ComponentType))
                 {
                     throw new InvalidOperationException(
-                        $"Runtime component '{entry.ComponentTypeKey}' has duplicate replication policy entries.");
+                        $"Runtime component '{entry.ComponentType.FullName}' has duplicate replication policy entries.");
                 }
-                if (!componentIdByKey.TryGetValue(entry.ComponentTypeKey, out var componentTypeId))
+                if (!componentIdByType.TryGetValue(entry.ComponentType, out var componentTypeId))
                 {
                     throw new InvalidOperationException(
-                        $"Runtime component '{entry.ComponentTypeKey}' has a replication policy but is missing from the runtime type manifest.");
+                        $"Runtime component '{entry.ComponentType.FullName}' has a replication policy but is missing from the runtime type manifest.");
                 }
                 result.Add(componentTypeId, entry.Policy);
             }
 
-            foreach (var pair in componentIdByKey)
+            foreach (var pair in componentIdByType)
             {
                 if (!result.ContainsKey(pair.Value))
                 {
                     throw new InvalidOperationException(
-                        $"Runtime component '{pair.Key}' (id {pair.Value}) has no explicit replication policy.");
+                        $"Runtime component '{pair.Key.FullName}' (id {pair.Value}) has no explicit replication policy.");
                 }
             }
             return result;
         }
 
-        private static Dictionary<string, uint> CreateManifestComponentIdByKey(Manifest runtimeManifest)
+        private static Dictionary<Type, uint> CreateManifestComponentIdByType(Manifest runtimeManifest)
         {
             if (runtimeManifest?.Types == null)
                 throw new ArgumentNullException(nameof(runtimeManifest), "Runtime type manifest and its Types collection are required.");
 
-            var result = new Dictionary<string, uint>(StringComparer.Ordinal);
+            var result = new Dictionary<Type, uint>();
             var ids = new HashSet<int>();
             for (var i = 0; i < runtimeManifest.Types.Count; i++)
             {
@@ -337,12 +334,12 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                             ?? throw new InvalidOperationException($"Runtime type manifest contains a null entry at index {i}.");
                 if (entry.Id < 0)
                     throw new InvalidOperationException($"Runtime type manifest contains negative component id {entry.Id}.");
-                if (string.IsNullOrWhiteSpace(entry.Key))
-                    throw new InvalidOperationException($"Runtime type manifest component id {entry.Id} has no stable key.");
                 if (!ids.Add(entry.Id))
                     throw new InvalidOperationException($"Runtime type manifest contains duplicate component id {entry.Id}.");
-                if (!result.TryAdd(entry.Key, (uint)entry.Id))
-                    throw new InvalidOperationException($"Runtime type manifest contains duplicate component key '{entry.Key}'.");
+                if (entry.RuntimeType == null)
+                    throw new TypeLoadException($"Runtime type manifest component id {entry.Id} requires RuntimeType = typeof(T).");
+                if (!result.TryAdd(entry.RuntimeType, (uint)entry.Id))
+                    throw new InvalidOperationException($"Runtime type manifest contains duplicate component type '{entry.RuntimeType.FullName}'.");
             }
             return result;
         }

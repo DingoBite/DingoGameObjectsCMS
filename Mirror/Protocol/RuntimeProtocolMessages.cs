@@ -115,6 +115,12 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
     }
 
     [Serializable, Preserve]
+    public struct RtCheckpointChunk : NetworkMessage
+    {
+        public RuntimeCheckpointChunk Value;
+    }
+
+    [Serializable, Preserve]
     public struct RtStoreDelta : NetworkMessage
     {
         public RuntimeStoreDeltaKind Kind;

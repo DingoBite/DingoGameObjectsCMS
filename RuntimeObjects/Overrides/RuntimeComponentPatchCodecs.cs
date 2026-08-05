@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Reflection;
 using DingoGameObjectsCMS.RuntimeObjects.Objects;
 
 namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
@@ -21,15 +22,12 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
     public abstract class RuntimeComponentPatchCodec
     {
         public readonly uint ComponentTypeId;
-        public readonly string ComponentTypeKey;
         public abstract Type ComponentRuntimeType { get; }
+        public abstract uint FieldCount { get; }
 
-        protected RuntimeComponentPatchCodec(uint componentTypeId, string componentTypeKey)
+        protected RuntimeComponentPatchCodec(uint componentTypeId)
         {
-            if (string.IsNullOrWhiteSpace(componentTypeKey))
-                throw new ArgumentException("Runtime component patch key is required.", nameof(componentTypeKey));
             ComponentTypeId = componentTypeId;
-            ComponentTypeKey = componentTypeKey;
         }
 
         public ComponentPatch BuildPatch(
@@ -43,16 +41,16 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
                 return null;
 
             if (baseline == null)
-                return new ComponentPatch(ComponentTypeId, ComponentTypeKey, ComponentPatchKind.Add, EncodeCanonical(current, context));
+                return new ComponentPatch(ComponentTypeId, ComponentPatchKind.Add, EncodeCanonical(current, context));
 
             if (current == null)
-                return new ComponentPatch(ComponentTypeId, ComponentTypeKey, ComponentPatchKind.Remove);
+                return new ComponentPatch(ComponentTypeId, ComponentPatchKind.Remove);
 
             if (TryBuildCustomPatch(baseline, current, context, out var customPayload))
             {
                 if (customPayload == null)
-                    throw new InvalidOperationException($"Component {ComponentTypeKey} custom codec returned a null payload.");
-                return new ComponentPatch(ComponentTypeId, ComponentTypeKey, ComponentPatchKind.Custom, customPayload);
+                    throw new InvalidOperationException($"Component {ComponentRuntimeType.FullName} custom codec returned a null payload.");
+                return new ComponentPatch(ComponentTypeId, ComponentPatchKind.Custom, customPayload);
             }
 
             var fields = new List<FieldPatch>();
@@ -61,7 +59,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
             if (fields.Count == 0)
                 return null;
 
-            return new ComponentPatch(ComponentTypeId, ComponentTypeKey, ComponentPatchKind.Fields)
+            return new ComponentPatch(ComponentTypeId, ComponentPatchKind.Fields)
             {
                 Fields = fields
             };
@@ -78,8 +76,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
                 return baseline == null ? null : Clone(baseline);
             if (patch.ComponentTypeId != ComponentTypeId)
                 throw new InvalidOperationException($"Codec {ComponentTypeId} cannot apply component patch {patch.ComponentTypeId}.");
-            if (!string.Equals(patch.ComponentTypeKey, ComponentTypeKey, StringComparison.Ordinal))
-                throw new InvalidOperationException($"Codec '{ComponentTypeKey}' cannot apply component patch '{patch.ComponentTypeKey}'.");
             ValidatePatchShape(patch);
 
             switch (patch.Kind)
@@ -114,7 +110,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
 
                 case ComponentPatchKind.Custom:
                     if (baseline == null)
-                        throw new InvalidOperationException($"Component {ComponentTypeKey} custom patch requires a baseline component.");
+                        throw new InvalidOperationException($"Component {ComponentRuntimeType.FullName} custom patch requires a baseline component.");
                     return ApplyCustomPatch(baseline, patch.Payload, context);
 
                 default:
@@ -145,15 +141,9 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
             return value;
         }
 
-        public virtual bool TryGetFieldKey(uint fieldId, out string fieldKey)
+        public virtual bool TryGetFieldInfo(uint fieldId, out FieldInfo field)
         {
-            fieldKey = null;
-            return false;
-        }
-
-        public virtual bool TryGetFieldId(string fieldKey, out uint fieldId)
-        {
-            fieldId = 0;
+            field = null;
             return false;
         }
 
@@ -189,20 +179,15 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
             byte[] payload,
             RuntimePatchCodecContext context)
         {
-            throw new InvalidOperationException($"Component {ComponentTypeKey} does not support custom patches.");
+            throw new InvalidOperationException($"Component {ComponentRuntimeType.FullName} does not support custom patches.");
         }
 
         private static void NormalizeFields(List<FieldPatch> fields)
         {
-            var keys = new HashSet<string>(StringComparer.Ordinal);
             for (var i = 0; i < fields.Count; i++)
             {
                 if (fields[i] == null)
                     throw new InvalidOperationException("Component field patches cannot contain null entries.");
-                if (string.IsNullOrWhiteSpace(fields[i].FieldKey))
-                    throw new InvalidOperationException($"Component field patch {fields[i].FieldId} has no stable field key.");
-                if (!keys.Add(fields[i].FieldKey))
-                    throw new InvalidOperationException($"Component patch contains duplicate field key '{fields[i].FieldKey}'.");
             }
             fields.Sort(CompareFields);
 
@@ -267,8 +252,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
 
         private static int CompareFields(FieldPatch first, FieldPatch second)
         {
-            var byId = first.FieldId.CompareTo(second.FieldId);
-            return byId != 0 ? byId : string.CompareOrdinal(first.FieldKey, second.FieldKey);
+            return first.FieldId.CompareTo(second.FieldId);
         }
     }
 
@@ -276,7 +260,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
     {
         public override Type ComponentRuntimeType => typeof(T);
 
-        protected RuntimeComponentPatchCodec(uint componentTypeId, string componentTypeKey) : base(componentTypeId, componentTypeKey) { }
+        protected RuntimeComponentPatchCodec(uint componentTypeId) : base(componentTypeId) { }
 
         public override GameRuntimeComponent Clone(GameRuntimeComponent value)
         {
@@ -368,7 +352,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
             byte[] payload,
             RuntimePatchCodecContext context)
         {
-            throw new InvalidOperationException($"Component {ComponentTypeKey} does not support custom patches.");
+            throw new InvalidOperationException($"Component {ComponentRuntimeType.FullName} does not support custom patches.");
         }
 
         private static T RequireTyped(GameRuntimeComponent value)
@@ -382,7 +366,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
     public class RuntimePatchCodecRegistry
     {
         private readonly Dictionary<uint, RuntimeComponentPatchCodec> _codecs = new();
-        private readonly Dictionary<string, RuntimeComponentPatchCodec> _codecsByKey = new(StringComparer.Ordinal);
+        private readonly Dictionary<Type, RuntimeComponentPatchCodec> _codecsByType = new();
 
         public readonly string SchemaHash;
 
@@ -401,10 +385,10 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
                 throw new ArgumentNullException(nameof(codec));
             if (_codecs.ContainsKey(codec.ComponentTypeId))
                 throw new InvalidOperationException($"Runtime component patch codec {codec.ComponentTypeId} is already registered.");
-            if (_codecsByKey.ContainsKey(codec.ComponentTypeKey))
-                throw new InvalidOperationException($"Runtime component patch codec '{codec.ComponentTypeKey}' is already registered.");
+            if (_codecsByType.ContainsKey(codec.ComponentRuntimeType))
+                throw new InvalidOperationException($"Runtime component patch codec '{codec.ComponentRuntimeType.FullName}' is already registered.");
             _codecs.Add(codec.ComponentTypeId, codec);
-            _codecsByKey.Add(codec.ComponentTypeKey, codec);
+            _codecsByType.Add(codec.ComponentRuntimeType, codec);
         }
 
         public bool TryGet(uint componentTypeId, out RuntimeComponentPatchCodec codec)
@@ -419,16 +403,20 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
             throw new KeyNotFoundException($"Runtime component patch codec {componentTypeId} is not registered.");
         }
 
-        public bool TryGet(string componentTypeKey, out RuntimeComponentPatchCodec codec)
+        public bool TryGet(Type componentType, out RuntimeComponentPatchCodec codec)
         {
-            return _codecsByKey.TryGetValue(componentTypeKey, out codec);
+            if (componentType != null)
+                return _codecsByType.TryGetValue(componentType, out codec);
+            codec = null;
+            return false;
         }
 
-        public RuntimeComponentPatchCodec Get(string componentTypeKey)
+        public RuntimeComponentPatchCodec Get(Type componentType)
         {
-            if (_codecsByKey.TryGetValue(componentTypeKey, out var codec))
+            if (componentType != null
+                && _codecsByType.TryGetValue(componentType, out var codec))
                 return codec;
-            throw new KeyNotFoundException($"Runtime component patch codec '{componentTypeKey}' is not registered.");
+            throw new KeyNotFoundException($"Runtime component patch codec '{componentType?.FullName ?? "null"}' is not registered.");
         }
     }
 
@@ -524,7 +512,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
                         AppendStructuralPresenceChange(
                             result,
                             componentTypeId,
-                            codec.ComponentTypeKey,
                             hasBaseline,
                             hasCurrent);
                         break;
@@ -534,7 +521,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
                         {
                             result.Components.Add(new ComponentPatch(
                                 componentTypeId,
-                                codec.ComponentTypeKey,
                                 ComponentPatchKind.Remove));
                         }
                         break;
@@ -582,7 +568,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
                 AppendStructuralPresenceChange(
                     target,
                     componentTypeId,
-                    _registry.Get(componentTypeId).ComponentTypeKey,
                     previousSet.Contains(componentTypeId),
                     currentSet.Contains(componentTypeId));
             }
@@ -822,12 +807,10 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
             RuntimeComponentPatchCodec codec,
             ComponentPatch patch)
         {
-            if (patch.ComponentTypeId != codec.ComponentTypeId
-                || !string.Equals(patch.ComponentTypeKey, codec.ComponentTypeKey, StringComparison.Ordinal))
+            if (patch.ComponentTypeId != codec.ComponentTypeId)
             {
                 throw new InvalidOperationException(
-                    $"Component patch {patch.ComponentTypeId}/'{patch.ComponentTypeKey}' does not match codec " +
-                    $"{codec.ComponentTypeId}/'{codec.ComponentTypeKey}'.");
+                    $"Component patch {patch.ComponentTypeId} does not match codec {codec.ComponentTypeId}.");
             }
         }
 
@@ -849,7 +832,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
         private static void AppendStructuralPresenceChange(
             RuntimeObjectPatch target,
             uint componentTypeId,
-            string componentTypeKey,
             bool hadPrevious,
             bool hasCurrent)
         {
@@ -858,21 +840,15 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
 
             target.Components.Add(new ComponentPatch(
                 componentTypeId,
-                componentTypeKey,
                 hasCurrent ? ComponentPatchKind.AddPresence : ComponentPatchKind.Remove));
         }
 
         private static void NormalizeComponents(List<ComponentPatch> components)
         {
-            var keys = new HashSet<string>(StringComparer.Ordinal);
             for (var i = 0; i < components.Count; i++)
             {
                 if (components[i] == null)
                     throw new InvalidOperationException("Runtime object patch cannot contain null component patches.");
-                if (string.IsNullOrWhiteSpace(components[i].ComponentTypeKey))
-                    throw new InvalidOperationException($"Runtime object component patch {components[i].ComponentTypeId} has no stable component key.");
-                if (!keys.Add(components[i].ComponentTypeKey))
-                    throw new InvalidOperationException($"Runtime object patch contains duplicate component type key '{components[i].ComponentTypeKey}'.");
             }
             components.Sort(CompareComponents);
 
@@ -885,8 +861,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
 
         private static int CompareComponents(ComponentPatch first, ComponentPatch second)
         {
-            var byId = first.ComponentTypeId.CompareTo(second.ComponentTypeId);
-            return byId != 0 ? byId : string.CompareOrdinal(first.ComponentTypeKey, second.ComponentTypeKey);
+            return first.ComponentTypeId.CompareTo(second.ComponentTypeId);
         }
     }
 }

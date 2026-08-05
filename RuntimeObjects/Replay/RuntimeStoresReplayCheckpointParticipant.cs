@@ -190,7 +190,8 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
     public class RuntimeStoresReplayCheckpointParticipant :
         IRuntimeReplayCheckpointParticipant,
         IRuntimeReplayCheckpointPrevalidator,
-        IRuntimeReplayCheckpointValidationContextContributor
+        IRuntimeReplayCheckpointValidationContextContributor,
+        IRuntimeReplayCheckpointSchemaFingerprintContributor
     {
         public const uint SECTION_ID = 0x00010000u;
         public const uint SECTION_VERSION = 1u;
@@ -212,6 +213,18 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
         public uint CurrentVersion => SECTION_VERSION;
         public StoreRealm Realm => _realm;
         public RuntimeReplayStoreScope StoreScope => _storeScope;
+
+        public void AppendCheckpointSchemaFingerprint(
+            RuntimeReplayCheckpointWriter writer)
+        {
+            if (writer == null)
+            {
+                throw new ArgumentNullException(nameof(writer));
+            }
+
+            writer.WriteString("cms.runtime-store.patch-codecs");
+            writer.WriteString(_templates.CodecRegistry.SchemaHash);
+        }
 
         public RuntimeStoresReplayCheckpointParticipant(
             World world,
@@ -244,6 +257,28 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
             ValidateCheckpointScope(requestedScope);
             FlushScopedStoresToQuiescence();
             var snapshot = CaptureSnapshot();
+            ValidateSnapshot(snapshot);
+            ValidateScope(snapshot);
+            return PrepareStage(snapshot);
+        }
+
+        /// <summary>
+        /// Materializes a validated RuntimeStore checkpoint into an
+        /// unpublished stage. Hybrid hosts can bind dependent DOTS state to
+        /// the staged factory projections, prevalidate and restore that state,
+        /// and publish the whole store group only after every dependent
+        /// section succeeds.
+        /// </summary>
+        public RuntimeStoresReplayCheckpointStage PrepareRestoreStage(
+            RuntimeReplayCheckpointReader reader)
+        {
+            if (reader == null)
+            {
+                throw new ArgumentNullException(nameof(reader));
+            }
+
+            var snapshot = ReadSnapshot(reader);
+            reader.RequireEnd();
             ValidateSnapshot(snapshot);
             ValidateScope(snapshot);
             return PrepareStage(snapshot);
@@ -1080,11 +1115,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
 
         private void PlaybackProjectionCommands()
         {
-            var playback = _world.GetExistingSystemManaged<
-                EndSimulationEntityCommandBufferSystem>()
-                           ?? throw new InvalidOperationException(
-                               "Replay restore requires EndSimulationEntityCommandBufferSystem.");
-            playback.Update();
+            RuntimeCheckpointProjectionBarrier.Playback(_world);
         }
 
         private void RetireStagedStores(

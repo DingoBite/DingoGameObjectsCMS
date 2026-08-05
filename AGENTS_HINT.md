@@ -29,12 +29,12 @@
   managed objects. This has known CPU cost, and that cost is accepted for this
   project. Do not keep warning about it unless the user asks to revisit the
   performance model.
-- Do not manually inspect, reconstruct, or edit
-  `Assets/StreamingAssets/runtime_component_types.json` as a normal workflow.
-  When runtime component types change, use the Unity menu helper instead:
-  `Tools/Runtime Types/Generate Manifest` or
-  `Tools/Runtime Types/Regenerate Manifest`. Treat the manifest as generated
-  output unless the user explicitly asks to debug the manifest file itself.
+- Runtime component schemas are checked-in generated C#, not mutable
+  `StreamingAssets` JSON. Active entries use direct `Type` handles; the wire
+  and storage form uses compact numeric ids, while removed slots remain numeric
+  reservations only. Regenerate them through the project's explicit generator
+  binding or build preprocessor. Do not hand-edit generated output, introduce
+  string type identity, or add legacy lookup paths.
 - Physical presentation resources belong to domain GameAssets, not project
   setup code or static catalogs. A module render-preset file defines presets
   only and must not bind resources to presets. Each owning GA serializes a

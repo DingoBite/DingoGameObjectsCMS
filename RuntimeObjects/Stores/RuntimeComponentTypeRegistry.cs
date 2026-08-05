@@ -1,14 +1,9 @@
 using System;
-using System.Collections;
 using System.Collections.Generic;
-using System.IO;
 using System.Linq;
-using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using DingoGameObjectsCMS.RuntimeObjects.Objects;
-using UnityEngine;
-using UnityEngine.Networking;
 using UnityEngine.Scripting;
 
 namespace DingoGameObjectsCMS.RuntimeObjects.Stores
@@ -26,17 +21,12 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
     public class Entry
     {
         public int Id;
-        public string Key;
-        public string TypeName;
-        public string AssemblyName;
-        public string AssemblyQualifiedName;
-        public string CreatedAt;
+        [NonSerialized] public Type RuntimeType;
     }
-    
+
     public static class RuntimeComponentTypeRegistry
     {
-        public const string DEFAULT_MANIFEST_FILE_NAME = "runtime_component_types.json";
-        public const int CURRENT_MANIFEST_VERSION = 2;
+        public const int CURRENT_MANIFEST_VERSION = 3;
 
         private static readonly List<Type> _typesById = new();
         private static readonly Dictionary<Type, uint> _idByType = new();
@@ -47,38 +37,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
         public static int Count => _typeById.Count;
         public static string RegistryHash { get; private set; }
         public static IReadOnlyList<Type> TypesById => _typesById;
-        
-        public static void InitializeFromJson(string json)
-        {
-            if (string.IsNullOrWhiteSpace(json))
-                throw new ArgumentException("Manifest json is empty.", nameof(json));
-
-            var manifest = JsonUtility.FromJson<Manifest>(json);
-            if (manifest == null || manifest.Types == null)
-                throw new InvalidOperationException("Failed to parse manifest json (Manifest/Types is null).");
-
-            InitializeFromManifest(manifest);
-        }
-        
-        public static IEnumerator InitializeFromStreamingAssets(string fileName = DEFAULT_MANIFEST_FILE_NAME)
-        {
-            var path = Path.Combine(Application.streamingAssetsPath, fileName);
-
-            if (path.Contains("://") || path.Contains("jar:"))
-            {
-                using var req = UnityWebRequest.Get(path);
-                yield return req.SendWebRequest();
-
-                if (req.result != UnityWebRequest.Result.Success)
-                    throw new IOException($"Failed to load manifest from StreamingAssets: {path}\n{req.error}");
-
-                InitializeFromJson(req.downloadHandler.text);
-            }
-            else
-            {
-                InitializeFromJson(File.ReadAllText(path));
-            }
-        }
 
         public static bool TryGetId(Type type, out uint id)
         {
@@ -94,10 +52,14 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
         public static uint GetId(this Type type)
         {
             if (!IsInitialized)
-                throw new InvalidOperationException("RuntimeComponentTypeRegistry is not initialized. Call InitializeFromJson/InitializeFromStreamingAssets first.");
+            {
+                throw new InvalidOperationException("RuntimeComponentTypeRegistry is not initialized. Call the generated compiled registry initializer first.");
+            }
 
             if (!_idByType.TryGetValue(type, out var id))
+            {
                 throw new KeyNotFoundException($"Type is not present in manifest: {type.FullName}");
+            }
 
             return id;
         }
@@ -116,64 +78,50 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
         public static Type GetRegisteredType(this uint id)
         {
             if (!IsInitialized)
-                throw new InvalidOperationException("RuntimeComponentTypeRegistry is not initialized. Call InitializeFromJson/InitializeFromStreamingAssets first.");
+            {
+                throw new InvalidOperationException("RuntimeComponentTypeRegistry is not initialized. Call the generated compiled registry initializer first.");
+            }
 
-            if (!_typeById.TryGetValue(id, out var t))
+            if (!_typeById.TryGetValue(id, out var type))
+            {
                 throw new KeyNotFoundException($"Unknown type id: {id}");
+            }
 
-            return t;
+            return type;
         }
-        
-        public static Entry CreateEntry(int id, Type type, string createdAt = null)
-        {
-            if (type == null)
-                throw new ArgumentNullException(nameof(type));
-            if (string.IsNullOrWhiteSpace(type.AssemblyQualifiedName))
-                throw new InvalidOperationException($"Runtime component type has no assembly-qualified name: {type.FullName}");
 
+        public static Entry CreateEntry(int id, Type type)
+        {
+            ValidateRuntimeComponentType(type);
             return new Entry
             {
                 Id = id,
-                Key = GetKey(type),
-                TypeName = type.FullName,
-                AssemblyName = type.Assembly.GetName().Name,
-                AssemblyQualifiedName = type.AssemblyQualifiedName,
-                CreatedAt = createdAt
+                RuntimeType = type,
             };
         }
 
-        public static string GetKey(Type type)
+        public static string CalculateRegistryHash(
+            IEnumerable<Entry> entries,
+            IEnumerable<int> reservedIds)
         {
-            if (type == null)
-                throw new ArgumentNullException(nameof(type));
-
-            var key = type.GetCustomAttribute<RuntimeComponentKeyAttribute>(inherit: false)?.Key;
-            if (!string.IsNullOrWhiteSpace(key))
-                return key.Trim();
-
-            return $"{type.Assembly.GetName().Name}:{type.FullName}";
-        }
-
-        public static string CalculateRegistryHash(IEnumerable<Entry> entries)
-        {
-            return CalculateRegistryHash(entries, null);
-        }
-
-        public static string CalculateRegistryHash(IEnumerable<Entry> entries, IEnumerable<int> reservedIds)
-        {
-            var builder = new StringBuilder();
-            foreach (var entry in entries.Where(e => e != null).OrderBy(e => e.Id))
+            if (entries == null)
             {
-                builder
-                    .Append(entry.Id)
+                throw new ArgumentNullException(nameof(entries));
+            }
+
+            var builder = new StringBuilder();
+            foreach (var entry in entries.Where(entry => entry != null).OrderBy(entry => entry.Id))
+            {
+                var type = entry.RuntimeType
+                           ?? throw new TypeLoadException($"Active compiled runtime component entry id={entry.Id} requires RuntimeType = typeof(T).");
+                builder.Append(entry.Id)
                     .Append('|')
-                    .Append(NormalizeHashPart(entry.Key))
+                    .Append(type.Assembly.GetName().Name)
                     .Append('|')
-                    .Append(NormalizeHashPart(entry.AssemblyName))
-                    .Append('|')
-                    .Append(NormalizeHashPart(entry.TypeName))
+                    .Append(type.FullName)
                     .Append('\n');
             }
+
             if (reservedIds != null)
             {
                 foreach (var reservedId in reservedIds.Distinct().OrderBy(id => id))
@@ -186,64 +134,77 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
             var hash = sha.ComputeHash(Encoding.UTF8.GetBytes(builder.ToString()));
             var hex = new StringBuilder(hash.Length * 2);
             for (var i = 0; i < hash.Length; i++)
+            {
                 hex.Append(hash[i].ToString("x2"));
+            }
 
             return hex.ToString();
         }
 
-        private static void InitializeFromManifest(Manifest manifest)
+        public static void InitializeFromManifest(Manifest manifest)
         {
+            if (manifest?.Types == null)
+            {
+                throw new ArgumentException("A compiled runtime component manifest with a type table is required.", nameof(manifest));
+            }
+            if (manifest.Version != CURRENT_MANIFEST_VERSION)
+            {
+                throw new InvalidOperationException($"Runtime component manifest version {manifest.Version} does not match required version {CURRENT_MANIFEST_VERSION}.");
+            }
+
             _typesById.Clear();
             _idByType.Clear();
             _typeById.Clear();
 
-            var ordered = NormalizeEntries(manifest);
             var reservedIds = manifest.ReservedIds ?? new List<int>();
-            var reservedIdSet = new HashSet<int>();
-            for (var i = 0; i < reservedIds.Count; i++)
+            var reservedIdSet = ValidateReservedIds(reservedIds);
+            var ordered = manifest.Types
+                .Where(entry => entry != null)
+                .OrderBy(entry => entry.Id)
+                .ToArray();
+            var calculatedHash = CalculateRegistryHash(ordered, reservedIdSet);
+            if (!string.IsNullOrWhiteSpace(manifest.RegistryHash)
+                && !string.Equals(manifest.RegistryHash, calculatedHash, StringComparison.Ordinal))
             {
-                var reservedId = reservedIds[i];
-                if (reservedId < 0)
-                    throw new InvalidOperationException($"Runtime component registry has negative reserved id: {reservedId}.");
-                if (!reservedIdSet.Add(reservedId))
-                    throw new InvalidOperationException($"Runtime component registry has duplicate reserved id: {reservedId}.");
+                throw new InvalidOperationException($"Runtime component registry hash mismatch. Manifest={manifest.RegistryHash}, calculated={calculatedHash}.");
             }
 
-            var calculatedHash = CalculateRegistryHash(ordered, reservedIdSet);
-            if (!string.IsNullOrWhiteSpace(manifest.RegistryHash) && !string.Equals(manifest.RegistryHash, calculatedHash, StringComparison.Ordinal))
-                throw new InvalidOperationException($"Runtime component registry hash mismatch. Manifest={manifest.RegistryHash}, calculated={calculatedHash}.");
-
-            var seen = new HashSet<string>(StringComparer.Ordinal);
-            var seenKeys = new HashSet<string>(StringComparer.Ordinal);
-
-            foreach (var e in ordered)
+            var seenTypes = new HashSet<Type>();
+            var seenIds = new HashSet<int>();
+            for (var i = 0; i < ordered.Length; i++)
             {
-                if (e.Id < 0)
-                    throw new InvalidOperationException($"Runtime component registry entry has negative id: {e.Id}.");
-                if (reservedIdSet.Contains(e.Id))
-                    throw new InvalidOperationException($"Runtime component registry id {e.Id} is both active and reserved.");
-                if (string.IsNullOrWhiteSpace(e.Key))
-                    throw new InvalidOperationException($"Runtime component registry entry {e.Id} has empty key.");
-                if (string.IsNullOrWhiteSpace(e.TypeName) && string.IsNullOrWhiteSpace(e.AssemblyQualifiedName))
-                    throw new InvalidOperationException($"Runtime component registry entry {e.Id} has no type name.");
+                var entry = ordered[i];
+                if (entry.Id < 0)
+                {
+                    throw new InvalidOperationException($"Runtime component registry entry has negative id: {entry.Id}.");
+                }
+                if (!seenIds.Add(entry.Id))
+                {
+                    throw new InvalidOperationException($"Runtime component registry has duplicate id: {entry.Id}.");
+                }
+                if (reservedIdSet.Contains(entry.Id))
+                {
+                    throw new InvalidOperationException($"Runtime component registry id {entry.Id} is both active and reserved.");
+                }
 
-                if (!seenKeys.Add(e.Key))
-                    throw new InvalidOperationException($"Runtime component registry has duplicate key: {e.Key}.");
-
-                var type = ResolveType(e);
-                if (type == null)
-                    throw new TypeLoadException($"Failed to resolve runtime component type for entry id={e.Id}, key={e.Key}, type={e.TypeName}.");
-                if (!seen.Add(type.AssemblyQualifiedName))
+                var type = entry.RuntimeType
+                           ?? throw new TypeLoadException($"Active compiled runtime component entry id={entry.Id} requires RuntimeType = typeof(T).");
+                ValidateRuntimeComponentType(type);
+                if (!seenTypes.Add(type))
+                {
                     throw new InvalidOperationException($"Runtime component registry has duplicate type: {type.FullName}.");
+                }
 
-                var id = (uint)e.Id;
-                EnsureTypeSlot(e.Id);
-                if (_typesById[e.Id] != null)
-                    throw new InvalidOperationException($"Runtime component registry has duplicate id: {e.Id}.");
+                EnsureTypeSlot(entry.Id);
+                var id = (uint)entry.Id;
+                _typesById[entry.Id] = type;
+                _idByType.Add(type, id);
+                _typeById.Add(id, type);
+            }
 
-                _typesById[e.Id] = type;
-                _idByType[type] = id;
-                _typeById[id] = type;
+            foreach (var reservedId in reservedIdSet)
+            {
+                EnsureTypeSlot(reservedId);
             }
 
             RegistryHash = calculatedHash;
@@ -251,87 +212,44 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
             InitializationVersion++;
         }
 
-        private static List<Entry> NormalizeEntries(Manifest manifest)
+        private static HashSet<int> ValidateReservedIds(IReadOnlyList<int> reservedIds)
         {
-            var entries = manifest.Types.Where(e => e != null).ToList();
-            var version = manifest.Version <= 0 ? 1 : manifest.Version;
-            if (version < CURRENT_MANIFEST_VERSION)
+            var result = new HashSet<int>();
+            for (var i = 0; i < reservedIds.Count; i++)
             {
-                for (var i = 0; i < entries.Count; i++)
-                    entries[i].Id = i;
+                var id = reservedIds[i];
+                if (id < 0)
+                {
+                    throw new InvalidOperationException($"Runtime component registry has negative reserved id: {id}.");
+                }
+                if (!result.Add(id))
+                {
+                    throw new InvalidOperationException($"Runtime component registry has duplicate reserved id: {id}.");
+                }
             }
 
-            foreach (var entry in entries)
-            {
-                var type = ResolveType(entry);
-                if (type == null)
-                    continue;
-
-                if (string.IsNullOrWhiteSpace(entry.Key))
-                    entry.Key = GetKey(type);
-                if (string.IsNullOrWhiteSpace(entry.TypeName))
-                    entry.TypeName = type.FullName;
-                if (string.IsNullOrWhiteSpace(entry.AssemblyName))
-                    entry.AssemblyName = type.Assembly.GetName().Name;
-                if (string.IsNullOrWhiteSpace(entry.AssemblyQualifiedName))
-                    entry.AssemblyQualifiedName = type.AssemblyQualifiedName;
-            }
-
-            return entries.OrderBy(e => e.Id).ToList();
+            return result;
         }
 
-        private static Type ResolveType(Entry entry)
+        private static void ValidateRuntimeComponentType(Type type)
         {
-            if (entry == null)
-                return null;
-
-            if (!string.IsNullOrWhiteSpace(entry.TypeName) && !string.IsNullOrWhiteSpace(entry.AssemblyName))
+            if (type == null)
             {
-                var t = Type.GetType($"{entry.TypeName}, {entry.AssemblyName}", throwOnError: false);
-                if (t != null)
-                    return t;
+                throw new ArgumentNullException(nameof(type));
             }
-
-            if (!string.IsNullOrWhiteSpace(entry.AssemblyQualifiedName))
+            if (type.IsAbstract
+                || !typeof(GameRuntimeComponent).IsAssignableFrom(type))
             {
-                var t = Type.GetType(entry.AssemblyQualifiedName, throwOnError: false);
-                if (t != null)
-                    return t;
+                throw new ArgumentException($"Runtime component type '{type.FullName}' must be a concrete {nameof(GameRuntimeComponent)}.", nameof(type));
             }
-
-            var fullName = ResolveFullName(entry);
-            if (string.IsNullOrWhiteSpace(fullName))
-                return null;
-
-            foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
-            {
-                if (!string.IsNullOrWhiteSpace(entry.AssemblyName) && !string.Equals(asm.GetName().Name, entry.AssemblyName, StringComparison.Ordinal))
-                    continue;
-
-                var t = asm.GetType(fullName, throwOnError: false);
-                if (t != null)
-                    return t;
-            }
-
-            return null;
         }
-
-        private static string ResolveFullName(Entry entry)
-        {
-            if (!string.IsNullOrWhiteSpace(entry.TypeName))
-                return entry.TypeName.Trim();
-            if (string.IsNullOrWhiteSpace(entry.AssemblyQualifiedName))
-                return null;
-
-            return entry.AssemblyQualifiedName.Split(',')[0].Trim();
-        }
-
-        private static string NormalizeHashPart(string value) => value?.Trim() ?? string.Empty;
 
         private static void EnsureTypeSlot(int id)
         {
             while (_typesById.Count <= id)
+            {
                 _typesById.Add(null);
+            }
         }
     }
 }

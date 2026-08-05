@@ -254,6 +254,7 @@ namespace DingoGameObjectsCMS.Mirror
             NetworkServer.UnregisterHandler<RtSessionReady>();
             NetworkServer.UnregisterHandler<RtStoreAck>();
             NetworkServer.UnregisterHandler<RtStoreResyncRequest>();
+            NetworkServer.UnregisterHandler<RtCommandJournalResyncRequest>();
             NetworkServer.UnregisterHandler<RtCommandEnvelope>();
         }
 
@@ -262,9 +263,11 @@ namespace DingoGameObjectsCMS.Mirror
             NetworkClient.UnregisterHandler<RtSessionManifest>();
             NetworkClient.UnregisterHandler<RtProtocolReject>();
             NetworkClient.UnregisterHandler<RtBaselineChunk>();
+            NetworkClient.UnregisterHandler<RtCheckpointChunk>();
             NetworkClient.UnregisterHandler<RtStoreDelta>();
             NetworkClient.UnregisterHandler<RtCommandResult>();
             NetworkClient.UnregisterHandler<RtStateStreamFrame>();
+            NetworkClient.UnregisterHandler<RtCommandJournalBatch>();
         }
     }
 }

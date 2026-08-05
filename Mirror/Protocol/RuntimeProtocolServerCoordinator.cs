@@ -16,6 +16,7 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
         public readonly Action<int, RuntimeCommandResult> CommandResult;
         public readonly Action<int, RtStateStreamFrameData> StateStream;
         public readonly Action<int, RuntimeCommandJournalBatch> JournalBatch;
+        public readonly Action<int, RuntimeCheckpointChunk> CheckpointChunk;
         public readonly RuntimeReliableDeltaTransportBudgetCheck ReliableDeltaFitsTransport;
 
         public RuntimeProtocolServerOutput(
@@ -26,7 +27,8 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             Action<int, RuntimeCommandResult> commandResult,
             RuntimeReliableDeltaTransportBudgetCheck reliableDeltaFitsTransport,
             Action<int, RtStateStreamFrameData> stateStream = null,
-            Action<int, RuntimeCommandJournalBatch> journalBatch = null)
+            Action<int, RuntimeCommandJournalBatch> journalBatch = null,
+            Action<int, RuntimeCheckpointChunk> checkpointChunk = null)
         {
             Manifest = manifest ?? throw new ArgumentNullException(nameof(manifest));
             Reject = reject ?? throw new ArgumentNullException(nameof(reject));
@@ -37,6 +39,7 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                                          ?? throw new ArgumentNullException(nameof(reliableDeltaFitsTransport));
             StateStream = stateStream ?? ((connectionId, value) => { });
             JournalBatch = journalBatch;
+            CheckpointChunk = checkpointChunk;
         }
     }
 
@@ -84,12 +87,18 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             _projection = new RuntimeServerStoreProjection(context);
             _baselineCodec = new RuntimeStoreBaselineCodec(context.PatchCodecs);
             _deltaCodec = new RuntimeStoreDeltaCodec(context.PatchCodecs);
-            if (context.CheckpointBoundaryProvider != null)
+            if (HasCheckpointProvider(context))
             {
                 if (_output.JournalBatch == null)
                 {
                     throw new InvalidOperationException(
                         "Checkpoint journal transport requires a server journal output.");
+                }
+                if (context.RecoveryCheckpointProvider != null
+                    && _output.CheckpointChunk == null)
+                {
+                    throw new InvalidOperationException(
+                        "Recovery checkpoint transport requires a server checkpoint chunk output.");
                 }
 
                 context.CommandsBus.Journal.EntryRecorded += OnJournalEntryRecorded;
@@ -200,10 +209,11 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             if (connection.Handshake == null)
                 return Reject(connectionId, RuntimeProtocolRejectCode.InvalidEnvelope, "Ready arrived before protocol hello.");
 
-            RuntimeCheckpointBoundary? checkpointBoundary = null;
-            if (_context.CheckpointBoundaryProvider != null)
+            RuntimeRecoveryCheckpoint recoveryCheckpoint;
+            var checkpointBoundary =
+                TakeProvidedCheckpoint(out recoveryCheckpoint);
+            if (HasCheckpointProvider(_context))
             {
-                checkpointBoundary = _context.CheckpointBoundaryProvider();
                 if (!checkpointBoundary.HasValue)
                 {
                     return Reject(
@@ -243,6 +253,7 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             }
 
             connection.CheckpointBoundary = checkpointBoundary;
+            connection.RecoveryCheckpoint = recoveryCheckpoint;
             connection.JournalSendCursor =
                 checkpointBoundary?.JournalCursor ?? 0;
 
@@ -255,6 +266,13 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             }
             if (checkpointBoundary.HasValue)
             {
+                if (recoveryCheckpoint != null)
+                {
+                    SendCheckpoint(
+                        connectionId,
+                        connection,
+                        recoveryCheckpoint);
+                }
                 SendJournalCatchup(
                     connectionId,
                     connection,
@@ -461,7 +479,8 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
 
             if (request.ForceCheckpointBaseline)
             {
-                var nextBoundary = _context.CheckpointBoundaryProvider?.Invoke();
+                var nextBoundary = TakeProvidedCheckpoint(
+                    out var nextRecoveryCheckpoint);
                 if (!nextBoundary.HasValue
                     || nextBoundary.Value.JournalCursor
                         != _context.CommandsBus.Journal.Cursor)
@@ -475,7 +494,8 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                 SendCheckpointBaselineGroup(
                     connectionId,
                     connection,
-                    nextBoundary.Value);
+                    nextBoundary.Value,
+                    nextRecoveryCheckpoint);
                 return RuntimeSessionHandshakeResult.Success();
             }
 
@@ -491,8 +511,8 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             catch (Exception exception)
             {
                 var failureDetail = exception.Message;
-                var nextBoundary =
-                    _context.CheckpointBoundaryProvider?.Invoke();
+                var nextBoundary = TakeProvidedCheckpoint(
+                    out var nextRecoveryCheckpoint);
                 if (nextBoundary.HasValue
                     && nextBoundary.Value.JournalCursor
                     > request.ExpectedCursor)
@@ -502,7 +522,8 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                         SendCheckpointBaselineGroup(
                             connectionId,
                             connection,
-                            nextBoundary.Value);
+                            nextBoundary.Value,
+                            nextRecoveryCheckpoint);
                         return RuntimeSessionHandshakeResult.Success();
                     }
                     catch (Exception fallbackException)
@@ -522,9 +543,11 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
         private void SendCheckpointBaselineGroup(
             int connectionId,
             ConnectionState connection,
-            in RuntimeCheckpointBoundary boundary)
+            in RuntimeCheckpointBoundary boundary,
+            RuntimeRecoveryCheckpoint recoveryCheckpoint)
         {
             connection.CheckpointBoundary = boundary;
+            connection.RecoveryCheckpoint = recoveryCheckpoint;
             connection.JournalSendCursor =
                 boundary.JournalCursor;
             foreach (var pair in _stores)
@@ -542,6 +565,14 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                     connection,
                     pair.Value,
                     connectionStore);
+            }
+
+            if (recoveryCheckpoint != null)
+            {
+                SendCheckpoint(
+                    connectionId,
+                    connection,
+                    recoveryCheckpoint);
             }
 
             SendJournalCatchup(
@@ -742,7 +773,7 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             if (_disposed)
                 return;
             _disposed = true;
-            if (_context.CheckpointBoundaryProvider != null)
+            if (HasCheckpointProvider(_context))
             {
                 _context.CommandsBus.Journal.EntryRecorded -= OnJournalEntryRecorded;
             }
@@ -1031,6 +1062,33 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             }
         }
 
+        private void SendCheckpoint(
+            int connectionId,
+            ConnectionState connection,
+            RuntimeRecoveryCheckpoint checkpoint)
+        {
+            if (checkpoint == null)
+            {
+                throw new ArgumentNullException(nameof(checkpoint));
+            }
+            if (!connection.CheckpointBoundary.HasValue
+                || !CheckpointBoundariesEqual(
+                    connection.CheckpointBoundary.Value,
+                    checkpoint.Boundary))
+            {
+                throw new InvalidOperationException(
+                    "Connection checkpoint payload does not match its baseline boundary.");
+            }
+
+            var chunks = RuntimeCheckpointChunker.Split(
+                connection.Handshake.SessionId,
+                checkpoint);
+            for (var i = 0; i < chunks.Count; i++)
+            {
+                _output.CheckpointChunk(connectionId, chunks[i]);
+            }
+        }
+
         private void SendJournalCatchup(
             int connectionId,
             ConnectionState connection,
@@ -1178,6 +1236,39 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                     $"State stream type id {streamTypeId} is not registered.");
             }
             return RuntimeSessionHandshakeResult.Success();
+        }
+
+        private RuntimeCheckpointBoundary? TakeProvidedCheckpoint(
+            out RuntimeRecoveryCheckpoint recoveryCheckpoint)
+        {
+            recoveryCheckpoint =
+                _context.RecoveryCheckpointProvider?.Invoke();
+            return recoveryCheckpoint != null
+                ? recoveryCheckpoint.Boundary
+                : _context.CheckpointBoundaryProvider?.Invoke();
+        }
+
+        private static bool HasCheckpointProvider(
+            RuntimeProtocolContext context)
+        {
+            return context.CheckpointBoundaryProvider != null
+                   || context.RecoveryCheckpointProvider != null;
+        }
+
+        private static bool CheckpointBoundariesEqual(
+            in RuntimeCheckpointBoundary left,
+            in RuntimeCheckpointBoundary right)
+        {
+            return left.CompletedTick == right.CompletedTick
+                   && left.JournalCursor == right.JournalCursor
+                   && string.Equals(
+                       left.GroupId,
+                       right.GroupId,
+                       StringComparison.Ordinal)
+                   && string.Equals(
+                       left.CheckpointHash,
+                       right.CheckpointHash,
+                       StringComparison.Ordinal);
         }
 
         private static RuntimeSessionHandshakeResult ValidateStateStreamFrame(
@@ -1332,6 +1423,7 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             public RuntimeSessionServerHandshake Handshake;
             public readonly Dictionary<NetStoreRef, ConnectionStoreState> Stores = new();
             public RuntimeCheckpointBoundary? CheckpointBoundary;
+            public RuntimeRecoveryCheckpoint RecoveryCheckpoint;
             public ulong JournalSendCursor;
         }
 

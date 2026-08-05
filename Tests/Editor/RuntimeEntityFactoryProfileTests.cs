@@ -71,9 +71,13 @@ namespace DingoGameObjectsCMS.Tests.Editor
             GameRuntimeObject runtimeObject,
             Entity root)
         {
+            ulong productId = 1;
             for (var i = 0; i < EmptyProductCount; i++)
             {
-                ecb.CreateOwnedEntity(root, runtimeObject.RuntimeInstance);
+                ecb.CreateOwnedEntity(
+                    root,
+                    runtimeObject.RuntimeInstance,
+                    productId++);
             }
 
             for (var i = 0; i < ArchetypeProductCount; i++)
@@ -81,6 +85,7 @@ namespace DingoGameObjectsCMS.Tests.Editor
                 var entity = ecb.CreateOwnedEntity(
                     root,
                     runtimeObject.RuntimeInstance,
+                    productId++,
                     ProductArchetype);
                 ecb.SetComponent(entity, new RuntimeEntityFactoryProductTestData { Value = i });
             }
@@ -90,6 +95,7 @@ namespace DingoGameObjectsCMS.Tests.Editor
                 var entity = ecb.InstantiateOwnedEntity(
                     root,
                     runtimeObject.RuntimeInstance,
+                    productId++,
                     ProductPrefab);
                 ecb.SetComponent(
                     entity,
@@ -123,11 +129,13 @@ namespace DingoGameObjectsCMS.Tests.Editor
             _store = RuntimeStores.GetOrAddRuntimeStore("entity-factory-profile-tests");
             RuntimeEntityFactoryTestComponent.ProductArchetype = _entityManager.CreateArchetype(
                 typeof(RuntimeEntityFactoryOwner),
+                typeof(RuntimeEntityFactoryProductIdentity),
                 typeof(RuntimeEntityFactoryProductTestData));
             RuntimeEntityFactoryTestComponent.ProductPrefab =
                 _entityManager.CreateEntity(
                     typeof(Prefab),
                     typeof(RuntimeEntityFactoryOwner),
+                    typeof(RuntimeEntityFactoryProductIdentity),
                     typeof(RuntimeEntityFactoryPrefabProductTestData));
         }
 
@@ -176,6 +184,10 @@ namespace DingoGameObjectsCMS.Tests.Editor
             PlaybackEditingCommands();
 
             Assert.That(_entityManager.HasComponent<RuntimeEntityFactoryTag>(entity), Is.True);
+            Assert.That(
+                _entityManager.GetComponentData<
+                    RuntimeEntityFactoryProductIdentity>(entity).ProductId,
+                Is.Zero);
             Assert.That(_entityManager.HasComponent<RuntimeEntityFactoryTestComponent>(entity), Is.False);
 
             var linkedEntities = _entityManager.GetBuffer<LinkedEntityGroup>(entity);
@@ -198,6 +210,66 @@ namespace DingoGameObjectsCMS.Tests.Editor
             }
 
             Assert.That(archetypeProducts, Is.EqualTo(2));
+        }
+
+        [Test]
+        public void ExplicitProductIds_AreProjectedForEveryOwnedProduct()
+        {
+            var runtimeObject = _store.Create();
+            var root = _entityManager.CreateEntity();
+            var linked = _entityManager.AddBuffer<LinkedEntityGroup>(root);
+            linked.Add(root);
+            var archetype = _entityManager.CreateArchetype(
+                typeof(RuntimeEntityFactoryOwner),
+                typeof(RuntimeEntityFactoryProductIdentity),
+                typeof(RuntimeEntityFactoryProductTestData));
+            var prefab = _entityManager.CreateEntity(
+                typeof(Prefab),
+                typeof(RuntimeEntityFactoryOwner),
+                typeof(RuntimeEntityFactoryProductIdentity),
+                typeof(RuntimeEntityFactoryPrefabProductTestData));
+
+            using var ecb = new EntityCommandBuffer(Allocator.Temp);
+            Assert.Throws<System.ArgumentOutOfRangeException>(() =>
+                ecb.CreateOwnedEntity(
+                    root,
+                    runtimeObject.RuntimeInstance,
+                    productId: 0));
+            ecb.CreateOwnedEntity(
+                root,
+                runtimeObject.RuntimeInstance,
+                productId: 1);
+            ecb.CreateOwnedEntity(
+                root,
+                runtimeObject.RuntimeInstance,
+                productId: 2,
+                archetype: archetype);
+            ecb.InstantiateOwnedEntity(
+                root,
+                runtimeObject.RuntimeInstance,
+                productId: 3,
+                prefab: prefab);
+            ecb.CreateOwnedEntity(
+                root,
+                runtimeObject.RuntimeInstance,
+                productId: 4);
+            ecb.Playback(_entityManager);
+
+            var products = _entityManager.GetBuffer<LinkedEntityGroup>(root);
+            Assert.That(products.Length, Is.EqualTo(5));
+            for (var i = 1; i <= 3; i++)
+            {
+                Assert.That(
+                    _entityManager.GetComponentData<
+                        RuntimeEntityFactoryProductIdentity>(
+                        products[i].Value).ProductId,
+                    Is.EqualTo((ulong)i));
+            }
+            Assert.That(
+                _entityManager.GetComponentData<
+                    RuntimeEntityFactoryProductIdentity>(
+                    products[4].Value).ProductId,
+                Is.EqualTo(4UL));
         }
 
         [Test]
@@ -372,6 +444,12 @@ namespace DingoGameObjectsCMS.Tests.Editor
 
             var root = _entityManager.CreateEntity();
             _entityManager.AddComponent<RuntimeEntityFactoryTag>(root);
+            _entityManager.AddComponentData(
+                root,
+                new RuntimeEntityFactoryProductIdentity
+                {
+                    ProductId = 0
+                });
             var linkedEntities =
                 _entityManager.AddBuffer<LinkedEntityGroup>(root);
             linkedEntities.Add(root);
@@ -432,6 +510,59 @@ namespace DingoGameObjectsCMS.Tests.Editor
 
             Assert.That(report.IsValid, Is.False);
             Assert.That(report.Error, Does.Contain("mismatched ownership"));
+        }
+
+        [Test]
+        public void Validator_RejectsLinkedProductWithoutStableIdentity()
+        {
+            var runtimeObject = _store.Create();
+            runtimeObject.AddOrReplaceById(
+                FACTORY_COMPONENT_ID,
+                new RuntimeEntityFactoryTestComponent
+                {
+                    EmptyProductCount = 1
+                });
+            var root = runtimeObject.CreateEntity();
+            PlaybackEditingCommands();
+            var product =
+                _entityManager.GetBuffer<LinkedEntityGroup>(root)[1].Value;
+            _entityManager.RemoveComponent<
+                RuntimeEntityFactoryProductIdentity>(product);
+
+            var report =
+                RuntimeEntityFactoryValidator.Validate(runtimeObject);
+
+            Assert.That(report.IsValid, Is.False);
+            Assert.That(
+                report.Error,
+                Does.Contain("without RuntimeEntityFactoryProductIdentity"));
+        }
+
+        [Test]
+        public void Validator_RejectsDuplicateStableProductIds()
+        {
+            var runtimeObject = _store.Create();
+            runtimeObject.AddOrReplaceById(
+                FACTORY_COMPONENT_ID,
+                new RuntimeEntityFactoryTestComponent
+                {
+                    EmptyProductCount = 2
+                });
+            var root = runtimeObject.CreateEntity();
+            PlaybackEditingCommands();
+            var products = _entityManager.GetBuffer<LinkedEntityGroup>(root);
+            _entityManager.SetComponentData(
+                products[2].Value,
+                new RuntimeEntityFactoryProductIdentity
+                {
+                    ProductId = 1
+                });
+
+            var report =
+                RuntimeEntityFactoryValidator.Validate(runtimeObject);
+
+            Assert.That(report.IsValid, Is.False);
+            Assert.That(report.Error, Does.Contain("duplicate product id 1"));
         }
 
         [Test]

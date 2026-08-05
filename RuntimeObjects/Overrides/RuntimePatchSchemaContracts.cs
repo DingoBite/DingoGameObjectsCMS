@@ -14,17 +14,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
         CustomList = 4,
     }
 
-    [AttributeUsage(AttributeTargets.Field)]
-    public class RuntimePatchFieldKeyAttribute : Attribute
-    {
-        public readonly string Key;
-
-        public RuntimePatchFieldKeyAttribute(string key)
-        {
-            Key = key;
-        }
-    }
-
     [Serializable, Preserve]
     public class RuntimePatchSchemaManifest
     {
@@ -39,10 +28,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
     public class RuntimePatchComponentSchema
     {
         public int ComponentTypeId;
-        public string ComponentTypeKey;
-        public string RuntimeTypeName;
-        public string AssemblyName;
-        public bool Tombstone;
+        [NonSerialized] public Type RuntimeType;
         public List<RuntimePatchFieldSchema> Fields = new();
     }
 
@@ -50,11 +36,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
     public class RuntimePatchFieldSchema
     {
         public int FieldId;
-        public string FieldKey;
-        public string FieldName;
-        public string FieldTypeSignature;
         public RuntimePatchFieldEncoding Encoding;
-        public bool Tombstone;
     }
 
     [Serializable, Preserve]

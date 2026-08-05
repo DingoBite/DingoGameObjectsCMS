@@ -5,23 +5,20 @@ using System.Linq;
 using System.Text;
 using DingoGameObjectsCMS.RuntimeObjects.Overrides;
 using DingoGameObjectsCMS.RuntimeObjects.Stores;
-using UnityEngine;
 
 namespace DingoGameObjectsCMS.Editor
 {
     public sealed class RuntimePatchSchemaGenerationProfile
     {
         public int CodecVersion { get; }
-        public string RuntimeComponentManifestPath { get; }
-        public string PatchSchemaPath { get; }
+        public Func<Manifest> RuntimeComponentManifestFactory { get; }
         public string GeneratedCodePath { get; }
         public RuntimePatchCodeEmissionProfile CodeEmission { get; }
         public Action<Manifest> RuntimeManifestValidator { get; }
 
         public RuntimePatchSchemaGenerationProfile(
             int codecVersion,
-            string runtimeComponentManifestPath,
-            string patchSchemaPath,
+            Func<Manifest> runtimeComponentManifestFactory,
             string generatedCodePath,
             RuntimePatchCodeEmissionProfile codeEmission,
             Action<Manifest> runtimeManifestValidator = null)
@@ -29,8 +26,10 @@ namespace DingoGameObjectsCMS.Editor
             if (codecVersion <= 0)
                 throw new ArgumentOutOfRangeException(nameof(codecVersion));
             CodecVersion = codecVersion;
-            RuntimeComponentManifestPath = RequirePath(runtimeComponentManifestPath, nameof(runtimeComponentManifestPath));
-            PatchSchemaPath = RequirePath(patchSchemaPath, nameof(patchSchemaPath));
+            RuntimeComponentManifestFactory =
+                runtimeComponentManifestFactory
+                ?? throw new ArgumentNullException(
+                    nameof(runtimeComponentManifestFactory));
             GeneratedCodePath = RequirePath(generatedCodePath, nameof(generatedCodePath));
             CodeEmission = codeEmission ?? throw new ArgumentNullException(nameof(codeEmission));
             RuntimeManifestValidator = runtimeManifestValidator;
@@ -47,16 +46,17 @@ namespace DingoGameObjectsCMS.Editor
     public sealed class RuntimePatchSchemaGenerationResult
     {
         public RuntimePatchSchemaManifest Manifest;
-        public bool ManifestChanged;
         public bool GeneratedCodeChanged;
 
-        public bool AnyOutputChanged => ManifestChanged || GeneratedCodeChanged;
+        public bool AnyOutputChanged => GeneratedCodeChanged;
     }
 
     /// <summary>
     /// Generic deterministic runtime patch generator. Its complete component
-    /// universe comes from the checked-in RuntimeComponentTypeRegistry manifest;
-    /// project bindings provide only paths and generated C# identity.
+    /// universe comes from the generated compiled RuntimeComponentTypeRegistry
+    /// manifest factory. Component ids come directly from that typed ledger;
+    /// field ids are emitted by the current typed codec layout. No string type
+    /// identity, tombstone ledger, or mutable JSON participates in generation.
     /// </summary>
     public static class RuntimePatchSchemaGenerationCore
     {
@@ -66,18 +66,17 @@ namespace DingoGameObjectsCMS.Editor
             if (profile == null)
                 throw new ArgumentNullException(nameof(profile));
 
-            var runtimeManifest = LoadRuntimeComponentManifest(profile.RuntimeComponentManifestPath);
+            var runtimeManifest = profile.RuntimeComponentManifestFactory();
+            if (runtimeManifest?.Types == null)
+                throw new InvalidOperationException(
+                    "Compiled runtime component manifest factory returned an invalid ledger.");
             profile.RuntimeManifestValidator?.Invoke(runtimeManifest);
             var discovery = RuntimePatchSchemaDiscovery.Discover(runtimeManifest);
-            var existing = LoadExistingPatchManifest(profile.PatchSchemaPath);
-            ValidateExistingManifestHash(existing);
-
             var discoveredSchemas = new List<RuntimePatchComponentSchema>(discovery.Components.Count);
             for (var i = 0; i < discovery.Components.Count; i++)
                 discoveredSchemas.Add(discovery.Components[i].Schema);
 
             var manifest = RuntimePatchSchemaReconciler.Reconcile(
-                existing,
                 discoveredSchemas,
                 discovery.ComponentRegistryHash,
                 profile.CodecVersion);
@@ -86,12 +85,9 @@ namespace DingoGameObjectsCMS.Editor
                 manifest,
                 discovery.Components,
                 profile.CodeEmission);
-            var manifestJson = JsonUtility.ToJson(manifest, true) + Environment.NewLine;
-
             return new RuntimePatchSchemaGenerationResult
             {
                 Manifest = manifest,
-                ManifestChanged = WriteIfChanged(profile.PatchSchemaPath, manifestJson),
                 GeneratedCodeChanged = WriteIfChanged(profile.GeneratedCodePath, generatedCode),
             };
         }
@@ -105,69 +101,34 @@ namespace DingoGameObjectsCMS.Editor
             if (manifest?.Components == null)
                 throw new ArgumentNullException(nameof(manifest));
 
-            var componentByKey = manifest.Components
-                .Where(component => component != null && !component.Tombstone)
-                .ToDictionary(component => component.ComponentTypeKey, component => component, StringComparer.Ordinal);
+            var componentByType = manifest.Components
+                .Where(component => component != null)
+                .ToDictionary(component => component.RuntimeType, component => component);
             for (var i = 0; i < descriptors.Count; i++)
             {
                 var descriptor = descriptors[i];
-                if (!componentByKey.TryGetValue(descriptor.Schema.ComponentTypeKey, out var componentSchema))
+                if (!componentByType.TryGetValue(descriptor.RuntimeType, out var componentSchema))
                 {
                     throw new InvalidOperationException(
-                        $"Reconciled runtime patch schema is missing active component '{descriptor.Schema.ComponentTypeKey}'.");
+                        $"Runtime patch schema is missing component type '{descriptor.RuntimeType.FullName}'.");
                 }
 
-                var fieldByKey = componentSchema.Fields
-                    .Where(field => field != null && !field.Tombstone)
-                    .ToDictionary(field => field.FieldKey, field => field, StringComparer.Ordinal);
+                var fieldById = componentSchema.Fields
+                    .Where(field => field != null)
+                    .ToDictionary(field => field.FieldId, field => field);
                 for (var fieldIndex = 0; fieldIndex < descriptor.Fields.Count; fieldIndex++)
                 {
                     var fieldDescriptor = descriptor.Fields[fieldIndex];
-                    if (!fieldByKey.TryGetValue(fieldDescriptor.Schema.FieldKey, out var fieldSchema))
+                    if (!fieldById.TryGetValue(fieldDescriptor.Schema.FieldId, out var fieldSchema))
                     {
                         throw new InvalidOperationException(
-                            $"Reconciled runtime patch schema is missing active field '{fieldDescriptor.Schema.FieldKey}'.");
+                            $"Runtime patch schema is missing field id {fieldDescriptor.Schema.FieldId} on '{descriptor.RuntimeType.FullName}'.");
                     }
                     fieldDescriptor.Schema = fieldSchema;
                 }
 
                 descriptor.Schema = componentSchema;
                 descriptor.Fields.Sort((first, second) => first.Schema.FieldId.CompareTo(second.Schema.FieldId));
-            }
-        }
-
-        public static Manifest LoadRuntimeComponentManifest(string path)
-        {
-            var fullPath = RequireExistingFile(path, "Runtime component manifest");
-            var manifest = JsonUtility.FromJson<Manifest>(File.ReadAllText(fullPath));
-            if (manifest?.Types == null)
-                throw new InvalidOperationException($"Runtime component manifest '{fullPath}' is invalid.");
-            return manifest;
-        }
-
-        public static RuntimePatchSchemaManifest LoadExistingPatchManifest(string path)
-        {
-            if (string.IsNullOrWhiteSpace(path))
-                throw new ArgumentException("Runtime patch schema path is required.", nameof(path));
-            var fullPath = Path.GetFullPath(path);
-            if (!File.Exists(fullPath))
-                return null;
-            var manifest = JsonUtility.FromJson<RuntimePatchSchemaManifest>(File.ReadAllText(fullPath));
-            if (manifest == null)
-                throw new InvalidOperationException($"Runtime patch schema manifest '{fullPath}' is invalid.");
-            manifest.Components ??= new List<RuntimePatchComponentSchema>();
-            return manifest;
-        }
-
-        public static void ValidateExistingManifestHash(RuntimePatchSchemaManifest existing)
-        {
-            if (existing == null || string.IsNullOrWhiteSpace(existing.SchemaHash))
-                return;
-            var calculated = RuntimePatchSchemaReconciler.CalculateSchemaHash(existing);
-            if (!string.Equals(existing.SchemaHash, calculated, StringComparison.Ordinal))
-            {
-                throw new InvalidOperationException(
-                    $"Runtime patch schema hash mismatch. Manifest={existing.SchemaHash}, calculated={calculated}.");
             }
         }
 
@@ -192,14 +153,5 @@ namespace DingoGameObjectsCMS.Editor
             return true;
         }
 
-        private static string RequireExistingFile(string path, string description)
-        {
-            if (string.IsNullOrWhiteSpace(path))
-                throw new ArgumentException($"{description} path is required.", nameof(path));
-            var fullPath = Path.GetFullPath(path);
-            if (!File.Exists(fullPath))
-                throw new FileNotFoundException($"{description} is missing.", fullPath);
-            return fullPath;
-        }
     }
 }

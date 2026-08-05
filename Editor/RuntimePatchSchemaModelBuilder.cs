@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Globalization;
 using System.Linq;
 using System.Reflection;
 using System.Security.Cryptography;
@@ -98,7 +97,9 @@ namespace DingoGameObjectsCMS.Editor
                 throw new ArgumentNullException(nameof(runtimeManifest));
 
             var entries = NormalizeRuntimeEntries(runtimeManifest);
-            var calculatedHash = RuntimeComponentTypeRegistry.CalculateRegistryHash(entries, runtimeManifest.ReservedIds);
+            var calculatedHash = RuntimeComponentTypeRegistry.CalculateRegistryHash(
+                runtimeManifest.Types,
+                runtimeManifest.ReservedIds);
             if (!string.IsNullOrWhiteSpace(runtimeManifest.RegistryHash)
                 && !string.Equals(runtimeManifest.RegistryHash, calculatedHash, StringComparison.Ordinal))
             {
@@ -108,24 +109,21 @@ namespace DingoGameObjectsCMS.Editor
 
             var entryByType = new Dictionary<Type, Entry>();
             var entryIds = new HashSet<int>();
-            var entryKeys = new HashSet<string>(StringComparer.Ordinal);
             for (var i = 0; i < entries.Count; i++)
             {
                 var entry = entries[i];
                 var type = ResolveRuntimeType(entry);
                 if (type == null)
-                    throw new TypeLoadException($"Runtime component manifest entry {entry.Id} '{entry.Key}' cannot be resolved.");
+                    throw new TypeLoadException($"Active runtime component manifest entry {entry.Id} requires RuntimeType = typeof(T).");
                 if (!entryIds.Add(entry.Id))
                     throw new InvalidOperationException($"Runtime component manifest has duplicate id {entry.Id}.");
-                if (!entryKeys.Add(entry.Key))
-                    throw new InvalidOperationException($"Runtime component manifest has duplicate key '{entry.Key}'.");
                 if (!entryByType.TryAdd(type, entry))
                     throw new InvalidOperationException($"Runtime component manifest contains duplicate type '{type.FullName}'.");
             }
 
             var runtimeTypes = entryByType.Keys
                 .Where(IsRuntimePatchComponentType)
-                .OrderBy(RuntimeComponentTypeRegistry.GetKey)
+                .OrderBy(type => entryByType[type].Id)
                 .ToArray();
             var result = new RuntimePatchSchemaDiscoveryResult
             {
@@ -137,9 +135,9 @@ namespace DingoGameObjectsCMS.Editor
                 if (!entryByType.TryGetValue(type, out var entry))
                 {
                     throw new InvalidOperationException(
-                        $"Runtime component '{type.FullName}' has no stable entry in {RuntimeComponentTypeRegistry.DEFAULT_MANIFEST_FILE_NAME}.");
+                        $"Runtime component '{type.FullName}' has no stable entry in the compiled GRC type ledger.");
                 }
-                result.Components.Add(DescribeComponent(type, entry.Id, entry.Key));
+                result.Components.Add(DescribeComponent(type, entry.Id));
             }
 
             result.Components.Sort(CompareComponents);
@@ -148,15 +146,12 @@ namespace DingoGameObjectsCMS.Editor
 
         public static RuntimePatchGeneratedComponentDescriptor DescribeComponent(
             Type runtimeType,
-            int componentTypeId,
-            string componentTypeKey)
+            int componentTypeId)
         {
             if (runtimeType == null)
                 throw new ArgumentNullException(nameof(runtimeType));
             if (componentTypeId < 0)
                 throw new ArgumentOutOfRangeException(nameof(componentTypeId));
-            if (string.IsNullOrWhiteSpace(componentTypeKey))
-                throw new ArgumentException("Stable component type key is required.", nameof(componentTypeKey));
             if (runtimeType.IsAbstract || !typeof(GameRuntimeComponent).IsAssignableFrom(runtimeType))
                 throw new InvalidOperationException($"Type '{runtimeType.FullName}' is not a concrete GameRuntimeComponent.");
 
@@ -166,39 +161,23 @@ namespace DingoGameObjectsCMS.Editor
                 Schema = new RuntimePatchComponentSchema
                 {
                     ComponentTypeId = componentTypeId,
-                    ComponentTypeKey = componentTypeKey,
-                    RuntimeTypeName = runtimeType.FullName,
-                    AssemblyName = runtimeType.Assembly.GetName().Name,
-                    Tombstone = false,
+                    RuntimeType = runtimeType,
                 },
             };
 
             var fields = CollectSerializableFields(runtimeType);
-            var fieldKeys = new HashSet<string>(StringComparer.Ordinal);
             for (var i = 0; i < fields.Count; i++)
             {
                 var field = fields[i];
                 ValidateDirectFieldAccess(field, runtimeType);
                 var valueType = DescribeValueType(field.FieldType);
-                var keyAttribute = field.GetCustomAttribute<RuntimePatchFieldKeyAttribute>(inherit: false);
-                var fieldKey = keyAttribute == null
-                    ? $"{componentTypeKey}/{field.Name}"
-                    : keyAttribute.Key?.Trim();
-                if (string.IsNullOrWhiteSpace(fieldKey))
-                    throw new InvalidOperationException($"Runtime patch field '{runtimeType.FullName}.{field.Name}' has an empty stable key.");
-                if (!fieldKeys.Add(fieldKey))
-                    throw new InvalidOperationException($"Runtime patch component '{componentTypeKey}' has duplicate field key '{fieldKey}'.");
-
                 var fieldDescriptor = new RuntimePatchGeneratedFieldDescriptor
                 {
                     Field = field,
                     ValueType = valueType,
                     Schema = new RuntimePatchFieldSchema
                     {
-                        FieldId = -1,
-                        FieldKey = fieldKey,
-                        FieldName = field.Name,
-                        FieldTypeSignature = CreateTypeSignature(valueType),
+                        FieldId = i,
                         Encoding = valueType.Kind == RuntimePatchGeneratedValueKind.RuntimeInstance
                             ? RuntimePatchFieldEncoding.RuntimeReference
                             : valueType.Kind == RuntimePatchGeneratedValueKind.ListVector2Int
@@ -207,15 +186,12 @@ namespace DingoGameObjectsCMS.Editor
                                   || ContainsKind(valueType, RuntimePatchGeneratedValueKind.ListVector2Int)
                                     ? RuntimePatchFieldEncoding.CustomList
                                     : RuntimePatchFieldEncoding.Value,
-                        Tombstone = false,
                     },
                 };
                 descriptor.Fields.Add(fieldDescriptor);
                 descriptor.Schema.Fields.Add(CloneFieldSchema(fieldDescriptor.Schema));
             }
 
-            descriptor.Fields.Sort(CompareFieldsByKey);
-            descriptor.Schema.Fields.Sort(CompareFieldSchemasByKey);
             return descriptor;
         }
 
@@ -232,7 +208,6 @@ namespace DingoGameObjectsCMS.Editor
                 throw new InvalidOperationException("Runtime component manifest has no Types collection.");
 
             var result = new List<Entry>(runtimeManifest.Types.Count);
-            var legacy = runtimeManifest.Version < RuntimeComponentTypeRegistry.CURRENT_MANIFEST_VERSION;
             for (var i = 0; i < runtimeManifest.Types.Count; i++)
             {
                 var source = runtimeManifest.Types[i];
@@ -242,18 +217,9 @@ namespace DingoGameObjectsCMS.Editor
                 if (type == null)
                 {
                     throw new TypeLoadException(
-                        $"Runtime component manifest entry at index {i} cannot resolve '{source.AssemblyQualifiedName ?? source.TypeName}'.");
+                        $"Active runtime component manifest entry at index {i} requires RuntimeType = typeof(T).");
                 }
-
-                var id = legacy ? i : source.Id;
-                var entry = RuntimeComponentTypeRegistry.CreateEntry(id, type, source.CreatedAt);
-                if (!string.IsNullOrWhiteSpace(source.Key)
-                    && !string.Equals(source.Key.Trim(), entry.Key, StringComparison.Ordinal))
-                {
-                    throw new InvalidOperationException(
-                        $"Runtime component manifest key '{source.Key}' does not match runtime key '{entry.Key}' for '{type.FullName}'.");
-                }
-                result.Add(entry);
+                result.Add(source);
             }
             result.Sort((first, second) => first.Id.CompareTo(second.Id));
             return result;
@@ -261,41 +227,7 @@ namespace DingoGameObjectsCMS.Editor
 
         public static Type ResolveRuntimeType(Entry entry)
         {
-            if (entry == null)
-                return null;
-
-            if (!string.IsNullOrWhiteSpace(entry.TypeName) && !string.IsNullOrWhiteSpace(entry.AssemblyName))
-            {
-                var resolved = Type.GetType($"{entry.TypeName}, {entry.AssemblyName}", throwOnError: false);
-                if (resolved != null)
-                    return resolved;
-            }
-            if (!string.IsNullOrWhiteSpace(entry.AssemblyQualifiedName))
-            {
-                var resolved = Type.GetType(entry.AssemblyQualifiedName, throwOnError: false);
-                if (resolved != null)
-                    return resolved;
-            }
-
-            var fullName = !string.IsNullOrWhiteSpace(entry.TypeName)
-                ? entry.TypeName.Trim()
-                : entry.AssemblyQualifiedName?.Split(',')[0].Trim();
-            if (string.IsNullOrWhiteSpace(fullName))
-                return null;
-            var assemblies = AppDomain.CurrentDomain.GetAssemblies();
-            for (var i = 0; i < assemblies.Length; i++)
-            {
-                var assembly = assemblies[i];
-                if (!string.IsNullOrWhiteSpace(entry.AssemblyName)
-                    && !string.Equals(assembly.GetName().Name, entry.AssemblyName, StringComparison.Ordinal))
-                {
-                    continue;
-                }
-                var resolved = assembly.GetType(fullName, throwOnError: false);
-                if (resolved != null)
-                    return resolved;
-            }
-            return null;
+            return entry?.RuntimeType;
         }
 
         public static bool IsRuntimePatchComponentType(Type type)
@@ -323,57 +255,6 @@ namespace DingoGameObjectsCMS.Editor
             return !name.EndsWith("-Editor", StringComparison.OrdinalIgnoreCase)
                    && !name.EndsWith(".Editor", StringComparison.OrdinalIgnoreCase)
                    && name.IndexOf("Test", StringComparison.OrdinalIgnoreCase) < 0;
-        }
-
-        public static string CreateTypeSignature(RuntimePatchGeneratedTypeDescriptor descriptor)
-        {
-            if (descriptor == null)
-                throw new ArgumentNullException(nameof(descriptor));
-            switch (descriptor.Kind)
-            {
-                case RuntimePatchGeneratedValueKind.Boolean: return "bool";
-                case RuntimePatchGeneratedValueKind.Byte: return "byte";
-                case RuntimePatchGeneratedValueKind.SByte: return "sbyte";
-                case RuntimePatchGeneratedValueKind.Int16: return "int16";
-                case RuntimePatchGeneratedValueKind.UInt16: return "uint16";
-                case RuntimePatchGeneratedValueKind.Int32: return "int32";
-                case RuntimePatchGeneratedValueKind.UInt32: return "uint32";
-                case RuntimePatchGeneratedValueKind.Int64: return "int64";
-                case RuntimePatchGeneratedValueKind.UInt64: return "uint64";
-                case RuntimePatchGeneratedValueKind.Single: return "float32";
-                case RuntimePatchGeneratedValueKind.Double: return "float64";
-                case RuntimePatchGeneratedValueKind.String: return "string";
-                case RuntimePatchGeneratedValueKind.Int2: return "Unity.Mathematics.int2(x:int32,y:int32)";
-                case RuntimePatchGeneratedValueKind.Float2: return "Unity.Mathematics.float2(x:float32,y:float32)";
-                case RuntimePatchGeneratedValueKind.Vector2Int: return "UnityEngine.Vector2Int(x:int32,y:int32)";
-                case RuntimePatchGeneratedValueKind.RuntimeInstance: return "runtime-reference:v1";
-                case RuntimePatchGeneratedValueKind.Hash128: return "UnityEngine.Hash128:canonical-hex:v1";
-                case RuntimePatchGeneratedValueKind.RuntimeObjectPatch: return "runtime-object-patch:canonical:v1";
-                case RuntimePatchGeneratedValueKind.ListVector2Int: return "list-atomic:UnityEngine.Vector2Int:v1";
-                case RuntimePatchGeneratedValueKind.List:
-                    return $"list-atomic:{CreateTypeSignature(descriptor.ElementType)}:v1";
-                case RuntimePatchGeneratedValueKind.Enum:
-                    return CreateEnumSignature(descriptor.RuntimeType, descriptor.EnumUnderlyingType);
-                case RuntimePatchGeneratedValueKind.Struct:
-                    var builder = new StringBuilder();
-                    builder.Append("struct:")
-                        .Append(descriptor.RuntimeType.Assembly.GetName().Name)
-                        .Append(':')
-                        .Append(descriptor.RuntimeType.FullName)
-                        .Append('{');
-                    for (var i = 0; i < descriptor.Members.Count; i++)
-                    {
-                        if (i > 0)
-                            builder.Append(';');
-                        builder.Append(descriptor.Members[i].Field.Name)
-                            .Append(':')
-                            .Append(CreateTypeSignature(descriptor.Members[i].ValueType));
-                    }
-                    builder.Append('}');
-                    return builder.ToString();
-                default:
-                    throw new InvalidOperationException($"Unsupported generated patch value kind {descriptor.Kind}.");
-            }
         }
 
         private static RuntimePatchGeneratedTypeDescriptor DescribeValueType(Type type, HashSet<Type> traversal)
@@ -558,53 +439,12 @@ namespace DingoGameObjectsCMS.Editor
             return false;
         }
 
-        private static string CreateEnumSignature(Type enumType, Type underlyingType)
-        {
-            var names = Enum.GetNames(enumType);
-            Array.Sort(names, StringComparer.Ordinal);
-            var builder = new StringBuilder();
-            builder.Append("enum:")
-                .Append(enumType.Assembly.GetName().Name)
-                .Append(':')
-                .Append(enumType.FullName)
-                .Append(':')
-                .Append(underlyingType.FullName)
-                .Append('{');
-            for (var i = 0; i < names.Length; i++)
-            {
-                if (i > 0)
-                    builder.Append(';');
-                var value = Enum.Parse(enumType, names[i]);
-                builder.Append(names[i])
-                    .Append('=')
-                    .Append(ConvertEnumValue(value, underlyingType));
-            }
-            builder.Append('}');
-            return builder.ToString();
-        }
-
-        private static string ConvertEnumValue(object value, Type underlyingType)
-        {
-            if (underlyingType == typeof(byte)
-                || underlyingType == typeof(ushort)
-                || underlyingType == typeof(uint)
-                || underlyingType == typeof(ulong))
-            {
-                return Convert.ToUInt64(value, CultureInfo.InvariantCulture).ToString(CultureInfo.InvariantCulture);
-            }
-            return Convert.ToInt64(value, CultureInfo.InvariantCulture).ToString(CultureInfo.InvariantCulture);
-        }
-
         private static RuntimePatchFieldSchema CloneFieldSchema(RuntimePatchFieldSchema source)
         {
             return new RuntimePatchFieldSchema
             {
                 FieldId = source.FieldId,
-                FieldKey = source.FieldKey,
-                FieldName = source.FieldName,
-                FieldTypeSignature = source.FieldTypeSignature,
                 Encoding = source.Encoding,
-                Tombstone = source.Tombstone,
             };
         }
 
@@ -612,29 +452,15 @@ namespace DingoGameObjectsCMS.Editor
             RuntimePatchGeneratedComponentDescriptor first,
             RuntimePatchGeneratedComponentDescriptor second)
         {
-            var byId = first.Schema.ComponentTypeId.CompareTo(second.Schema.ComponentTypeId);
-            return byId != 0 ? byId : string.CompareOrdinal(first.Schema.ComponentTypeKey, second.Schema.ComponentTypeKey);
-        }
-
-        private static int CompareFieldsByKey(
-            RuntimePatchGeneratedFieldDescriptor first,
-            RuntimePatchGeneratedFieldDescriptor second)
-        {
-            return string.CompareOrdinal(first.Schema.FieldKey, second.Schema.FieldKey);
-        }
-
-        private static int CompareFieldSchemasByKey(RuntimePatchFieldSchema first, RuntimePatchFieldSchema second)
-        {
-            return string.CompareOrdinal(first.FieldKey, second.FieldKey);
+            return first.Schema.ComponentTypeId.CompareTo(second.Schema.ComponentTypeId);
         }
     }
 
     public static class RuntimePatchSchemaReconciler
     {
-        public const int FORMAT_VERSION = 1;
+        public const int FORMAT_VERSION = 2;
 
         public static RuntimePatchSchemaManifest Reconcile(
-            RuntimePatchSchemaManifest existing,
             IReadOnlyList<RuntimePatchComponentSchema> discovered,
             string componentRegistryHash,
             int codecVersion)
@@ -645,75 +471,8 @@ namespace DingoGameObjectsCMS.Editor
                 throw new ArgumentException("Component registry hash is required.", nameof(componentRegistryHash));
             if (codecVersion <= 0)
                 throw new ArgumentOutOfRangeException(nameof(codecVersion));
-            if (existing != null && existing.FormatVersion != 0 && existing.FormatVersion != FORMAT_VERSION)
-            {
-                throw new InvalidOperationException(
-                    $"Runtime patch schema format {existing.FormatVersion} is unsupported; expected {FORMAT_VERSION}.");
-            }
-
-            var existingComponents = CloneComponents(existing?.Components);
-            ValidateComponents(existingComponents, "existing");
-            var currentComponents = CloneComponents(discovered);
-            ValidateComponents(currentComponents, "discovered", requireAssignedFieldIds: false);
-
-            var resultComponents = CloneComponents(existingComponents);
-            var resultByKey = resultComponents.ToDictionary(
-                component => component.ComponentTypeKey,
-                component => component,
-                StringComparer.Ordinal);
-            var resultById = resultComponents.ToDictionary(
-                component => component.ComponentTypeId,
-                component => component);
-            var currentKeys = new HashSet<string>(StringComparer.Ordinal);
-
-            for (var i = 0; i < currentComponents.Count; i++)
-            {
-                var current = currentComponents[i];
-                currentKeys.Add(current.ComponentTypeKey);
-                if (resultByKey.TryGetValue(current.ComponentTypeKey, out var target))
-                {
-                    if (target.Tombstone)
-                    {
-                        throw new InvalidOperationException(
-                            $"Runtime patch component key '{current.ComponentTypeKey}' is tombstoned and cannot be reused.");
-                    }
-                    if (target.ComponentTypeId != current.ComponentTypeId)
-                    {
-                        throw new InvalidOperationException(
-                            $"Runtime patch component '{current.ComponentTypeKey}' changed id from {target.ComponentTypeId} to {current.ComponentTypeId}.");
-                    }
-                    target.RuntimeTypeName = current.RuntimeTypeName;
-                    target.AssemblyName = current.AssemblyName;
-                    target.Tombstone = false;
-                    target.Fields = ReconcileFields(target.Fields, current.Fields, current.ComponentTypeKey);
-                    continue;
-                }
-
-                if (resultById.TryGetValue(current.ComponentTypeId, out var idOwner))
-                {
-                    throw new InvalidOperationException(
-                        $"Runtime patch component id {current.ComponentTypeId} is already reserved by '{idOwner.ComponentTypeKey}'.");
-                }
-                var added = CloneComponent(current);
-                added.Tombstone = false;
-                added.Fields = ReconcileFields(null, current.Fields, current.ComponentTypeKey);
-                resultComponents.Add(added);
-                resultByKey.Add(added.ComponentTypeKey, added);
-                resultById.Add(added.ComponentTypeId, added);
-            }
-
-            for (var i = 0; i < resultComponents.Count; i++)
-            {
-                var component = resultComponents[i];
-                if (currentKeys.Contains(component.ComponentTypeKey))
-                    continue;
-                component.Tombstone = true;
-                for (var fieldIndex = 0; fieldIndex < component.Fields.Count; fieldIndex++)
-                {
-                    component.Fields[fieldIndex].Tombstone = true;
-                }
-            }
-
+            var resultComponents = CloneComponents(discovered);
+            ValidateComponents(resultComponents, "discovered");
             SortComponents(resultComponents);
             var result = new RuntimePatchSchemaManifest
             {
@@ -745,20 +504,12 @@ namespace DingoGameObjectsCMS.Editor
             {
                 var component = components[i];
                 writer.WriteInt32(component.ComponentTypeId);
-                writer.WriteString(component.ComponentTypeKey);
-                writer.WriteString(component.RuntimeTypeName);
-                writer.WriteString(component.AssemblyName);
-                writer.WriteBoolean(component.Tombstone);
                 writer.WriteInt32(component.Fields.Count);
                 for (var fieldIndex = 0; fieldIndex < component.Fields.Count; fieldIndex++)
                 {
                     var field = component.Fields[fieldIndex];
                     writer.WriteInt32(field.FieldId);
-                    writer.WriteString(field.FieldKey);
-                    writer.WriteString(field.FieldName);
-                    writer.WriteString(field.FieldTypeSignature);
                     writer.WriteByte((byte)field.Encoding);
-                    writer.WriteBoolean(field.Tombstone);
                 }
             }
 
@@ -772,102 +523,41 @@ namespace DingoGameObjectsCMS.Editor
             return builder.ToString();
         }
 
-        private static List<RuntimePatchFieldSchema> ReconcileFields(
-            IReadOnlyList<RuntimePatchFieldSchema> existing,
-            IReadOnlyList<RuntimePatchFieldSchema> discovered,
-            string componentKey)
-        {
-            var result = CloneFields(existing);
-            ValidateFields(result, componentKey, "existing");
-            var current = CloneFields(discovered);
-            ValidateFields(current, componentKey, "discovered", requireAssignedIds: false);
-            current.Sort((first, second) => string.CompareOrdinal(first.FieldKey, second.FieldKey));
-            var byKey = result.ToDictionary(field => field.FieldKey, field => field, StringComparer.Ordinal);
-            var currentKeys = new HashSet<string>(StringComparer.Ordinal);
-            var nextId = -1;
-            for (var i = 0; i < result.Count; i++)
-            {
-                nextId = Math.Max(nextId, result[i].FieldId);
-            }
-
-            for (var i = 0; i < current.Count; i++)
-            {
-                var source = current[i];
-                currentKeys.Add(source.FieldKey);
-                if (byKey.TryGetValue(source.FieldKey, out var target))
-                {
-                    if (target.Tombstone)
-                    {
-                        throw new InvalidOperationException(
-                            $"Runtime patch field key '{source.FieldKey}' is tombstoned and cannot be reused.");
-                    }
-                    target.FieldName = source.FieldName;
-                    target.FieldTypeSignature = source.FieldTypeSignature;
-                    target.Encoding = source.Encoding;
-                    target.Tombstone = false;
-                    continue;
-                }
-
-                var added = CloneField(source);
-                added.FieldId = ++nextId;
-                added.Tombstone = false;
-                result.Add(added);
-                byKey.Add(added.FieldKey, added);
-            }
-
-            for (var i = 0; i < result.Count; i++)
-            {
-                if (!currentKeys.Contains(result[i].FieldKey))
-                    result[i].Tombstone = true;
-            }
-            result.Sort(CompareFields);
-            return result;
-        }
-
         private static void ValidateComponents(
             List<RuntimePatchComponentSchema> components,
-            string source,
-            bool requireAssignedFieldIds = true)
+            string source)
         {
             var ids = new HashSet<int>();
-            var keys = new HashSet<string>(StringComparer.Ordinal);
+            var types = new HashSet<Type>();
             for (var i = 0; i < components.Count; i++)
             {
                 var component = components[i];
                 if (component.ComponentTypeId < 0)
                     throw new InvalidOperationException($"{source} runtime patch component has negative id {component.ComponentTypeId}.");
-                if (string.IsNullOrWhiteSpace(component.ComponentTypeKey))
-                    throw new InvalidOperationException($"{source} runtime patch component {component.ComponentTypeId} has no key.");
                 if (!ids.Add(component.ComponentTypeId))
                     throw new InvalidOperationException($"{source} runtime patch schema has duplicate component id {component.ComponentTypeId}.");
-                if (!keys.Add(component.ComponentTypeKey))
-                    throw new InvalidOperationException($"{source} runtime patch schema has duplicate component key '{component.ComponentTypeKey}'.");
+                if (component.RuntimeType == null)
+                    throw new InvalidOperationException($"{source} runtime patch component {component.ComponentTypeId} requires RuntimeType = typeof(T).");
+                if (!types.Add(component.RuntimeType))
+                    throw new InvalidOperationException($"{source} runtime patch schema has duplicate runtime type '{component.RuntimeType.FullName}'.");
                 component.Fields ??= new List<RuntimePatchFieldSchema>();
-                ValidateFields(component.Fields, component.ComponentTypeKey, source, requireAssignedFieldIds);
+                ValidateFields(component.Fields, component.ComponentTypeId, source);
             }
         }
 
         private static void ValidateFields(
             List<RuntimePatchFieldSchema> fields,
-            string componentKey,
-            string source,
-            bool requireAssignedIds = true)
+            int componentTypeId,
+            string source)
         {
             var ids = new HashSet<int>();
-            var keys = new HashSet<string>(StringComparer.Ordinal);
             for (var i = 0; i < fields.Count; i++)
             {
                 var field = fields[i];
-                if (requireAssignedIds && field.FieldId < 0)
-                    throw new InvalidOperationException($"{source} field '{field.FieldKey}' in '{componentKey}' has no assigned id.");
-                if (!requireAssignedIds && field.FieldId < -1)
-                    throw new InvalidOperationException($"{source} field '{field.FieldKey}' in '{componentKey}' has invalid id {field.FieldId}.");
-                if (string.IsNullOrWhiteSpace(field.FieldKey))
-                    throw new InvalidOperationException($"{source} field in '{componentKey}' has no stable key.");
-                if (!keys.Add(field.FieldKey))
-                    throw new InvalidOperationException($"{source} component '{componentKey}' has duplicate field key '{field.FieldKey}'.");
-                if (field.FieldId >= 0 && !ids.Add(field.FieldId))
-                    throw new InvalidOperationException($"{source} component '{componentKey}' has duplicate field id {field.FieldId}.");
+                if (field.FieldId < 0)
+                    throw new InvalidOperationException($"{source} component {componentTypeId} has invalid field id {field.FieldId}.");
+                if (!ids.Add(field.FieldId))
+                    throw new InvalidOperationException($"{source} component {componentTypeId} has duplicate field id {field.FieldId}.");
             }
         }
 
@@ -890,10 +580,7 @@ namespace DingoGameObjectsCMS.Editor
             return new RuntimePatchComponentSchema
             {
                 ComponentTypeId = source.ComponentTypeId,
-                ComponentTypeKey = source.ComponentTypeKey,
-                RuntimeTypeName = source.RuntimeTypeName,
-                AssemblyName = source.AssemblyName,
-                Tombstone = source.Tombstone,
+                RuntimeType = source.RuntimeType,
                 Fields = CloneFields(source.Fields),
             };
         }
@@ -917,21 +604,14 @@ namespace DingoGameObjectsCMS.Editor
             return new RuntimePatchFieldSchema
             {
                 FieldId = source.FieldId,
-                FieldKey = source.FieldKey,
-                FieldName = source.FieldName,
-                FieldTypeSignature = source.FieldTypeSignature,
                 Encoding = source.Encoding,
-                Tombstone = source.Tombstone,
             };
         }
 
         private static void SortComponents(List<RuntimePatchComponentSchema> components)
         {
             components.Sort((first, second) =>
-            {
-                var byId = first.ComponentTypeId.CompareTo(second.ComponentTypeId);
-                return byId != 0 ? byId : string.CompareOrdinal(first.ComponentTypeKey, second.ComponentTypeKey);
-            });
+                first.ComponentTypeId.CompareTo(second.ComponentTypeId));
             for (var i = 0; i < components.Count; i++)
             {
                 components[i].Fields.Sort(CompareFields);
@@ -940,8 +620,7 @@ namespace DingoGameObjectsCMS.Editor
 
         private static int CompareFields(RuntimePatchFieldSchema first, RuntimePatchFieldSchema second)
         {
-            var byId = first.FieldId.CompareTo(second.FieldId);
-            return byId != 0 ? byId : string.CompareOrdinal(first.FieldKey, second.FieldKey);
+            return first.FieldId.CompareTo(second.FieldId);
         }
     }
 }
