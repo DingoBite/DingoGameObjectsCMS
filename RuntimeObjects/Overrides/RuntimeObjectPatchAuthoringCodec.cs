@@ -504,30 +504,16 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
 
         private static List<FieldInfo> CollectSerializableFields(Type type)
         {
-            var reflected = type.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly);
-            var result = new List<FieldInfo>();
-            for (var i = 0; i < reflected.Length; i++)
+            var result = RuntimePatchSerializableFieldDiscovery.Collect(type);
+            for (var i = 0; i < result.Count; i++)
             {
-                var field = reflected[i];
-                if (field.IsStatic
-                    || field.IsLiteral
-                    || field.GetCustomAttribute<NonSerializedAttribute>(inherit: false) != null)
-                {
-                    continue;
-                }
-                var serialized = field.IsPublic
-                                 || field.GetCustomAttribute<SerializeField>(inherit: false) != null
-                                 || field.GetCustomAttribute<SerializeReference>(inherit: false) != null;
-                if (!serialized)
-                    continue;
+                var field = result[i];
                 if (!field.IsPublic || field.IsInitOnly)
                 {
                     throw new InvalidOperationException(
                         $"Canonical authoring field '{type.FullName}.{field.Name}' must be public and writable, matching generated codec rules.");
                 }
-                result.Add(field);
             }
-            result.Sort((left, right) => string.CompareOrdinal(left.Name, right.Name));
             return result;
         }
 

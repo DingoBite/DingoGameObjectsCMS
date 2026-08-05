@@ -25,6 +25,18 @@ namespace DingoGameObjectsCMS.Tests.Editor
         public List<Vector2Int> Cells;
     }
 
+    public abstract class RuntimePatchInheritedFixtureBase_GRC :
+        GameRuntimeComponent
+    {
+        public int BaseValue;
+    }
+
+    public sealed class RuntimePatchInheritedFixture_GRC :
+        RuntimePatchInheritedFixtureBase_GRC
+    {
+        public float LeafValue;
+    }
+
     public class RuntimePatchGeneratedValueCodecTests
     {
         [Test]
@@ -72,6 +84,39 @@ namespace DingoGameObjectsCMS.Tests.Editor
             Assert.That(field.ValueType.Kind, Is.EqualTo(RuntimePatchGeneratedValueKind.ListVector2Int));
             Assert.That(field.Schema.FieldId, Is.Zero);
             Assert.That(field.Schema.Encoding, Is.EqualTo(RuntimePatchFieldEncoding.CustomListVector2Int));
+        }
+
+        [Test]
+        public void SchemaAndEmitter_IncludeInheritedSerializedFields()
+        {
+            var descriptor = RuntimePatchSchemaDiscovery.DescribeComponent(
+                typeof(RuntimePatchInheritedFixture_GRC),
+                9903);
+
+            Assert.That(
+                descriptor.Fields.ConvertAll(field => field.Field.Name),
+                Is.EqualTo(new[]
+                {
+                    nameof(RuntimePatchInheritedFixtureBase_GRC.BaseValue),
+                    nameof(RuntimePatchInheritedFixture_GRC.LeafValue),
+                }));
+
+            var manifest = RuntimePatchSchemaReconciler.Reconcile(
+                new[] { descriptor.Schema },
+                "cms-tests-inheritance",
+                1);
+            RuntimePatchSchemaGenerationCore.BindReconciledSchema(
+                new[] { descriptor },
+                manifest);
+            var source = RuntimePatchCodeEmitter.Generate(
+                manifest,
+                new[] { descriptor },
+                new RuntimePatchCodeEmissionProfile(
+                    "DingoGameObjectsCMS.Tests.Generated",
+                    "CmsInheritedPatchRegistry"));
+
+            Assert.That(source, Does.Contain("value.@BaseValue"));
+            Assert.That(source, Does.Contain("value.@LeafValue"));
         }
 
         [TestCase(RuntimeObjectPatchRepresentation.RuntimeBinary)]

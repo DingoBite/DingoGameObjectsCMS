@@ -393,25 +393,7 @@ namespace DingoGameObjectsCMS.Editor
 
         private static List<FieldInfo> CollectSerializableFields(Type type)
         {
-            var fields = type.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly);
-            var result = new List<FieldInfo>();
-            for (var i = 0; i < fields.Length; i++)
-            {
-                var field = fields[i];
-                if (field.IsStatic
-                    || field.IsLiteral
-                    || field.GetCustomAttribute<NonSerializedAttribute>(inherit: false) != null)
-                    continue;
-                if (!field.IsPublic
-                    && field.GetCustomAttribute<SerializeField>(inherit: false) == null
-                    && field.GetCustomAttribute<SerializeReference>(inherit: false) == null)
-                {
-                    continue;
-                }
-                result.Add(field);
-            }
-            result.Sort((first, second) => string.CompareOrdinal(first.Name, second.Name));
-            return result;
+            return RuntimePatchSerializableFieldDiscovery.Collect(type);
         }
 
         private static void ValidateDirectFieldAccess(FieldInfo field, Type ownerType)
