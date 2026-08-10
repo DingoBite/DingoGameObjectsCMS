@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using DingoGameObjectsCMS.AssetObjects;
 using DingoGameObjectsCMS.RuntimeObjects;
 using UnityEngine;
 using UnityEngine.Scripting;
@@ -108,7 +109,7 @@ namespace DingoGameObjectsCMS.AssetLibrary
         private void RequireMutable()
         {
             if (IsReadOnly)
-                throw new InvalidOperationException("The GameAsset library lock is sealed and cannot be changed.");
+                throw new InvalidOperationException("The GameAsset session resolution snapshot is sealed and cannot be changed.");
         }
     }
 
@@ -118,12 +119,18 @@ namespace DingoGameObjectsCMS.AssetLibrary
         public string Mod { get; }
         public int ManifestVersion { get; }
         public string GeneratedUtc { get; }
+        public string ContentHash { get; }
 
-        public GameAssetLibraryLockMod(string mod, int manifestVersion, string generatedUtc)
+        public GameAssetLibraryLockMod(
+            string mod,
+            int manifestVersion,
+            string generatedUtc,
+            string contentHash)
         {
             Mod = mod;
             ManifestVersion = manifestVersion;
             GeneratedUtc = generatedUtc;
+            ContentHash = contentHash;
         }
     }
 
@@ -133,12 +140,20 @@ namespace DingoGameObjectsCMS.AssetLibrary
         public GameAssetKey ResolvedKey { get; }
         public Hash128 ResolvedGuid { get; }
         public string MaterializedContentHash { get; }
+        public GameAssetScriptableObject ResolvedAsset { get; }
+        public bool HasResolvedAsset { get; }
 
-        public GameAssetLibraryLockEntry(GameAssetKey resolvedKey, Hash128 resolvedGuid, string materializedContentHash)
+        public GameAssetLibraryLockEntry(
+            GameAssetKey resolvedKey,
+            Hash128 resolvedGuid,
+            string materializedContentHash,
+            GameAssetScriptableObject resolvedAsset = null)
         {
             ResolvedKey = resolvedKey;
             ResolvedGuid = resolvedGuid;
             MaterializedContentHash = materializedContentHash;
+            ResolvedAsset = resolvedAsset;
+            HasResolvedAsset = !ReferenceEquals(resolvedAsset, null);
         }
     }
 

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using DingoGameObjectsCMS.Modding;
 using System.IO;
 
 namespace DingoGameObjectsCMS.AssetLibrary.Manifest
@@ -26,7 +27,7 @@ namespace DingoGameObjectsCMS.AssetLibrary.Manifest
     /// </summary>
     public class SpriteRenderModuleContent
     {
-        private readonly GameAssetVerifiedPackage _package;
+        private readonly ModPackage _package;
         private readonly GameAssetResourceRef _presetsResource;
         private readonly List<GameAssetResourceRef> _spriteResources = new();
         private readonly HashSet<GameAssetResourceRef> _spriteSet = new();
@@ -35,7 +36,7 @@ namespace DingoGameObjectsCMS.AssetLibrary.Manifest
 
         public IReadOnlyList<GameAssetResourceRef> SpriteResources => _spriteResources;
 
-        public SpriteRenderModuleContent(GameAssetVerifiedPackage package)
+        public SpriteRenderModuleContent(ModPackage package)
         {
             _package = package ?? throw new ArgumentNullException(nameof(package));
             _presetsResource = new GameAssetResourceRef(package.ModuleId, SpriteRenderModulePresets.RESOURCE_PATH);

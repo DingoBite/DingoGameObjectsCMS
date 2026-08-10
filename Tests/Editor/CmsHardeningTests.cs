@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
 using DingoGameObjectsCMS.AssetLibrary.AssetsEdit;
+using DingoGameObjectsCMS.AssetLibrary.Manifest;
 using DingoGameObjectsCMS.AssetObjects;
 using DingoGameObjectsCMS.Modding;
 using DingoGameObjectsCMS.RuntimeObjects;
@@ -178,7 +179,11 @@ namespace DingoGameObjectsCMS.Tests.Editor
                 };
 
                 Assert.Throws<InvalidDataException>(
-                    () => new ModPackage(root, manifest));
+                    () => new GameAssetModuleContentSnapshot(
+                        root,
+                        "test",
+                        manifest,
+                        Array.Empty<GameAssetModuleContentFile>()));
             }
             finally
             {
@@ -210,8 +215,13 @@ namespace DingoGameObjectsCMS.Tests.Editor
                     }
                 };
 
+                var snapshot = new GameAssetModuleContentSnapshot(
+                    root,
+                    "test",
+                    manifest,
+                    Array.Empty<GameAssetModuleContentFile>());
                 Assert.Throws<InvalidDataException>(
-                    () => new ModPackage(root, manifest));
+                    () => new ModPackage(snapshot));
             }
             finally
             {

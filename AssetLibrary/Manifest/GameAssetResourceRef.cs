@@ -14,7 +14,7 @@ namespace DingoGameObjectsCMS.AssetLibrary.Manifest
         public GameAssetResourceRef(string moduleId, string relativePath)
         {
             ModuleId = moduleId;
-            RelativePath = GameAssetModulePackageFileUtils.RequireCanonicalRelativePath(relativePath);
+            RelativePath = GameAssetModuleContentScanner.RequireCanonicalRelativePath(relativePath);
         }
 
         public bool Equals(GameAssetResourceRef other)

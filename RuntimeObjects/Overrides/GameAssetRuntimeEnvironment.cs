@@ -1,16 +1,11 @@
 using System;
+using System.Collections.Generic;
 using DingoGameObjectsCMS.AssetLibrary;
+using DingoGameObjectsCMS.Modding;
 using DingoGameObjectsCMS.RuntimeObjects.Stores;
-using UnityEngine;
 
 namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
 {
-    public enum GameAssetRuntimeLockSource
-    {
-        CheckedInFile = 0,
-        ConfiguredSessionBase = 1,
-    }
-
     /// <summary>
     /// Generic immutable GA environment. A project only supplies its generated
     /// codec registry and codec context; the SDK owns manifest initialization
@@ -21,26 +16,13 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
         public RuntimePatchCodecRegistry PatchCodecs { get; }
         public GameAssetTemplateCache Templates { get; }
         public GameAssetLibraryLock LibraryLock { get; }
+        public IReadOnlyList<ModPackage> MountedModules { get; }
 
         public string RuntimeSchemaHash => PatchCodecs.SchemaHash;
 
         public GameAssetRuntimeEnvironment(
             RuntimePatchCodecRegistry patchCodecs,
-            RuntimePatchCodecContext templateContext,
-            string lockPath = null)
-            : this(
-                patchCodecs,
-                templateContext,
-                GameAssetRuntimeLockSource.CheckedInFile,
-                lockPath)
-        {
-        }
-
-        public GameAssetRuntimeEnvironment(
-            RuntimePatchCodecRegistry patchCodecs,
-            RuntimePatchCodecContext templateContext,
-            GameAssetRuntimeLockSource lockSource,
-            string lockPath = null)
+            RuntimePatchCodecContext templateContext)
         {
             PatchCodecs = patchCodecs ?? throw new ArgumentNullException(nameof(patchCodecs));
             if (templateContext == null)
@@ -50,31 +32,21 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
 
             GameAssetLibraryManifest.EnsureInitialized();
             Templates = new GameAssetTemplateCache(PatchCodecs, templateContext);
-            LibraryLock = lockSource switch
-            {
-                GameAssetRuntimeLockSource.CheckedInFile => GameAssetLibraryLockFile.LoadStrict(
-                    lockPath ?? GameAssetLibraryLockFile.GetDefaultPath(Application.streamingAssetsPath),
-                    Templates),
-                GameAssetRuntimeLockSource.ConfiguredSessionBase => BuildConfiguredSessionLock(lockPath),
-                _ => throw new ArgumentOutOfRangeException(nameof(lockSource), lockSource, null),
-            };
+            MountedModules = GameAssetLibraryManifest
+                .CollectImmutableModPackages();
+            LibraryLock = BuildConfiguredSessionSnapshot();
         }
 
-        private GameAssetLibraryLock BuildConfiguredSessionLock(string lockPath)
+        private GameAssetLibraryLock BuildConfiguredSessionSnapshot()
         {
             if (!GameAssetLibraryManifest.HasConfiguredSessionBasePackage)
             {
                 throw new InvalidOperationException(
                     "A session base package must be configured explicitly before creating a dynamic GameAsset lock.");
             }
-            if (!string.IsNullOrWhiteSpace(lockPath))
-            {
-                throw new ArgumentException(
-                    "A lock file path cannot be combined with a dynamically sealed session package.",
-                    nameof(lockPath));
-            }
-
-            var sessionLock = GameAssetLibraryLockBuilder.Build(Templates);
+            var sessionLock = GameAssetLibraryLockBuilder.Build(
+                Templates,
+                MountedModules);
             if (sessionLock.Mods.Count == 0 || sessionLock.Entries.Count == 0)
             {
                 throw new InvalidOperationException(

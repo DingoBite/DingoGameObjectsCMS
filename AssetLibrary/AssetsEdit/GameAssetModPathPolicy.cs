@@ -1,5 +1,7 @@
 #if NEWTONSOFT_EXISTS
+using System;
 using System.IO;
+using DingoGameObjectsCMS.AssetLibrary.Manifest;
 using UnityEngine;
 
 namespace DingoGameObjectsCMS.AssetLibrary.AssetsEdit
@@ -23,7 +25,22 @@ namespace DingoGameObjectsCMS.AssetLibrary.AssetsEdit
         {
             var root = GetAssetsRootPath(assetsRootAbs, assetsRootSubPath);
             var normalizedMod = GameAssetKeyPolicy.NormalizeModName(mod, fallbackMod);
-            return Path.GetFullPath(Path.Combine(root, normalizedMod));
+            normalizedMod = GameAssetModuleContentScanner
+                .RequireCanonicalModuleId(normalizedMod);
+            var resolved = Path.GetFullPath(Path.Combine(root, normalizedMod));
+            var rootPrefix = root.TrimEnd(
+                                 Path.DirectorySeparatorChar,
+                                 Path.AltDirectorySeparatorChar)
+                             + Path.DirectorySeparatorChar;
+            var comparison = Path.DirectorySeparatorChar == '\\'
+                ? StringComparison.OrdinalIgnoreCase
+                : StringComparison.Ordinal;
+            if (!resolved.StartsWith(rootPrefix, comparison))
+            {
+                throw new InvalidDataException(
+                    $"GameAsset module '{normalizedMod}' escapes assets root '{root}'.");
+            }
+            return resolved;
         }
     }
 }

@@ -2,35 +2,15 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Threading;
-using System.Threading.Tasks;
 using DingoGameObjectsCMS.AssetLibrary.AssetsEdit;
+using DingoGameObjectsCMS.AssetLibrary.Manifest;
 using DingoGameObjectsCMS.AssetObjects;
 using DingoGameObjectsCMS.Modding;
 using DingoGameObjectsCMS.RuntimeObjects;
-using DingoGameObjectsCMS.Serialization;
-using Newtonsoft.Json;
 using UnityEngine;
-using UnityEngine.Scripting;
 
 namespace DingoGameObjectsCMS.AssetLibrary
 {
-    public enum GameAssetFolderType
-    {
-        BuildIn = 0,
-        ExternalModRoot = 1
-    }
-
-    [Serializable, Preserve]
-    public class GameAssetFolderPath
-    {
-        public string Name;
-        public GameAssetFolderType FolderType;
-        public string SubPath;
-        public int Priority = 0;
-        public bool Enabled = true;
-    }
-
     public sealed class GameAssetLibraryManifest
     {
         private const string BASE_MOD = "base";
@@ -50,8 +30,6 @@ namespace DingoGameObjectsCMS.AssetLibrary
         private string _sessionBasePackageRootOverride;
         private string _sessionAssetsRootOverride;
 
-        public bool ExternalOverridesBuiltIn => true;
-
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
         private static void ResetOnSubsystemRegistration()
         {
@@ -61,16 +39,6 @@ namespace DingoGameObjectsCMS.AssetLibrary
         public static GameAssetLibraryManifest GetNoCheck()
         {
             return Instance;
-        }
-
-        public static void AddFolder(GameAssetFolderPath gameAssetFolderPath)
-        {
-            ClearRuntimeCaches();
-        }
-
-        public static void RemoveFolder(GameAssetFolderPath gameAssetFolderPath)
-        {
-            ClearRuntimeCaches();
         }
 
         public static void EnsureInitialized()
@@ -86,11 +54,6 @@ namespace DingoGameObjectsCMS.AssetLibrary
             }
 
             Instance.SetSessionBasePackageRoot(Path.GetFullPath(modRootAbs));
-        }
-
-        public static void UseBuiltInSessionBasePackage()
-        {
-            Instance.SetSessionBasePackageRoot(null);
         }
 
         public static string GetSessionBasePackageRoot()
@@ -181,6 +144,11 @@ namespace DingoGameObjectsCMS.AssetLibrary
         public static List<ModManifest> CollectImmutableModManifests()
         {
             return Instance.CollectLoadedModManifestsInternal(immutableOnly: true);
+        }
+
+        public static IReadOnlyList<ModPackage> CollectImmutableModPackages()
+        {
+            return Instance.CollectImmutableModPackagesInternal();
         }
 
         public void RebuildRuntimeCache()
@@ -291,9 +259,19 @@ namespace DingoGameObjectsCMS.AssetLibrary
             lock (_cacheLock)
             {
                 return (immutableOnly ? _immutablePackages : _packages)
-                    .Where(package => package?.Manifest != null)
-                    .Select(package => package.Manifest)
+                    .Where(package => package != null)
+                    .Select(package => package.CreateManifestCopy())
                     .ToList();
+            }
+        }
+
+        private IReadOnlyList<ModPackage> CollectImmutableModPackagesInternal()
+        {
+            EnsureRuntimeCacheSync();
+
+            lock (_cacheLock)
+            {
+                return Array.AsReadOnly(_immutablePackages.ToArray());
             }
         }
 
@@ -399,10 +377,9 @@ namespace DingoGameObjectsCMS.AssetLibrary
                 }
             }
 
-            return Path.GetFullPath(Path.Combine(
-                Application.streamingAssetsPath,
-                GameAssetModPathPolicy.DEFAULT_ASSETS_ROOT_SUB_PATH,
-                BASE_MOD));
+            return Path.Combine(
+                TakeSessionAssetsRootPath(),
+                BASE_MOD);
         }
 
         private bool HasSessionBasePackageRoot()
@@ -460,52 +437,19 @@ namespace DingoGameObjectsCMS.AssetLibrary
                 sessionBasePackageRootOverride = _sessionBasePackageRootOverride;
             }
 
-            // Exactly one base package is the immutable baseline of a session.
-            // Projects may explicitly select an installed package before the
-            // first resolve; runtime never falls back to live Unity assets.
-            var builtInAssetsRoot = Path.Combine(
-                Application.streamingAssetsPath,
-                GameAssetModPathPolicy.DEFAULT_ASSETS_ROOT_SUB_PATH);
-            var builtInBaseRoot = Path.Combine(builtInAssetsRoot, BASE_MOD);
-            var usesExternalSessionBase = !string.IsNullOrWhiteSpace(sessionBasePackageRootOverride);
-            result.Add(new MountInfo(
-                builtInBaseRoot,
-                BASE_MOD,
-                priority: 0,
-                order: order++,
-                isSessionBaseline: !usesExternalSessionBase));
-
-            if (Directory.Exists(builtInAssetsRoot))
-            {
-                var builtInDirectories = Directory.GetDirectories(builtInAssetsRoot)
-                    .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
-                    .ToArray();
-                for (var i = 0; i < builtInDirectories.Length; i++)
-                {
-                    var mod = Path.GetFileName(builtInDirectories[i]);
-                    if (string.Equals(mod, BASE_MOD, StringComparison.OrdinalIgnoreCase))
-                        continue;
-                    result.Add(new MountInfo(
-                        builtInDirectories[i],
-                        mod,
-                        priority: 0,
-                        order: order++,
-                        isSessionBaseline: true));
-                }
-            }
-
             var assetsRoot = TakeSessionAssetsRootPath();
             Directory.CreateDirectory(assetsRoot);
 
-            var externalBaseRoot = usesExternalSessionBase
+            var baseRoot = !string.IsNullOrWhiteSpace(
+                    sessionBasePackageRootOverride)
                 ? sessionBasePackageRootOverride
                 : Path.Combine(assetsRoot, BASE_MOD);
             result.Add(new MountInfo(
-                externalBaseRoot,
+                baseRoot,
                 BASE_MOD,
-                priority: 100,
+                priority: 0,
                 order: order++,
-                isSessionBaseline: usesExternalSessionBase));
+                isSessionBaseline: true));
 
             var directories = Directory.GetDirectories(assetsRoot)
                 .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
@@ -520,7 +464,7 @@ namespace DingoGameObjectsCMS.AssetLibrary
                 result.Add(new MountInfo(
                     directories[i],
                     mod,
-                    priority: 200,
+                    priority: 0,
                     order,
                     // Installed mods are discovered before the runtime lock is
                     // sealed. Include them in that immutable session snapshot
@@ -548,27 +492,17 @@ namespace DingoGameObjectsCMS.AssetLibrary
                 if (!File.Exists(manifestPath))
                     return;
 
-                var manifestJson = File.ReadAllText(manifestPath);
-                var manifest = JsonConvert.DeserializeObject<ModManifest>(manifestJson, GameAssetJson.DataSettings);
-                if (manifest == null)
-                    return;
-                if (!string.Equals(manifest.Mod, mount.Mod, StringComparison.OrdinalIgnoreCase))
-                {
-                    throw new InvalidDataException(
-                        $"GameAsset manifest '{manifestPath}' declares mod '{manifest.Mod}' but is mounted as '{mount.Mod}'.");
-                }
-
-                manifest.Assets ??= new List<ModManifestEntry>();
-                var package = new ModPackage(mount.ModRootAbs, manifest);
+                var contentSnapshot = GameAssetModuleContentScanner.Scan(
+                    mount.ModRootAbs,
+                    mount.Mod);
+                var package = new ModPackage(contentSnapshot);
                 packages.Add(package);
                 if (mount.IsSessionBaseline)
                     immutablePackages.Add(package);
 
-                for (var i = 0; i < manifest.Assets.Count; i++)
+                for (var i = 0; i < package.Assets.Count; i++)
                 {
-                    var entry = manifest.Assets[i];
-                    if (entry == null)
-                        continue;
+                    var entry = package.Assets[i];
 
                     var locator = new ExternalLocator(package, entry.Key, mount.Priority, mount.Order);
                     UpsertKey(byKey, locator);

@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using DingoGameObjectsCMS.AssetObjects;
+using DingoGameObjectsCMS.Modding;
 using DingoGameObjectsCMS.RuntimeObjects;
 using DingoGameObjectsCMS.RuntimeObjects.Overrides;
 
@@ -8,38 +10,78 @@ namespace DingoGameObjectsCMS.AssetLibrary
 {
     public static class GameAssetLibraryLockBuilder
     {
-        public static GameAssetLibraryLock Build(GameAssetTemplateCache templateCache)
+        public static GameAssetLibraryLock Build(
+            GameAssetTemplateCache templateCache,
+            IReadOnlyList<ModPackage> mountedModules)
         {
             if (templateCache == null)
                 throw new ArgumentNullException(nameof(templateCache));
+            if (mountedModules == null)
+                throw new ArgumentNullException(nameof(mountedModules));
 
             var assetLock = new GameAssetLibraryLock();
-
-            foreach (var mod in GameAssetLibraryManifest.CollectImmutableModManifests())
+            var latestByIdentity = new Dictionary<string, GameAsset>(
+                StringComparer.Ordinal);
+            var moduleIds = new HashSet<string>(StringComparer.Ordinal);
+            var orderedModules = mountedModules
+                .OrderBy(module => module?.ModuleId, StringComparer.Ordinal)
+                .ToArray();
+            for (var moduleIndex = 0;
+                 moduleIndex < orderedModules.Length;
+                 moduleIndex++)
             {
-                if (mod == null)
-                    continue;
+                var module = orderedModules[moduleIndex]
+                             ?? throw new InvalidOperationException(
+                                 $"Mounted GameAsset module {moduleIndex} is null.");
+                if (!moduleIds.Add(module.ModuleId))
+                {
+                    throw new InvalidOperationException(
+                        $"Mounted GameAsset module '{module.ModuleId}' is duplicated.");
+                }
+                assetLock.SetMod(new GameAssetLibraryLockMod(
+                    module.ModuleId,
+                    module.ManifestVersion,
+                    module.GeneratedUtc,
+                    module.ContentHash));
 
-                assetLock.SetMod(new GameAssetLibraryLockMod(mod.Mod, mod.ManifestVersion, mod.GeneratedUtc));
+                for (var assetIndex = 0;
+                     assetIndex < module.Assets.Count;
+                     assetIndex++)
+                {
+                    var authored = module.Assets[assetIndex];
+                    if (!module.TryGet(authored.Key, out var asset)
+                        || asset is not GameAsset gameAsset)
+                    {
+                        throw new InvalidOperationException(
+                            $"Mounted asset '{authored.Key}' is not a loadable {nameof(GameAsset)}.");
+                    }
+
+                    AddResolvedEntry(
+                        assetLock,
+                        templateCache,
+                        gameAsset.Key,
+                        gameAsset);
+                    var identity = GameAssetIdentityKey.Normalize(
+                        gameAsset.Key);
+                    if (!latestByIdentity.TryGetValue(
+                            identity,
+                            out var currentLatest)
+                        || GameAssetVersionUtils.Compare(
+                            gameAsset.Key.Version,
+                            currentLatest.Key.Version) > 0)
+                    {
+                        latestByIdentity[identity] = gameAsset;
+                    }
+                }
             }
 
-            foreach (var asset in GameAssetLibraryManifest.CollectImmutableAssets().Values)
+            foreach (var gameAsset in latestByIdentity.Values)
             {
-                if (asset is not GameAsset gameAsset)
-                    throw new InvalidOperationException($"Asset '{asset.Key}' is not a {nameof(GameAsset)}.");
-
-                AddResolvedEntry(assetLock, templateCache, gameAsset.Key, gameAsset);
-            }
-
-            foreach (var request in GameAssetLibraryManifest.CollectImmutableIdentityRequests())
-            {
-                if (!GameAssetLibraryManifest.TryResolveImmutable(request, out var asset) || asset == null)
-                    continue;
-
-                if (asset is not GameAsset gameAsset)
-                    throw new InvalidOperationException($"Asset '{asset.Key}' is not a {nameof(GameAsset)}.");
-
-                AddResolvedEntry(assetLock, templateCache, request, gameAsset);
+                AddResolvedEntry(
+                    assetLock,
+                    templateCache,
+                    BuildIdentityRequest(gameAsset.Key),
+                    gameAsset);
             }
 
             return assetLock.Seal();
@@ -55,7 +97,8 @@ namespace DingoGameObjectsCMS.AssetLibrary
             assetLock.Set(request, new GameAssetLibraryLockEntry(
                 gameAsset.Key,
                 gameAsset.GUID,
-                blueprint.Asset.MaterializedContentHash));
+                blueprint.Asset.MaterializedContentHash,
+                gameAsset));
         }
 
         public static bool TryResolve(GameAssetKey key, GameAssetLibraryLock assetLock, out GameAssetScriptableObject asset)
@@ -79,16 +122,23 @@ namespace DingoGameObjectsCMS.AssetLibrary
             if (!IsLatestVersionRequest(key) && !KeysEqual(key, entry.ResolvedKey))
                 return false;
 
-            if (!GameAssetLibraryManifest.TryResolveImmutableGuid(entry.ResolvedGuid, out var byGuid) || byGuid == null)
+            if (!entry.HasResolvedAsset)
                 return false;
 
-            if (!GameAssetLibraryManifest.TryResolveImmutable(entry.ResolvedKey, out var byKey) || byKey == null)
+            if (ReferenceEquals(entry.ResolvedAsset, null)
+                || entry.ResolvedAsset == null)
+            {
                 return false;
-
-            if (byGuid.GUID != byKey.GUID || byGuid.GUID != entry.ResolvedGuid || !KeysEqual(byGuid.Key, entry.ResolvedKey))
+            }
+            if (entry.ResolvedAsset.GUID != entry.ResolvedGuid
+                || !KeysEqual(
+                    entry.ResolvedAsset.Key,
+                    entry.ResolvedKey))
+            {
                 return false;
+            }
 
-            asset = byGuid;
+            asset = entry.ResolvedAsset;
             return true;
         }
 
@@ -204,7 +254,9 @@ namespace DingoGameObjectsCMS.AssetLibrary
                     continue;
                 }
 
-                if (currentMod.ManifestVersion != lockedMod.ManifestVersion || !string.Equals(currentMod.GeneratedUtc, lockedMod.GeneratedUtc, StringComparison.Ordinal))
+                if (currentMod.ManifestVersion != lockedMod.ManifestVersion
+                    || !string.Equals(currentMod.GeneratedUtc, lockedMod.GeneratedUtc, StringComparison.Ordinal)
+                    || !string.Equals(currentMod.ContentHash, lockedMod.ContentHash, StringComparison.Ordinal))
                 {
                     report.Issues.Add(new GameAssetLibraryLockIssue
                     {
@@ -222,12 +274,17 @@ namespace DingoGameObjectsCMS.AssetLibrary
         private static Dictionary<string, GameAssetLibraryLockMod> BuildCurrentModIndex()
         {
             var mods = new Dictionary<string, GameAssetLibraryLockMod>(StringComparer.Ordinal);
-            foreach (var mod in GameAssetLibraryManifest.CollectImmutableModManifests())
+            foreach (var module in GameAssetLibraryManifest.CollectImmutableModPackages())
             {
-                if (mod == null)
+                if (module == null)
                     continue;
 
-                mods[GameAssetIdentityKey.NormalizeMod(mod.Mod)] = new GameAssetLibraryLockMod(mod.Mod, mod.ManifestVersion, mod.GeneratedUtc);
+                mods[GameAssetIdentityKey.NormalizeMod(module.ModuleId)] =
+                    new GameAssetLibraryLockMod(
+                        module.ModuleId,
+                        module.ManifestVersion,
+                        module.GeneratedUtc,
+                        module.ContentHash);
             }
 
             return mods;

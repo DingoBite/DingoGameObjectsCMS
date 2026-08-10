@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using DingoGameObjectsCMS.Modding;
 using System.IO;
 using UnityEngine.Scripting;
 
@@ -111,7 +112,7 @@ namespace DingoGameObjectsCMS.AssetLibrary.Manifest
             throw new InvalidDataException($"Sprite atlas catalog has no page '{pageResource}'.");
         }
 
-        public void ValidateOrThrow(GameAssetVerifiedPackage package, int maximumTextureSize)
+        public void ValidateOrThrow(ModPackage package, int maximumTextureSize)
         {
             if (package == null)
             {
@@ -125,7 +126,7 @@ namespace DingoGameObjectsCMS.AssetLibrary.Manifest
             if (!string.Equals(ModuleId, package.ModuleId, StringComparison.Ordinal))
             {
                 throw new InvalidDataException(
-                    $"Sprite atlas catalog module '{ModuleId}' does not match verified module '{package.ModuleId}'.");
+                    $"Sprite atlas catalog module '{ModuleId}' does not match mounted module '{package.ModuleId}'.");
             }
             if (maximumTextureSize <= 0)
             {
@@ -228,7 +229,7 @@ namespace DingoGameObjectsCMS.AssetLibrary.Manifest
 
         private static void ValidateResource(
             in GameAssetResourceRef resource,
-            GameAssetVerifiedPackage package,
+            ModPackage package,
             string role)
         {
             if (!resource.IsDefined)
@@ -241,8 +242,8 @@ namespace DingoGameObjectsCMS.AssetLibrary.Manifest
                     $"Sprite atlas {role} resource '{resource}' belongs to a different module.");
             }
 
-            _ = GameAssetModulePackageFileUtils.RequireCanonicalRelativePath(resource.RelativePath);
-            _ = package.Resolve(resource);
+            _ = GameAssetModuleContentScanner.RequireCanonicalRelativePath(resource.RelativePath);
+            _ = package.RequireFile(resource);
         }
     }
 }

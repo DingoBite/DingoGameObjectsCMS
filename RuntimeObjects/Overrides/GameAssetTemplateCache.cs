@@ -183,9 +183,9 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
 #if UNITY_EDITOR
         /// <summary>
         /// Materializes an explicitly supplied local authoring asset without
-        /// resolving it through the immutable installed-library lock. This is
+        /// resolving it through the sealed in-memory session snapshot. This is
         /// editor-only by design and is intended for isolated production-runtime
-        /// playgrounds. Network/session code must use the lock-backed overload.
+        /// playgrounds. Network/session code must use the session-backed overload.
         /// </summary>
         public GameRuntimeObject MaterializeLocalAuthoringAsset(
             GameAssetInstance instance,

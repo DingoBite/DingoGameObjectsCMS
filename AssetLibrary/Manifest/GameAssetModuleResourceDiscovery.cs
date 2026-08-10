@@ -40,13 +40,13 @@ namespace DingoGameObjectsCMS.AssetLibrary.Manifest
 
     /// <summary>
     /// Discovers physical resources from references serialized into GameAssets
-    /// listed by the verified module manifest. Project code never supplies a
+    /// listed by the mounted module manifest. Project code never supplies a
     /// parallel file-name catalog.
     /// </summary>
     public static class GameAssetModuleResourceDiscovery
     {
         public static IReadOnlyList<GameAssetResourceRef> CollectLocalResources(
-            GameAssetVerifiedPackage package,
+            ModPackage package,
             string requiredKind)
         {
             var uses = CollectLocalResourceUses(package, requiredKind);
@@ -62,7 +62,7 @@ namespace DingoGameObjectsCMS.AssetLibrary.Manifest
         }
 
         public static IReadOnlyList<GameAssetModuleResourceUse> CollectLocalResourceUses(
-            GameAssetVerifiedPackage package,
+            ModPackage package,
             string requiredKind)
         {
             if (package == null)
@@ -98,7 +98,7 @@ namespace DingoGameObjectsCMS.AssetLibrary.Manifest
                 JToken document;
                 try
                 {
-                    document = JToken.Parse(File.ReadAllText(package.Resolve(assetResource)));
+                    document = JToken.Parse(package.ReadAllText(assetResource));
                 }
                 catch (Exception exception) when (exception is Newtonsoft.Json.JsonException
                                                   || exception is ArgumentException)
@@ -123,7 +123,7 @@ namespace DingoGameObjectsCMS.AssetLibrary.Manifest
 
         private static void CollectFromToken(
             JToken token,
-            GameAssetVerifiedPackage package,
+            ModPackage package,
             string requiredKind,
             GameAssetKey assetKey,
             HashSet<GameAssetModuleResourceUse> destination)

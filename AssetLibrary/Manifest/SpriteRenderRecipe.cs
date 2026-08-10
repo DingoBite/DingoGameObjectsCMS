@@ -1,4 +1,5 @@
 using System;
+using DingoGameObjectsCMS.Modding;
 using System.Collections.Generic;
 using UnityEngine.Scripting;
 
@@ -44,7 +45,7 @@ namespace DingoGameObjectsCMS.AssetLibrary.Manifest
             };
         }
 
-        public void ValidateOrThrow(GameAssetVerifiedPackage package, string context)
+        public void ValidateOrThrow(ModPackage package, string context)
         {
             if (package == null)
             {
@@ -69,7 +70,7 @@ namespace DingoGameObjectsCMS.AssetLibrary.Manifest
                 {
                     throw new InvalidOperationException($"{context} depth-map mode requires a depth-map resource.");
                 }
-                _ = package.Resolve(DepthMapResource);
+                _ = package.RequireFile(DepthMapResource);
                 if (!string.Equals(package.RequireKind(DepthMapResource), "depthMap", StringComparison.Ordinal))
                 {
                     throw new InvalidOperationException($"{context} depth resource must remain a separate depth map.");

@@ -24,7 +24,7 @@ namespace DingoGameObjectsCMS.AssetLibrary.AssetsEdit
         {
             var root = Path.GetFullPath(rootAbs ?? throw new ArgumentNullException(nameof(rootAbs)))
                 .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-            var resolved = GameAssetModulePackageFileUtils.ResolveInsideRoot(root, relativePath);
+            var resolved = GameAssetModuleContentScanner.ResolveInsideRoot(root, relativePath);
             EnsureNoReparsePoints(root, resolved);
             return resolved;
         }
