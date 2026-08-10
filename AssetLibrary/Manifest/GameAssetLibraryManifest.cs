@@ -14,7 +14,7 @@ namespace DingoGameObjectsCMS.AssetLibrary
     public sealed class GameAssetLibraryManifest
     {
         private const string BASE_MOD = "base";
-        private const string MANIFEST_FILE_NAME = ModManifestStore.MANIFEST_FILE_NAME;
+        private const string MANIFEST_FILE_NAME = ModManifest.FILE_NAME;
 
         private static readonly GameAssetLibraryManifest Instance = new();
 
@@ -54,6 +54,11 @@ namespace DingoGameObjectsCMS.AssetLibrary
             }
 
             Instance.SetSessionBasePackageRoot(Path.GetFullPath(modRootAbs));
+        }
+
+        public static void UseDefaultSessionBasePackage()
+        {
+            Instance.SetSessionBasePackageRoot(null);
         }
 
         public static string GetSessionBasePackageRoot()

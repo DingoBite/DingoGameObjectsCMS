@@ -1,10 +1,10 @@
 # DingoGameObjectsCMS
 
-`DingoGameObjectsCMS` — это content-first runtime framework для Unity, в котором игровое поведение описывается versioned asset-ами, во время выполнения собирается в дерево runtime-объектов, а затем при необходимости материализуется в ECS, сеть, view и persistent data.
+`DingoGameObjectsCMS` — это content-first runtime framework для Unity, в котором игровое поведение описывается versioned JSON asset-ами, во время выполнения собирается в дерево runtime-объектов, а затем при необходимости материализуется в ECS, сеть, view и persistent data. Каноническая authored-библиотека — это набор внешних module package на диске; Unity asset-ы не являются вторым изменяемым источником истины.
 
 Идея фреймворка простая:
 
-1. Вы описываете объект не кодом сцены, а `GameAsset`.
+1. Вы описываете объект не кодом сцены, а JSON-документом `GameAsset`.
 2. `GameAsset` собирает `GameRuntimeObject` с набором `GameRuntimeComponent`.
 3. `GameRuntimeObject` живёт в `RuntimeStore`, который умеет хранить дерево объектов, отслеживать dirty-изменения, публиковать потоки изменений и связывать runtime-объекты с ECS entity.
 4. Тот же runtime-слой может быть использован для:
@@ -14,7 +14,7 @@
    - моддинга;
    - persistent data.
 
-Это не просто “CMS для ScriptableObject”, а унифицированная модель игры, где asset pipeline, runtime model, ECS bridge, replication и modding используют один и тот же язык данных.
+Это не просто “CMS для ScriptableObject”, а унифицированная модель игры, где внешний content catalog, runtime model, ECS bridge, replication и modding используют один и тот же язык данных.
 
 Опциональный высоконагруженный DOTS-профиль описан в [Интеграции DOTS + RuntimeStore](DOTS_INTEGRATION.md).
 
@@ -27,7 +27,7 @@
 - **Статическая data platform.** `RuntimeStores` одновременно держит server/client realm, а `RuntimeExecutionContext` выбирает активную фазу исполнения и active side для high-level кода.
 - **Dirty-by-design.** Store копит структурные и компонентные изменения и публикует их как отдельные потоки, поэтому нет необходимости каждый раз пересылать весь мир.
 - **Слабая связность сериализации и сети.** Runtime serialization вынесена в `IRuntimePayloadSerializer`, а Mirror работает поверх этой абстракции.
-- **Mod-friendly pipeline.** Встроенные asset-ы и внешние mod pack-ы используют одинаковые ключи, одинаковую сериализацию и единый резолвер.
+- **Mod-friendly storage.** Внешний base package и дополнительные mod package используют одинаковые ключи, сериализацию и единый резолвер.
 - **Гибкий runtime authoring.** Система одинаково поддерживает и authored content, и runtime-created domain objects вроде профилей, настроек, meta и save state.
 
 ## Ключевые концепции
@@ -41,16 +41,18 @@
 - `Key`
 - `Version`
 
-Канонический layout asset-каталога:
+Канонический layout модулей внутри `Application.persistentDataPath/assets`:
 
 ```text
-Assets/GameAssets/<mod>/<type>/<key>/<key>@<version>.asset
+<mod>/manifest.json
+<mod>/<type>/<key>/<key>@<version>.json
+<mod>/<resource folders...>
 ```
 
 Пример:
 
 ```text
-Assets/GameAssets/base/characters/player/player@1.2.0.asset
+base/characters/player/player@1.2.0.json
 ```
 
 Правило резолва версии:
@@ -66,12 +68,12 @@ Assets/GameAssets/base/characters/player/player@1.2.0.asset
 
 ### `GameAssetScriptableObject`
 
-Базовый `ScriptableObject` фреймворка. Содержит:
+Внутренний Unity-тип, в который фреймворк восстанавливает документ. Содержит:
 
 - `GameAssetKey`
 - уникальный `GUID`
 
-`GUID` идентифицирует конкретный asset/version instance. Это отдельная сущность относительно `GameAssetKey`.
+`GUID` идентифицирует конкретный asset/version instance. Это отдельная сущность относительно `GameAssetKey`. Экземпляры этого типа всё ещё могут использоваться в тестах или инструментах, но Unity `.asset` не является каноническим authoring-форматом.
 
 ### `GameAsset`
 
@@ -438,7 +440,7 @@ interest membership можно группировать и кодировать 
 
 ## Моддинг и внешние asset-паки
 
-`GameAssetLibraryManifest` собирает библиотеку asset-ов по горячему из файловой структуры:
+`GameAssetLibraryManifest` напрямую монтирует библиотеку asset-ов из файловой структуры:
 
 - корень модов: `Application.persistentDataPath/assets`
 - built-in-like мод: `Application.persistentDataPath/assets/base`
@@ -453,29 +455,15 @@ interest membership можно группировать и кодировать 
 
 `ModPackage` лениво загружает JSON asset по `GameAssetKey` и восстанавливает нужный `ScriptableObject`.
 
-Это делает моддинг не отдельной подсистемой поверх игры, а продолжением того же asset pipeline.
+При старте сессии библиотека захватывается в immutable content snapshot. Изменения файлов на диске не мутируют уже запущенный gameplay catalog; новая ревизия монтируется в следующей сессии.
 
-## Editor tooling
+## Внешний authoring и доставка package
 
-В комплекте есть редакторские инструменты для asset-пайплайна:
+Единица поставки — внешняя папка модуля с каноническими JSON, ресурсами и производным `manifest.json`. Чистая установка получает `base` как внешний content package в `Application.persistentDataPath/assets/base`; он не собирается из Unity-проекта и не импортируется обратно в него.
 
-- `GameAssetKeyRebuilder`
-  - работает только с каноническим layout
-  - синхронизирует `_key` и путь asset-а
-- `GameAssetVersioningTools`
-  - дублирует выбранный versioned asset
-  - повышает числовую patch-версию
-  - генерирует новый GUID
-- `ModBuilder`
-  - экспортирует мод в JSON + `manifest.json`
-- `ModImporter`
-  - импортирует JSON-мод обратно в Unity asset-ы
-- `SubAssetFixer`
-  - пересобирает sub-assets после импорта
-- `RuntimeComponentTypeManifestGenerator`
-  - генерирует compiled direct-`Type` runtime table, компактные ids, числовые резервации и registry hash
+Контент редактируется напрямую через соседний [DingoGameObjectsCMSEditorServer](../DingoGameObjectsCMSEditorServer/README.md). Его MCP- и Web-клиенты работают со staged `JObject` changeset в смонтированной AppData-библиотеке, валидируют результат, выводят manifest и публикуют изменения с защитой от конфликта по content hash. Цикла build/import через Unity `AssetDatabase` больше нет.
 
-Эти инструменты нужны не только для удобства редактора. Они поддерживают главный контракт системы: asset shape, versioning, serialization и runtime reconstruction должны совпадать.
+Unity Editor generators остаются только для checked-in compiled runtime-контрактов: direct-`Type` component table, compact ids, numeric reservations и registry hash. Они компилируют контракты кода и систем, но не создают и не пакуют контент.
 
 ## Зависимости
 

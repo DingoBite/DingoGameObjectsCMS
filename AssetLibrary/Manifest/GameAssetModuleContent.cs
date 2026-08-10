@@ -4,7 +4,6 @@ using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
-using DingoGameObjectsCMS.AssetLibrary.AssetsEdit;
 using DingoGameObjectsCMS.Modding;
 using DingoGameObjectsCMS.RuntimeObjects;
 using DingoGameObjectsCMS.Serialization;
@@ -203,19 +202,11 @@ namespace DingoGameObjectsCMS.AssetLibrary.Manifest
 
     /// <summary>
     /// Builds a deterministic content snapshot directly from a module folder.
-    /// A cold session always scans current AppData files. Persisted lock files
-    /// are operational debris, not content authority.
+    /// A cold session always scans current AppData files.
     /// </summary>
     public static class GameAssetModuleContentScanner
     {
         private const int CONTENT_HASH_FORMAT_VERSION = 1;
-        private static readonly string[] OperationalFiles =
-        {
-            "package.lock.json",
-            ".snakeandmice-managed-base",
-            ".snakeandmice-managed-module",
-        };
-
         private static StringComparison FileSystemPathComparison =>
             Path.DirectorySeparatorChar == '\\'
                 ? StringComparison.OrdinalIgnoreCase
@@ -249,6 +240,7 @@ namespace DingoGameObjectsCMS.AssetLibrary.Manifest
                 root,
                 expectedModuleId,
                 files);
+            PromoteManifestAssets(files, manifest);
             return new GameAssetModuleContentSnapshot(
                 root,
                 expectedModuleId,
@@ -385,10 +377,6 @@ namespace DingoGameObjectsCMS.AssetLibrary.Manifest
             IReadOnlyList<string> additionalExclusions)
         {
             var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            for (var index = 0; index < OperationalFiles.Length; index++)
-            {
-                result.Add(OperationalFiles[index]);
-            }
             if (additionalExclusions == null)
             {
                 return result;
@@ -502,7 +490,7 @@ namespace DingoGameObjectsCMS.AssetLibrary.Manifest
             IReadOnlyList<GameAssetModuleContentFile> files)
         {
             const string manifestRelativePath =
-                ModManifestStore.MANIFEST_FILE_NAME;
+                ModManifest.FILE_NAME;
             var filesByPath = files.ToDictionary(
                 file => file.RelativePath,
                 StringComparer.Ordinal);
@@ -605,11 +593,12 @@ namespace DingoGameObjectsCMS.AssetLibrary.Manifest
                 }
                 if (!string.Equals(
                         assetFile.Kind,
-                        "gameAsset",
+                        "json",
                         StringComparison.Ordinal))
                 {
                     throw new InvalidDataException(
-                        $"GameAsset manifest path '{relativePath}' is '{assetFile.Kind}', expected gameAsset JSON.");
+                        $"GameAsset manifest path '{relativePath}' is "
+                        + $"'{assetFile.Kind}', expected ordinary JSON.");
                 }
                 ValidateAssetIdentity(
                     assetFile,
@@ -632,6 +621,30 @@ namespace DingoGameObjectsCMS.AssetLibrary.Manifest
             }
 
             return manifest;
+        }
+
+        private static void PromoteManifestAssets(
+            IList<GameAssetModuleContentFile> files,
+            ModManifest manifest)
+        {
+            var assetPaths = new HashSet<string>(
+                manifest.Assets.Select(entry =>
+                    RequireCanonicalRelativePath(
+                        entry.RelativeJsonPath)),
+                StringComparer.Ordinal);
+            for (var index = 0; index < files.Count; index++)
+            {
+                var file = files[index];
+                if (!assetPaths.Contains(file.RelativePath))
+                {
+                    continue;
+                }
+
+                files[index] = new GameAssetModuleContentFile(
+                    file.RelativePath,
+                    "gameAsset",
+                    file.CopyBytes());
+            }
         }
 
         private static void ValidateAssetIdentity(
@@ -709,7 +722,7 @@ namespace DingoGameObjectsCMS.AssetLibrary.Manifest
         {
             if (string.Equals(
                     relativePath,
-                    ModManifestStore.MANIFEST_FILE_NAME,
+                    ModManifest.FILE_NAME,
                     StringComparison.Ordinal))
             {
                 return "manifest";
@@ -735,7 +748,7 @@ namespace DingoGameObjectsCMS.AssetLibrary.Manifest
                 {
                     return "atlasMetadata";
                 }
-                return "gameAsset";
+                return "json";
             }
             if (extension == ".png")
             {

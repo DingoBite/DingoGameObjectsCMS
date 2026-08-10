@@ -9,8 +9,6 @@ namespace DingoGameObjectsCMS.AssetObjects
 {
     public abstract class GameAssetScriptableObject : ScriptableObject
     {
-        public const string MENU_PREFIX = "Game Assets/";
-
         [SerializeField, JsonProperty("Key")] private GameAssetKey _key = new (GameAssetKey.UNDEFINED, GameAssetKey.NONE, GameAssetKey.NONE, GameAssetKey.ZERO_V);
         [SerializeField, ReadOnly, JsonProperty("GUID")] private Hash128 _guid = IdUtils.NewHash128FromGuid();
 

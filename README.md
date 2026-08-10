@@ -1,10 +1,10 @@
 # DingoGameObjectsCMS
 
-`DingoGameObjectsCMS` is a content-first runtime framework for Unity where gameplay behavior is described by versioned assets, materialized into a runtime object tree, and then bridged into ECS, networking, view, and persistent data when needed.
+`DingoGameObjectsCMS` is a content-first runtime framework for Unity where gameplay behavior is described by versioned JSON assets, materialized into a runtime object tree, and then bridged into ECS, networking, view, and persistent data when needed. The canonical authored library is a set of external module packages on disk; Unity project assets are not a second writable source of truth.
 
 The core idea is simple:
 
-1. You describe an object with a `GameAsset`, not with scene-specific code.
+1. You describe an object with a JSON `GameAsset` document, not with scene-specific code.
 2. `GameAsset` builds a `GameRuntimeObject` composed of `GameRuntimeComponent` instances.
 3. `GameRuntimeObject` lives inside a `RuntimeStore`, which can keep a tree of objects, track dirty changes, publish change streams, and link runtime objects to ECS entities.
 4. The same runtime layer can then power:
@@ -14,7 +14,7 @@ The core idea is simple:
    - modding;
    - persistent data.
 
-This is not just a "ScriptableObject CMS". It is a unified game model where the asset pipeline, runtime model, ECS bridge, replication, and modding all speak the same data language.
+This is not just a "ScriptableObject CMS". It is a unified game model where the external content catalog, runtime model, ECS bridge, replication, and modding all speak the same data language.
 
 For the opt-in high-cardinality DOTS profile, see [DOTS + RuntimeStore Integration](DOTS_INTEGRATION.md).
 
@@ -27,7 +27,7 @@ For the opt-in high-cardinality DOTS profile, see [DOTS + RuntimeStore Integrati
 - **Static data platform.** `RuntimeStores` can hold both server and client realms at the same time, while `RuntimeExecutionContext` selects the active side for high-level code.
 - **Dirty-by-design.** Stores accumulate structural and component-level changes as separate streams, so you do not need to re-send or rebuild the whole world every time.
 - **Serialization is decoupled from networking.** Runtime serialization is abstracted behind `IRuntimePayloadSerializer`, and the Mirror layer works on top of that abstraction.
-- **Mod-friendly pipeline.** Built-in assets and external mod packs use the same keys, the same serialization rules, and the same resolver.
+- **Mod-friendly storage.** The external base package and optional mod packages use the same keys, serialization rules, and resolver.
 - **Flexible runtime authoring.** The same approach can model authored content and runtime-created domain objects such as settings, profiles, meta progression, and saves.
 
 ## Core concepts
@@ -41,16 +41,18 @@ For the opt-in high-cardinality DOTS profile, see [DOTS + RuntimeStore Integrati
 - `Key`
 - `Version`
 
-Canonical asset layout:
+Canonical module layout below `Application.persistentDataPath/assets`:
 
 ```text
-Assets/GameAssets/<mod>/<type>/<key>/<key>@<version>.asset
+<mod>/manifest.json
+<mod>/<type>/<key>/<key>@<version>.json
+<mod>/<resource folders...>
 ```
 
 Example:
 
 ```text
-Assets/GameAssets/base/characters/player/player@1.2.0.asset
+base/characters/player/player@1.2.0.json
 ```
 
 Version resolution rules:
@@ -66,12 +68,12 @@ This gives you a useful balance:
 
 ### `GameAssetScriptableObject`
 
-This is the base `ScriptableObject` for the framework. It stores:
+This is the in-memory Unity reconstruction type used by the framework. It stores:
 
 - `GameAssetKey`
 - a unique `GUID`
 
-The `GUID` identifies a concrete asset/version instance. It is a separate identity from the logical `GameAssetKey`.
+The `GUID` identifies a concrete asset/version instance. It is a separate identity from the logical `GameAssetKey`. Instances of this type may still be useful in tests or tooling, but Unity `.asset` files are not the canonical authoring format.
 
 ### `GameAsset`
 
@@ -431,7 +433,7 @@ Why it matters:
 
 ## Modding and external asset packs
 
-`GameAssetLibraryManifest` hot-builds the asset library from the filesystem:
+`GameAssetLibraryManifest` mounts the asset library directly from the filesystem:
 
 - mod root: `Application.persistentDataPath/assets`;
 - built-in-like mod: `Application.persistentDataPath/assets/base`;
@@ -446,29 +448,15 @@ Capabilities:
 
 `ModPackage` lazily loads JSON assets by `GameAssetKey` and reconstructs the required `ScriptableObject`.
 
-This makes modding an extension of the same asset pipeline, not a separate add-on system.
+At session startup the library is captured as an immutable content snapshot. Editing disk files does not mutate an already running gameplay catalog; a new session is required to mount the new revision.
 
-## Editor tooling
+## External authoring and package delivery
 
-The package ships with editor tools for the asset pipeline:
+The distributable unit is an external module folder containing canonical JSON, resources, and a derived `manifest.json`. A clean installation receives `base` as an external content package at `Application.persistentDataPath/assets/base`; it is not rebuilt from or imported into the Unity project.
 
-- `GameAssetKeyRebuilder`
-  - works only with the canonical layout
-  - synchronizes `_key` with the asset path
-- `GameAssetVersioningTools`
-  - duplicates the selected versioned asset
-  - increments the numeric patch version
-  - generates a new GUID
-- `ModBuilder`
-  - exports a mod as JSON + `manifest.json`
-- `ModImporter`
-  - imports a JSON mod back into Unity assets
-- `SubAssetFixer`
-  - rebuilds sub-assets after import
-- `RuntimeComponentTypeManifestGenerator`
-  - emits the compiled direct-`Type` runtime table, compact ids, numeric reservations, and registry hash
+Author content directly through the sibling [DingoGameObjectsCMSEditorServer](../DingoGameObjectsCMSEditorServer/README.md). Its MCP and Web clients edit staged `JObject` changesets in the mounted AppData library, validate the result, derive the manifest, and publish with content-hash conflict protection. There is no Unity `AssetDatabase` build/import round trip.
 
-These tools are not just editor conveniences. They protect the main contract of the framework: asset shape, versioning, serialization, and runtime reconstruction must stay aligned.
+Unity Editor generators remain only for checked-in compiled runtime contracts such as the direct-`Type` component table, compact ids, numeric reservations, and registry hash. They compile code/system contracts; they do not author or package content.
 
 ## Dependencies
 

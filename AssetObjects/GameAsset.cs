@@ -8,7 +8,6 @@ using UnityEngine;
 
 namespace DingoGameObjectsCMS.AssetObjects
 {
-    [CreateAssetMenu(menuName = MENU_PREFIX + "GameAsset")]
     public class GameAsset : GameAssetScriptableObject
     {
         [SerializeReference, SubclassSelector, JsonProperty("Components", ItemTypeNameHandling = TypeNameHandling.Auto)] private List<GameAssetComponent> _components;

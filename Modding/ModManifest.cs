@@ -10,6 +10,8 @@ namespace DingoGameObjectsCMS.Modding
     [Serializable, Preserve]
     public sealed class ModManifest
     {
+        public const string FILE_NAME = "manifest.json";
+
         public string Mod;
         public string GeneratedUtc;
         public int ManifestVersion = 1;

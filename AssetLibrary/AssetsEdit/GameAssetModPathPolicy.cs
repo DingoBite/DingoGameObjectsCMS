@@ -24,9 +24,11 @@ namespace DingoGameObjectsCMS.AssetLibrary.AssetsEdit
             string assetsRootSubPath = DEFAULT_ASSETS_ROOT_SUB_PATH)
         {
             var root = GetAssetsRootPath(assetsRootAbs, assetsRootSubPath);
-            var normalizedMod = GameAssetKeyPolicy.NormalizeModName(mod, fallbackMod);
-            normalizedMod = GameAssetModuleContentScanner
-                .RequireCanonicalModuleId(normalizedMod);
+            var normalizedMod = GameAssetModuleContentScanner
+                .RequireCanonicalModuleId(
+                    string.IsNullOrWhiteSpace(mod)
+                        ? fallbackMod
+                        : mod.Trim());
             var resolved = Path.GetFullPath(Path.Combine(root, normalizedMod));
             var rootPrefix = root.TrimEnd(
                                  Path.DirectorySeparatorChar,
