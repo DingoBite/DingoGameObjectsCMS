@@ -173,13 +173,48 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
 
         public void SetupEntityProjection(EntityCommandBuffer ecb)
         {
+            SetupEntityProjection(_runtimeStore, ecb, _entity);
+        }
+
+        /// <summary>
+        /// Projects this GRO's complete component composition onto an ECS
+        /// entity owned by another runtime object's topology or pool.
+        /// The owning factory creates the entity and controls its lifetime;
+        /// this GRO remains the sole authority for the product signature.
+        /// </summary>
+        public void SetupEntityProjection(
+            RuntimeStore store,
+            EntityCommandBuffer ecb,
+            Entity entity)
+        {
+            if (store == null)
+                throw new ArgumentNullException(nameof(store));
+            if (entity == Entity.Null)
+                throw new ArgumentException(
+                    "Entity projection requires a valid target entity.",
+                    nameof(entity));
             if (Components == null)
                 return;
 
-            foreach (var c in Components)
+            foreach (var component in Components)
             {
-                c?.SetupForEntity(_runtimeStore, ecb, this, _entity);
+                component?.SetupForEntity(store, ecb, this, entity);
             }
+        }
+
+        public void SetupOwnedEntityProjection(
+            RuntimeStore store,
+            EntityCommandBuffer ecb,
+            Entity entity)
+        {
+            if (HasEntityFactoryComponent())
+            {
+                throw new InvalidOperationException(
+                    $"Product GA '{Key}' cannot contain a nested runtime "
+                    + "Entity factory.");
+            }
+
+            SetupEntityProjection(store, ecb, entity);
         }
 
         private bool TryTakeEditingEcb(out EntityCommandBuffer ecb)

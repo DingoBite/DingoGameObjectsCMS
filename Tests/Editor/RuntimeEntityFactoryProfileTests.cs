@@ -24,6 +24,18 @@ namespace DingoGameObjectsCMS.Tests.Editor
         public int Value;
     }
 
+    public struct RuntimeEntityFactoryCleanupTestData :
+        ICleanupComponentData
+    {
+        public int Value;
+    }
+
+    public struct RuntimeEntityFactoryCleanupBufferTestData :
+        ICleanupBufferElementData
+    {
+        public int Value;
+    }
+
     [BurstCompile]
     public struct RuntimeEntityFactoryWarmTickTestJob : IJobChunk
     {
@@ -90,13 +102,17 @@ namespace DingoGameObjectsCMS.Tests.Editor
                 ecb.SetComponent(entity, new RuntimeEntityFactoryProductTestData { Value = i });
             }
 
+            var ownedPrefab = RuntimeEntityFactoryEcbExtensions
+                .CaptureOwnedPrefab(
+                    store.World.EntityManager,
+                    ProductPrefab);
             for (var i = 0; i < PrefabProductCount; i++)
             {
                 var entity = ecb.InstantiateOwnedEntity(
                     root,
                     runtimeObject.RuntimeInstance,
                     productId++,
-                    ProductPrefab);
+                    ownedPrefab);
                 ecb.SetComponent(
                     entity,
                     new RuntimeEntityFactoryPrefabProductTestData
@@ -136,7 +152,12 @@ namespace DingoGameObjectsCMS.Tests.Editor
                     typeof(Prefab),
                     typeof(RuntimeEntityFactoryOwner),
                     typeof(RuntimeEntityFactoryProductIdentity),
-                    typeof(RuntimeEntityFactoryPrefabProductTestData));
+                    typeof(RuntimeEntityFactoryPrefabProductTestData),
+                    typeof(RuntimeEntityFactoryCleanupTestData),
+                    typeof(RuntimeEntityFactoryCleanupBufferTestData));
+            _entityManager.SetComponentData(
+                RuntimeEntityFactoryTestComponent.ProductPrefab,
+                new RuntimeEntityFactoryCleanupTestData { Value = 37 });
         }
 
         [TearDown]
@@ -244,11 +265,13 @@ namespace DingoGameObjectsCMS.Tests.Editor
                 runtimeObject.RuntimeInstance,
                 productId: 2,
                 archetype: archetype);
+            var ownedPrefab = RuntimeEntityFactoryEcbExtensions
+                .CaptureOwnedPrefab(_entityManager, prefab);
             ecb.InstantiateOwnedEntity(
                 root,
                 runtimeObject.RuntimeInstance,
                 productId: 3,
-                prefab: prefab);
+                prefab: ownedPrefab);
             ecb.CreateOwnedEntity(
                 root,
                 runtimeObject.RuntimeInstance,
@@ -321,6 +344,25 @@ namespace DingoGameObjectsCMS.Tests.Editor
                     _entityManager.HasComponent<
                         RuntimeEntityFactoryPrefabProductTestData>(product),
                     Is.True);
+                Assert.That(
+                    _entityManager.HasComponent<
+                        RuntimeEntityFactoryCleanupTestData>(product),
+                    Is.True);
+                Assert.That(
+                    _entityManager.GetComponentData<
+                        RuntimeEntityFactoryCleanupTestData>(product).Value,
+                    Is.Zero,
+                    "Cleanup state must be fresh for every instance.");
+                Assert.That(
+                    _entityManager.HasBuffer<
+                        RuntimeEntityFactoryCleanupBufferTestData>(product),
+                    Is.True);
+                Assert.That(
+                    _entityManager.GetBuffer<
+                        RuntimeEntityFactoryCleanupBufferTestData>(product)
+                        .Length,
+                    Is.Zero,
+                    "Cleanup buffers must start as fresh instance state.");
                 Assert.That(
                     _entityManager.GetComponentData<
                         RuntimeEntityFactoryPrefabProductTestData>(product)

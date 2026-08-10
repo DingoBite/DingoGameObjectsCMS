@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using DingoGameObjectsCMS.RuntimeObjects.Objects;
+using DingoGameObjectsCMS.RuntimeObjects.Stores;
 using DingoGameObjectsCMS.Stores;
 using Unity.Collections;
 using Unity.Entities;
@@ -26,8 +27,80 @@ namespace DingoGameObjectsCMS.RuntimeObjects
         public ulong ProductId;
     }
 
+    public readonly struct RuntimeOwnedEntityPrefab
+    {
+        internal readonly ComponentTypeSet CleanupComponentTypes;
+
+        public readonly Entity Entity;
+
+        public RuntimeOwnedEntityPrefab(Entity entity)
+        {
+            Entity = entity;
+            CleanupComponentTypes = default;
+        }
+
+        internal RuntimeOwnedEntityPrefab(
+            Entity entity,
+            in ComponentTypeSet cleanupComponentTypes)
+        {
+            Entity = entity;
+            CleanupComponentTypes = cleanupComponentTypes;
+        }
+    }
+
     public static class RuntimeEntityFactoryEcbExtensions
     {
+        public static Entity CreateOwnedPrefab(
+            this EntityCommandBuffer ownerCommands,
+            EntityManager entityManager,
+            RuntimeStore store,
+            Entity factoryRoot,
+            RuntimeInstance factoryInstance,
+            ulong productId,
+            GameRuntimeObject productDefinition)
+        {
+            RequireProductId(productId);
+            if (productDefinition == null)
+            {
+                throw new ArgumentNullException(nameof(productDefinition));
+            }
+
+            var prefab = entityManager.CreateEntity(
+                typeof(Prefab),
+                typeof(RuntimeEntityFactoryOwner),
+                typeof(RuntimeEntityFactoryProductIdentity));
+            entityManager.SetComponentData(
+                prefab,
+                CreateOwner(factoryRoot, factoryInstance));
+            entityManager.SetComponentData(
+                prefab,
+                new RuntimeEntityFactoryProductIdentity
+                {
+                    ProductId = productId,
+                });
+            try
+            {
+                using var projectionCommands =
+                    new EntityCommandBuffer(Allocator.Temp);
+                productDefinition.SetupOwnedEntityProjection(
+                    store,
+                    projectionCommands,
+                    prefab);
+                projectionCommands.Playback(entityManager);
+            }
+            catch
+            {
+                if (entityManager.Exists(prefab))
+                    entityManager.DestroyEntity(prefab);
+                throw;
+            }
+
+            ownerCommands.AppendToBuffer(
+                factoryRoot,
+                new LinkedEntityGroup { Value = prefab });
+            return prefab;
+        }
+
         public static Entity CreateOwnedEntity(
             this EntityCommandBuffer ecb,
             Entity factoryRoot,
@@ -91,10 +164,16 @@ namespace DingoGameObjectsCMS.RuntimeObjects
             Entity factoryRoot,
             RuntimeInstance factoryInstance,
             ulong productId,
-            Entity prefab)
+            in RuntimeOwnedEntityPrefab prefab)
         {
             RequireProductId(productId);
-            var entity = ecb.Instantiate(prefab);
+            var entity = ecb.Instantiate(prefab.Entity);
+            if (prefab.CleanupComponentTypes.Length > 0)
+            {
+                var cleanupComponentTypes =
+                    prefab.CleanupComponentTypes;
+                ecb.AddComponent(entity, in cleanupComponentTypes);
+            }
             ecb.SetComponent(
                 entity,
                 CreateOwner(factoryRoot, factoryInstance));
@@ -108,6 +187,43 @@ namespace DingoGameObjectsCMS.RuntimeObjects
                 factoryRoot,
                 new LinkedEntityGroup { Value = entity });
             return entity;
+        }
+
+        public static RuntimeOwnedEntityPrefab CaptureOwnedPrefab(
+            EntityManager entityManager,
+            Entity prefab)
+        {
+            const int maxCapturedComponentTypes = 15;
+            var cleanupComponentTypes =
+                new FixedList128Bytes<ComponentType>();
+            using var componentTypes = entityManager.GetComponentTypes(
+                prefab,
+                Allocator.Temp);
+            for (var index = 0; index < componentTypes.Length; index++)
+            {
+                var componentType = componentTypes[index];
+                if (!componentType.IsCleanupComponent
+                    && !componentType.IsCleanupBufferComponent
+                    && !componentType.IsCleanupSharedComponent)
+                {
+                    continue;
+                }
+
+                if (cleanupComponentTypes.Length
+                    == maxCapturedComponentTypes)
+                {
+                    throw new InvalidOperationException(
+                        $"Owned prefab {prefab} projects more than "
+                        + $"{maxCapturedComponentTypes} cleanup component "
+                        + "types.");
+                }
+                cleanupComponentTypes.Add(componentType);
+            }
+
+            var cleanupSet = cleanupComponentTypes.Length > 0
+                ? new ComponentTypeSet(in cleanupComponentTypes)
+                : default;
+            return new RuntimeOwnedEntityPrefab(prefab, cleanupSet);
         }
 
         private static RuntimeEntityFactoryOwner CreateOwner(

@@ -63,6 +63,15 @@ is a persistent authored factory, while its products are ECS-only entities.
   simulated.
 - A new persistent logical object is represented by a new GRO.
 
+Each distinct reusable product Entity archetype is authored as its own GA.
+Its materialized definition GRO is the sole owner of the product component
+composition: `SetupOwnedEntityProjection(...)` iterates that GRO's complete
+GRC list onto a reusable prefab. The topology/factory component may choose the
+GA, own identity/lifetime/pool structure, and write per-instance placement or
+state, but it must not recreate another GA's capability signature. Use
+`CreateOwnedPrefab(...)` when the factory needs to compile such a definition
+GRO directly into an owned prefab.
+
 The factory GRO is configuration, not mutable simulation state. Configure it
 before projection. After successful projection, calls that mutate its component
 data or component signature violate this profile. Runtime code does not throw or
@@ -403,6 +412,15 @@ GA/GAC -> immutable Factory GRO -> ECS-only Entity
   освобождает все owned products.
 - Продуктам не нужен отдельный GRO только ради симуляции.
 - Новый persistent логический объект представляется новым GRO.
+
+Каждый отдельный переиспользуемый архетип product Entity описывается своим GA.
+Его materialized definition GRO единолично владеет component composition
+продукта: `SetupOwnedEntityProjection(...)` перебирает полный список GRC этого
+GRO и проецирует его в переиспользуемый prefab. Topology/factory component может
+выбирать GA, владеть identity/lifetime/pool-структурой и записывать placement
+или per-instance state, но не должен заново собирать capability signature
+другого GA. Когда фабрике нужно скомпилировать definition GRO напрямую в owned
+prefab, используется `CreateOwnedPrefab(...)`.
 
 Factory GRO — это конфигурация, а не изменяемое состояние симуляции. Его нужно
 полностью настроить до projection. После успешной projection изменение данных
