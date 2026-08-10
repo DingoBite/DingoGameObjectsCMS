@@ -454,6 +454,8 @@ At session startup the library is captured as an immutable content snapshot. Edi
 
 The distributable unit is an external module folder containing canonical JSON, resources, and a derived `manifest.json`. A clean installation receives `base` as an external content package at `Application.persistentDataPath/assets/base`; it is not rebuilt from or imported into the Unity project.
 
+Immediate children of the assets root whose names begin with `.` are operational directories and are not mounted as modules. The assets root may therefore be a Git working tree without `.git` entering runtime module discovery.
+
 Author content directly through the sibling [DingoGameObjectsCMSEditorServer](../DingoGameObjectsCMSEditorServer/README.md). Its MCP and Web clients edit staged `JObject` changesets in the mounted AppData library, validate the result, derive the manifest, and publish with content-hash conflict protection. There is no Unity `AssetDatabase` build/import round trip.
 
 Unity Editor generators remain only for checked-in compiled runtime contracts such as the direct-`Type` component table, compact ids, numeric reservations, and registry hash. They compile code/system contracts; they do not author or package content.

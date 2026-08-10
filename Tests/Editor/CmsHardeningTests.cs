@@ -367,6 +367,31 @@ namespace DingoGameObjectsCMS.Tests.Editor
             Assert.That(root, Is.Zero);
         }
 
+        [Test]
+        public void ModuleDirectoryDiscovery_IgnoresDotPrefixedDirectories()
+        {
+            var root = CreateTempDirectory();
+            try
+            {
+                Directory.CreateDirectory(Path.Combine(root, "base"));
+                Directory.CreateDirectory(Path.Combine(root, "playground"));
+                Directory.CreateDirectory(Path.Combine(root, ".git"));
+                Directory.CreateDirectory(Path.Combine(root, ".cache"));
+
+                var directories = GameAssetLibraryDirectoryPolicy
+                    .EnumerateModuleDirectories(root);
+                Array.Sort(directories, StringComparer.Ordinal);
+
+                Assert.That(
+                    Array.ConvertAll(directories, Path.GetFileName),
+                    Is.EqualTo(new[] { "base", "playground" }));
+            }
+            finally
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+
         private static string CreateTempDirectory()
         {
             var path = Path.Combine(

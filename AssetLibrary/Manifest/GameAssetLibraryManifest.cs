@@ -456,7 +456,8 @@ namespace DingoGameObjectsCMS.AssetLibrary
                 order: order++,
                 isSessionBaseline: true));
 
-            var directories = Directory.GetDirectories(assetsRoot)
+            var directories = GameAssetLibraryDirectoryPolicy
+                .EnumerateModuleDirectories(assetsRoot)
                 .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
                 .ToArray();
 

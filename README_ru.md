@@ -463,6 +463,8 @@ interest membership можно группировать и кодировать 
 
 Контент редактируется напрямую через соседний [DingoGameObjectsCMSEditorServer](../DingoGameObjectsCMSEditorServer/README.md). Его MCP- и Web-клиенты работают со staged `JObject` changeset в смонтированной AppData-библиотеке, валидируют результат, выводят manifest и публикуют изменения с защитой от конфликта по content hash. Цикла build/import через Unity `AssetDatabase` больше нет.
 
+Непосредственные дочерние каталоги корня `assets`, имя которых начинается с `.`, считаются служебными и не монтируются как модули. Поэтому сам корень `assets` может быть рабочим деревом Git: каталог `.git` не попадёт в runtime-discovery.
+
 Unity Editor generators остаются только для checked-in compiled runtime-контрактов: direct-`Type` component table, compact ids, numeric reservations и registry hash. Они компилируют контракты кода и систем, но не создают и не пакуют контент.
 
 ## Зависимости
