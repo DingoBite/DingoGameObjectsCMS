@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.Text;
+using DingoGameObjectsCMS.RuntimeObjects;
 using DingoGameObjectsCMS.RuntimeObjects.Stores;
 
 namespace DingoGameObjectsCMS.Mirror.NetDebug
@@ -8,7 +9,7 @@ namespace DingoGameObjectsCMS.Mirror.NetDebug
     {
         public static ulong ComputeHash(RuntimeStore store)
         {
-            var h = 1469598103934665603UL;
+            var h = StableIdentityHash.LEGACY_TOKEN_MIX_SEED;
 
             var roots = new List<long>(store.Parents.V.Keys);
             roots.Sort();
@@ -79,7 +80,7 @@ namespace DingoGameObjectsCMS.Mirror.NetDebug
             unchecked
             {
                 h ^= (ulong)v;
-                h *= 1099511628211UL;
+                h *= StableIdentityHash.FNV1A_64_PRIME;
             }
         }
 
