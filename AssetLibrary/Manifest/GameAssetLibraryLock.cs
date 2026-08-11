@@ -15,8 +15,16 @@ namespace DingoGameObjectsCMS.AssetLibrary
 
         public static string Normalize(string mod, string type, string key)
         {
-            return $"{NormalizePart(mod, GameAssetKey.UNDEFINED)}.{NormalizePart(type, GameAssetKey.NONE)}.{NormalizePart(key, GameAssetKey.NONE)}";
+            return string.Concat(
+                EncodePart(NormalizePart(mod, GameAssetKey.UNDEFINED)),
+                "|",
+                EncodePart(NormalizePart(type, GameAssetKey.NONE)),
+                "|",
+                EncodePart(NormalizePart(key, GameAssetKey.NONE)));
         }
+
+        private static string EncodePart(string value) =>
+            $"{value.Length}:{value}";
 
         private static string NormalizePart(string value, string fallback)
         {
@@ -34,10 +42,11 @@ namespace DingoGameObjectsCMS.AssetLibrary
         public static string Normalize(GameAssetKey key)
         {
             var identity = GameAssetIdentityKey.Normalize(key);
-            var version = string.IsNullOrWhiteSpace(key.Version)
-                ? LATEST
-                : key.Version.Trim().ToLowerInvariant();
-            return $"{identity}@{version}";
+            if (string.IsNullOrWhiteSpace(key.Version))
+                return $"{identity}|L:{LATEST}";
+
+            var version = key.Version.Trim().ToLowerInvariant();
+            return $"{identity}|V:{version.Length}:{version}";
         }
     }
 
@@ -51,11 +60,17 @@ namespace DingoGameObjectsCMS.AssetLibrary
         private readonly Dictionary<string, GameAssetKey> _requestsByNormalizedKey = new(StringComparer.Ordinal);
         private readonly ReadOnlyDictionary<string, GameAssetLibraryLockMod> _readOnlyMods;
         private readonly ReadOnlyDictionary<string, GameAssetLibraryLockEntry> _readOnlyEntries;
+        private GameAssetSessionCatalog _assetCatalog;
 
         public int FormatVersion { get; }
         public bool IsReadOnly { get; private set; }
         public IReadOnlyDictionary<string, GameAssetLibraryLockMod> Mods => _readOnlyMods;
         public IReadOnlyDictionary<string, GameAssetLibraryLockEntry> Entries => _readOnlyEntries;
+        public GameAssetSessionCatalog AssetCatalog => IsReadOnly
+            ? _assetCatalog
+            : throw new InvalidOperationException(
+                "The GameAsset session catalog is available only after the "
+                + "library lock is sealed.");
 
         public GameAssetLibraryLock(int formatVersion = CURRENT_FORMAT_VERSION)
         {
@@ -97,8 +112,57 @@ namespace DingoGameObjectsCMS.AssetLibrary
 
         public GameAssetLibraryLock Seal()
         {
+            if (IsReadOnly)
+                return this;
+
+            _assetCatalog = GameAssetSessionCatalog.Build(_entries.Values);
             IsReadOnly = true;
             return this;
+        }
+
+        /// <summary>
+        /// Resolves an authored request key, including a latest-version
+        /// request, to the compact exact index of its pinned session asset.
+        /// </summary>
+        public bool TryResolveAssetIndex(
+            in GameAssetKey requestedKey,
+            out GameAssetIndex index)
+        {
+            RequireSealed();
+            if (!TryGet(requestedKey, out var entry) || entry == null)
+            {
+                index = default;
+                return false;
+            }
+
+            var resolvedKey = entry.ResolvedKey;
+            return _assetCatalog.TryGetIndex(in resolvedKey, out index);
+        }
+
+        public GameAssetIndex ResolveAssetIndex(
+            in GameAssetKey requestedKey)
+        {
+            if (TryResolveAssetIndex(in requestedKey, out var index))
+                return index;
+
+            throw new KeyNotFoundException(
+                $"GameAsset request '{requestedKey}' is absent from the "
+                + "sealed library lock.");
+        }
+
+        public GameAssetIdentityIndex ResolveAssetIdentityIndex(
+            in GameAssetKey requestedKey)
+        {
+            RequireSealed();
+            if (!TryGet(requestedKey, out var entry) || entry == null)
+            {
+                throw new KeyNotFoundException(
+                    $"GameAsset request '{requestedKey}' is absent from the "
+                    + "sealed library lock.");
+            }
+
+            var resolvedKey = entry.ResolvedKey;
+            return _assetCatalog.GetRequiredIdentityIndex(in resolvedKey);
         }
 
         internal bool TryGetRequestedKey(string normalizedKey, out GameAssetKey key)
@@ -110,6 +174,16 @@ namespace DingoGameObjectsCMS.AssetLibrary
         {
             if (IsReadOnly)
                 throw new InvalidOperationException("The GameAsset session resolution snapshot is sealed and cannot be changed.");
+        }
+
+        private void RequireSealed()
+        {
+            if (!IsReadOnly)
+            {
+                throw new InvalidOperationException(
+                    "GameAsset indices are available only after the session "
+                    + "resolution snapshot is sealed.");
+            }
         }
     }
 

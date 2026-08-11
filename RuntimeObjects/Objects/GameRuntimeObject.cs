@@ -35,6 +35,8 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
         [NonSerialized, JsonIgnore] private bool _cacheHasRuntimeIds;
         [NonSerialized, JsonIgnore] private ulong _entityFactoryMutationRevision;
         [NonSerialized, JsonIgnore] private Entity _entity;
+        [NonSerialized, JsonIgnore]
+        private RuntimeGameAssetIdentity _runtimeGameAssetIdentity;
 
         [NonSerialized, JsonIgnore] private RuntimeStore _runtimeStore;
         [NonSerialized, JsonIgnore] private World _world;
@@ -47,6 +49,9 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
         [JsonIgnore] public ulong EntityFactoryMutationRevision => _entityFactoryMutationRevision;
         [JsonIgnore] public RuntimeInstance RuntimeInstance => new() { Id = InstanceId, StoreId = StoreId, Epoch = _runtimeStore?.Epoch ?? 0u };
         [JsonIgnore] public RuntimeObjectOrigin Origin => _origin;
+        [JsonIgnore]
+        public RuntimeGameAssetIdentity RuntimeGameAssetIdentity =>
+            _runtimeGameAssetIdentity;
 
         public void SetOrigin(RuntimeObjectOrigin origin)
         {
@@ -56,6 +61,20 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
                 throw new ArgumentException("Runtime object origin requires a valid asset GUID.", nameof(origin));
 
             _origin = origin;
+        }
+
+        public void SetRuntimeGameAssetIdentity(
+            in RuntimeGameAssetIdentity identity)
+        {
+            if (!identity.IsValid)
+            {
+                throw new ArgumentException(
+                    "Runtime GameAsset identity requires valid exact and "
+                    + "versionless indices.",
+                    nameof(identity));
+            }
+
+            _runtimeGameAssetIdentity = identity;
         }
 
         public void LinkRuntimeContext(RuntimeStore runtimeStore, World world)
@@ -137,11 +156,12 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
             var entityManager = _world.EntityManager;
             var isEntityFactory = HasEntityFactoryComponent();
             _entity = entityManager.CreateEntity();
-            entityManager.AddComponentData(_entity, new AssetLink { AssetGUID = AssetGUID });
-            var source = SourceAssetGUID.isValid ? SourceAssetGUID : GUID;
-            entityManager.AddComponentData(_entity, new SourceAssetLink { AssetGUID = source });
-            if (SourceAssetGUID.isValid)
-                entityManager.AddComponent<AssetPresentationTag>(_entity);
+            if (_runtimeGameAssetIdentity.IsValid)
+            {
+                entityManager.AddComponentData(
+                    _entity,
+                    _runtimeGameAssetIdentity);
+            }
             entityManager.AddComponentData(_entity, new RuntimeRealm { Realm = Realm });
             entityManager.AddComponentData(_entity, RuntimeInstance);
             entityManager.AddComponentData(_entity, new RuntimeEntityDestroyState());

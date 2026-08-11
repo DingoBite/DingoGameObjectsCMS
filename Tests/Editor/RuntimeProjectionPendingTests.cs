@@ -1,6 +1,7 @@
 using DingoGameObjectsCMS.RuntimeObjects;
 using DingoGameObjectsCMS.RuntimeObjects.Objects;
 using DingoGameObjectsCMS.RuntimeObjects.Stores;
+using DingoGameObjectsCMS.AssetLibrary;
 using DingoGameObjectsCMS.Stores;
 using DingoUnityExtensions;
 using NUnit.Framework;
@@ -70,6 +71,28 @@ namespace DingoGameObjectsCMS.Tests.Editor
                 _entityManager.HasComponent<RuntimeProjectionPendingTestComponent>(
                     entity),
                 Is.True);
+        }
+
+        [Test]
+        public void CreateEntity_ProjectsSessionAssetIdentityOnGroRoot()
+        {
+            var runtimeObject = _store.Create();
+            var expected = new RuntimeGameAssetIdentity
+            {
+                AssetIndex = new GameAssetIndex(17u),
+                IdentityIndex = new GameAssetIdentityIndex(5u),
+            };
+            runtimeObject.SetRuntimeGameAssetIdentity(in expected);
+
+            var entity = runtimeObject.CreateEntity();
+
+            Assert.That(
+                _entityManager.HasComponent<RuntimeGameAssetIdentity>(entity),
+                Is.True);
+            Assert.That(
+                _entityManager.GetComponentData<RuntimeGameAssetIdentity>(
+                    entity),
+                Is.EqualTo(expected));
         }
 
         private void PlaybackEditingCommands()

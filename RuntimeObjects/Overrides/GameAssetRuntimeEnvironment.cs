@@ -16,6 +16,8 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
         public RuntimePatchCodecRegistry PatchCodecs { get; }
         public GameAssetTemplateCache Templates { get; }
         public GameAssetLibraryLock LibraryLock { get; }
+        public GameAssetSessionCatalog AssetCatalog =>
+            LibraryLock.AssetCatalog;
         public IReadOnlyList<ModPackage> MountedModules { get; }
 
         public string RuntimeSchemaHash => PatchCodecs.SchemaHash;

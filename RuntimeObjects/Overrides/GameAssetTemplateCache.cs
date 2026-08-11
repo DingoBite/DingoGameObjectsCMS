@@ -177,7 +177,11 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
                 components = patchEngine.ApplyPatch(components, runtimePatch);
             }
 
-            return CreateRuntimeObject(instance, blueprint, components);
+            return CreateRuntimeObject(
+                instance,
+                blueprint,
+                components,
+                assetLock);
         }
 
 #if UNITY_EDITOR
@@ -213,7 +217,11 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
                 components = patchEngine.ApplyPatch(components, runtimePatch);
             }
 
-            return CreateRuntimeObject(instance, blueprint, components);
+            return CreateRuntimeObject(
+                instance,
+                blueprint,
+                components,
+                assetLock: null);
         }
 #endif
 
@@ -252,7 +260,11 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
                 components = patchEngine.ApplyProjectedPatch(components, instance.Patch, selectMode);
             }
 
-            return CreateRuntimeObject(instance, blueprint, components);
+            return CreateRuntimeObject(
+                instance,
+                blueprint,
+                components,
+                assetLock);
         }
 
         public RuntimeObjectPatch BuildOverrides(
@@ -322,7 +334,8 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
         private static GameRuntimeObject CreateRuntimeObject(
             GameAssetInstance instance,
             GameAssetTemplateBlueprint blueprint,
-            IReadOnlyDictionary<uint, GameRuntimeComponent> components)
+            IReadOnlyDictionary<uint, GameRuntimeComponent> components,
+            GameAssetLibraryLock assetLock)
         {
             var runtimeObject = new GameRuntimeObject
             {
@@ -332,6 +345,20 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
             };
             runtimeObject.SetGuidRequired(instance.InstanceGuid);
             runtimeObject.SetOrigin(new RuntimeObjectOrigin(blueprint.Asset, instance.InstanceGuid));
+            if (assetLock != null)
+            {
+                var catalog = assetLock.AssetCatalog;
+                var resolvedAsset = blueprint.Asset;
+                var exactKey = resolvedAsset.ExactKey;
+                runtimeObject.SetRuntimeGameAssetIdentity(
+                    new RuntimeGameAssetIdentity
+                    {
+                        AssetIndex = catalog.GetRequiredIndex(
+                            in resolvedAsset),
+                        IdentityIndex = catalog.GetRequiredIdentityIndex(
+                            in exactKey),
+                    });
+            }
 
             foreach (var pair in components.OrderBy(pair => pair.Key))
                 runtimeObject.AddOrReplaceById(pair.Key, pair.Value);

@@ -1,3 +1,4 @@
+using DingoGameObjectsCMS.AssetLibrary;
 using DingoGameObjectsCMS.RuntimeObjects;
 using DingoGameObjectsCMS.RuntimeObjects.Objects;
 using DingoGameObjectsCMS.RuntimeObjects.Stores;
@@ -195,6 +196,12 @@ namespace DingoGameObjectsCMS.Tests.Editor
         public void FactoryProjection_CreatesTaggedRootAndOwnedProductsWithoutManagedFactoryComponent()
         {
             var runtimeObject = _store.Create();
+            var assetIdentity = new RuntimeGameAssetIdentity
+            {
+                AssetIndex = new GameAssetIndex(7u),
+                IdentityIndex = new GameAssetIdentityIndex(3u),
+            };
+            runtimeObject.SetRuntimeGameAssetIdentity(in assetIdentity);
             runtimeObject.AddOrReplaceById(FACTORY_COMPONENT_ID, new RuntimeEntityFactoryTestComponent
             {
                 EmptyProductCount = 1,
@@ -205,6 +212,10 @@ namespace DingoGameObjectsCMS.Tests.Editor
             PlaybackEditingCommands();
 
             Assert.That(_entityManager.HasComponent<RuntimeEntityFactoryTag>(entity), Is.True);
+            Assert.That(
+                _entityManager.GetComponentData<RuntimeGameAssetIdentity>(
+                    entity),
+                Is.EqualTo(assetIdentity));
             Assert.That(
                 _entityManager.GetComponentData<
                     RuntimeEntityFactoryProductIdentity>(entity).ProductId,
@@ -226,6 +237,10 @@ namespace DingoGameObjectsCMS.Tests.Editor
                 Assert.That(owner.FactoryInstance.Id, Is.EqualTo(runtimeObject.InstanceId));
                 Assert.That(owner.FactoryInstance.StoreId, Is.EqualTo(runtimeObject.RuntimeInstance.StoreId));
                 Assert.That(owner.FactoryInstance.Epoch, Is.EqualTo(runtimeObject.RuntimeInstance.Epoch));
+                Assert.That(
+                    _entityManager.HasComponent<RuntimeGameAssetIdentity>(
+                        product),
+                    Is.False);
                 if (_entityManager.HasComponent<RuntimeEntityFactoryProductTestData>(product))
                     archetypeProducts++;
             }
