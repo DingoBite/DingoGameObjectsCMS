@@ -46,6 +46,7 @@ namespace DingoGameObjectsCMS.Editor
         public Type RuntimeType;
         public RuntimeDotsStateComponentSchema Schema;
         public RuntimeDotsStateGeneratedValueDescriptor PersistedValue;
+        public MethodInfo PersistedBufferTailValidator;
         public bool IsZeroSized;
     }
 
@@ -164,15 +165,20 @@ namespace DingoGameObjectsCMS.Editor
                     $"Persisted DOTS component '{runtimeType.FullName}' contains an Entity or RuntimeInstance handle. Persist stable RuntimeDotsStateEntityKey values instead.");
             }
 
+            var kind = typeof(IBufferElementData).IsAssignableFrom(runtimeType)
+                ? RuntimeDotsStateComponentKind.Buffer
+                : RuntimeDotsStateComponentKind.Component;
             var persistedValue = classification ==
                                  RuntimeDotsStateClassification.Persisted
                 ? DescribePersistedValue(
                     runtimeType,
                     new HashSet<Type>())
                 : null;
-            var kind = typeof(IBufferElementData).IsAssignableFrom(runtimeType)
-                ? RuntimeDotsStateComponentKind.Buffer
-                : RuntimeDotsStateComponentKind.Component;
+            var persistedBufferTailValidator =
+                DescribePersistedBufferTailValidator(
+                    runtimeType,
+                    classification,
+                    kind);
             return new RuntimeDotsStateGeneratedComponentDescriptor
             {
                 RuntimeType = runtimeType,
@@ -186,10 +192,75 @@ namespace DingoGameObjectsCMS.Editor
                         .IsAssignableFrom(runtimeType),
                 },
                 PersistedValue = persistedValue,
+                PersistedBufferTailValidator =
+                    persistedBufferTailValidator,
                 IsZeroSized = kind == RuntimeDotsStateComponentKind.Component
                               && ComponentType.ReadOnly(runtimeType)
                                   .IsZeroSized,
             };
+        }
+
+        private static MethodInfo DescribePersistedBufferTailValidator(
+            Type runtimeType,
+            RuntimeDotsStateClassification classification,
+            RuntimeDotsStateComponentKind kind)
+        {
+            var attribute = runtimeType.GetCustomAttribute<
+                RuntimeDotsBufferTailValidatorAttribute>(inherit: false);
+            if (attribute == null)
+            {
+                return null;
+            }
+            if (classification != RuntimeDotsStateClassification.Persisted
+                || kind != RuntimeDotsStateComponentKind.Buffer)
+            {
+                throw new InvalidOperationException(
+                    $"DOTS buffer tail validator on '{runtimeType.FullName}' "
+                    + "requires a persisted IBufferElementData type.");
+            }
+            if (!IsPubliclyAccessible(attribute.ValidatorType)
+                || attribute.ValidatorType.ContainsGenericParameters)
+            {
+                throw new InvalidOperationException(
+                    $"DOTS buffer tail validator type "
+                    + $"'{attribute.ValidatorType.FullName}' for "
+                    + $"'{runtimeType.FullName}' must be publicly accessible "
+                    + "and closed so generated code can call it directly.");
+            }
+
+            var parameterType = runtimeType.MakeByRefType();
+            var methods = attribute.ValidatorType.GetMethods(
+                    BindingFlags.Public
+                    | BindingFlags.Static
+                    | BindingFlags.DeclaredOnly)
+                .Where(method => string.Equals(
+                    method.Name,
+                    attribute.MethodName,
+                    StringComparison.Ordinal))
+                .Where(method => !method.IsGenericMethodDefinition
+                                 && !method.ContainsGenericParameters
+                                 && method.ReturnType == typeof(bool))
+                .Where(method =>
+                {
+                    var parameters = method.GetParameters();
+                    return parameters.Length == 1
+                           && parameters[0].ParameterType == parameterType
+                           && parameters[0].IsIn
+                           && !parameters[0].IsOut;
+                })
+                .ToArray();
+            if (methods.Length != 1)
+            {
+                throw new InvalidOperationException(
+                    $"DOTS buffer tail validator "
+                    + $"'{attribute.ValidatorType.FullName}."
+                    + $"{attribute.MethodName}' for '{runtimeType.FullName}' "
+                    + $"must expose exactly one public static bool "
+                    + $"{attribute.MethodName}(in {runtimeType.FullName}) "
+                    + "overload.");
+            }
+
+            return methods[0];
         }
 
         private static RuntimeDotsStateGeneratedValueDescriptor

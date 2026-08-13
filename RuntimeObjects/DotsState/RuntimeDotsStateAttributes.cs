@@ -14,6 +14,32 @@ namespace DingoGameObjectsCMS.RuntimeObjects.DotsState
         AttributeTargets.Struct,
         AllowMultiple = false,
         Inherited = false)]
+    public sealed class RuntimeDotsBufferTailValidatorAttribute : Attribute
+    {
+        public readonly Type ValidatorType;
+        public readonly string MethodName;
+
+        public RuntimeDotsBufferTailValidatorAttribute(
+            Type validatorType,
+            string methodName)
+        {
+            ValidatorType = validatorType ?? throw new ArgumentNullException(
+                nameof(validatorType));
+            if (string.IsNullOrWhiteSpace(methodName))
+            {
+                throw new ArgumentException(
+                    "A persisted DOTS buffer tail validator method is required.",
+                    nameof(methodName));
+            }
+
+            MethodName = methodName.Trim();
+        }
+    }
+
+    [AttributeUsage(
+        AttributeTargets.Struct,
+        AllowMultiple = false,
+        Inherited = false)]
     public sealed class RuntimeDotsDerivedAttribute : Attribute
     {
     }

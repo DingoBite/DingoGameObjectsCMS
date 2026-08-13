@@ -344,8 +344,27 @@ namespace DingoGameObjectsCMS.Editor
                     .Append(id)
                     .Append(" = entityManager.GetBuffer<")
                     .Append(typeName)
-                    .AppendLine(">(entity);")
-                    .Append("                writer.WriteInt32(buffer")
+                    .AppendLine(">(entity);");
+                if (descriptor.PersistedBufferTailValidator != null)
+                {
+                    builder.Append("                var tail")
+                        .Append(id)
+                        .Append(" = buffer")
+                        .Append(id)
+                        .Append(".Length > 0 ? buffer")
+                        .Append(id)
+                        .Append("[buffer")
+                        .Append(id)
+                        .AppendLine(".Length - 1] : default;");
+                    EmitBufferTailValidation(
+                        builder,
+                        descriptor,
+                        $"buffer{id}.Length",
+                        $"tail{id}",
+                        "                ",
+                        payload: false);
+                }
+                builder.Append("                writer.WriteInt32(buffer")
                     .Append(id)
                     .AppendLine(".Length);")
                     .Append("                for (var index")
@@ -416,8 +435,16 @@ namespace DingoGameObjectsCMS.Editor
                     .Append(" < 0 || count")
                     .Append(id)
                     .AppendLine(" > RuntimeDotsStateSerializationLimits.MAX_BUFFER_ELEMENTS)")
-                    .AppendLine("                    throw new FormatException(\"Invalid persisted DOTS buffer element count.\");")
-                    .Append("                for (var index")
+                    .AppendLine("                    throw new FormatException(\"Invalid persisted DOTS buffer element count.\");");
+                if (descriptor.PersistedBufferTailValidator != null)
+                {
+                    builder.Append("                var tail")
+                        .Append(id)
+                        .Append(" = default(")
+                        .Append(TypeName(descriptor.RuntimeType))
+                        .AppendLine(");");
+                }
+                builder.Append("                for (var index")
                     .Append(id)
                     .Append(" = 0; index")
                     .Append(id)
@@ -426,11 +453,32 @@ namespace DingoGameObjectsCMS.Editor
                     .Append("; index")
                     .Append(id)
                     .AppendLine("++)")
-                    .AppendLine("                {")
-                    .Append("                    _ = Read_")
-                    .Append(id)
-                    .AppendLine("(reader);")
-                    .AppendLine("                }");
+                    .AppendLine("                {");
+                if (descriptor.PersistedBufferTailValidator != null)
+                {
+                    builder.Append("                    tail")
+                        .Append(id)
+                        .Append(" = Read_")
+                        .Append(id)
+                        .AppendLine("(reader);");
+                }
+                else
+                {
+                    builder.Append("                    _ = Read_")
+                        .Append(id)
+                        .AppendLine("(reader);");
+                }
+                builder.AppendLine("                }");
+                if (descriptor.PersistedBufferTailValidator != null)
+                {
+                    EmitBufferTailValidation(
+                        builder,
+                        descriptor,
+                        $"count{id}",
+                        $"tail{id}",
+                        "                ",
+                        payload: true);
+                }
             }
             else if (!descriptor.IsZeroSized)
             {
@@ -514,6 +562,14 @@ namespace DingoGameObjectsCMS.Editor
                         .Append(id)
                         .AppendLine(".Clear();");
                 }
+                else if (descriptor.PersistedBufferTailValidator != null)
+                {
+                    builder.Append("                var tail")
+                        .Append(id)
+                        .Append(" = default(")
+                        .Append(typeName)
+                        .AppendLine(");");
+                }
                 builder.Append("                for (var index")
                     .Append(id)
                     .Append(" = 0; index")
@@ -526,9 +582,20 @@ namespace DingoGameObjectsCMS.Editor
                     .AppendLine("                {");
                 if (prevalidateOnly)
                 {
-                    builder.Append("                    _ = Read_")
-                        .Append(id)
-                        .AppendLine("(reader);");
+                    if (descriptor.PersistedBufferTailValidator != null)
+                    {
+                        builder.Append("                    tail")
+                            .Append(id)
+                            .Append(" = Read_")
+                            .Append(id)
+                            .AppendLine("(reader);");
+                    }
+                    else
+                    {
+                        builder.Append("                    _ = Read_")
+                            .Append(id)
+                            .AppendLine("(reader);");
+                    }
                 }
                 else
                 {
@@ -547,6 +614,17 @@ namespace DingoGameObjectsCMS.Editor
                         .AppendLine(");");
                 }
                 builder.AppendLine("                }");
+                if (prevalidateOnly
+                    && descriptor.PersistedBufferTailValidator != null)
+                {
+                    EmitBufferTailValidation(
+                        builder,
+                        descriptor,
+                        $"count{id}",
+                        $"tail{id}",
+                        "                ",
+                        payload: true);
+                }
             }
             else if (!descriptor.IsZeroSized)
             {
@@ -577,6 +655,36 @@ namespace DingoGameObjectsCMS.Editor
                     .AppendLine(");");
             }
             builder.AppendLine("            }");
+        }
+
+        private static void EmitBufferTailValidation(
+            StringBuilder builder,
+            RuntimeDotsStateGeneratedComponentDescriptor descriptor,
+            string countExpression,
+            string tailExpression,
+            string indent,
+            bool payload)
+        {
+            var validator = descriptor.PersistedBufferTailValidator
+                            ?? throw new InvalidOperationException(
+                                "A generated buffer tail validator is required.");
+            builder.Append(indent)
+                .Append("if (")
+                .Append(countExpression)
+                .Append(" > 0 && !")
+                .Append(TypeName(validator.DeclaringType))
+                .Append(".@")
+                .Append(validator.Name)
+                .Append("(in ")
+                .Append(tailExpression)
+                .AppendLine("))")
+                .Append(indent)
+                .Append("    throw new ")
+                .Append(payload ? "FormatException" : "InvalidOperationException")
+                .Append('(')
+                .Append(Quote(
+                    $"Persisted DOTS buffer id {descriptor.Schema.ComponentTypeId} has a non-canonical tail."))
+                .AppendLine(");");
         }
 
         private static void EmitPersistedCodec(

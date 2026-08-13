@@ -78,6 +78,62 @@ namespace DingoGameObjectsCMS.Tests.Editor
         public RuntimeDotsStateEntityKey Value;
     }
 
+    [RuntimeDotsPersisted]
+    [RuntimeDotsBufferTailValidator(
+        typeof(RuntimeDotsPersistedTailValidatorTestMethods),
+        nameof(RuntimeDotsPersistedTailValidatorTestMethods.IsCanonicalTail))]
+    public struct RuntimeDotsPersistedValidatedTestBuffer : IBufferElementData
+    {
+        public uint Value;
+    }
+
+    [RuntimeDotsPersisted]
+    [RuntimeDotsBufferTailValidator(
+        typeof(RuntimeDotsPersistedTailValidatorTestMethods),
+        nameof(RuntimeDotsPersistedTailValidatorTestMethods.IsCanonicalTail))]
+    public struct RuntimeDotsInvalidValidatedTestComponent : IComponentData
+    {
+        public uint Value;
+    }
+
+    [RuntimeDotsDerived]
+    [RuntimeDotsBufferTailValidator(
+        typeof(RuntimeDotsPersistedTailValidatorTestMethods),
+        nameof(RuntimeDotsPersistedTailValidatorTestMethods.IsCanonicalTail))]
+    public struct RuntimeDotsInvalidValidatedDerivedBuffer : IBufferElementData
+    {
+        public uint Value;
+    }
+
+    [RuntimeDotsPersisted]
+    [RuntimeDotsBufferTailValidator(
+        typeof(RuntimeDotsPersistedTailValidatorTestMethods),
+        nameof(RuntimeDotsPersistedTailValidatorTestMethods.ValidateByValue))]
+    public struct RuntimeDotsInvalidTailValidatorSignatureTestBuffer :
+        IBufferElementData
+    {
+        public uint Value;
+    }
+
+    public static class RuntimeDotsPersistedTailValidatorTestMethods
+    {
+        public static bool IsCanonicalTail(
+            in RuntimeDotsPersistedValidatedTestBuffer tail) =>
+            tail.Value != 0u;
+
+        public static bool IsCanonicalTail(
+            in RuntimeDotsInvalidValidatedTestComponent tail) =>
+            tail.Value != 0u;
+
+        public static bool IsCanonicalTail(
+            in RuntimeDotsInvalidValidatedDerivedBuffer tail) =>
+            tail.Value != 0u;
+
+        public static bool ValidateByValue(
+            RuntimeDotsInvalidTailValidatorSignatureTestBuffer tail) =>
+            tail.Value != 0u;
+    }
+
     public class RuntimeDotsStateSchemaTests
     {
         private static readonly Type[] CLASSIFIED_TYPES =
@@ -214,6 +270,52 @@ namespace DingoGameObjectsCMS.Tests.Editor
                 source,
                 Does.Contain(
                     "value.@Value.@StoreId = new global::Unity.Collections.FixedString32Bytes(reader.ReadString(global::Unity.Collections.FixedString32Bytes.UTF8MaxLengthInBytes));"));
+        }
+
+        [Test]
+        public void Discovery_AcceptsExactPersistedBufferTailValidator()
+        {
+            var descriptor = RuntimeDotsStateSchemaDiscovery
+                .DescribeComponent(
+                    typeof(RuntimeDotsPersistedValidatedTestBuffer));
+
+            Assert.That(
+                descriptor.PersistedBufferTailValidator,
+                Is.Not.Null);
+            Assert.That(
+                descriptor.PersistedBufferTailValidator.DeclaringType,
+                Is.EqualTo(
+                    typeof(RuntimeDotsPersistedTailValidatorTestMethods)));
+            Assert.That(
+                descriptor.PersistedBufferTailValidator.Name,
+                Is.EqualTo(nameof(
+                    RuntimeDotsPersistedTailValidatorTestMethods
+                        .IsCanonicalTail)));
+        }
+
+        [Test]
+        public void Discovery_RejectsTailValidatorOutsidePersistedBuffer()
+        {
+            Assert.Throws<InvalidOperationException>(() =>
+                RuntimeDotsStateSchemaDiscovery.DescribeComponent(
+                    typeof(RuntimeDotsInvalidValidatedTestComponent)));
+            Assert.Throws<InvalidOperationException>(() =>
+                RuntimeDotsStateSchemaDiscovery.DescribeComponent(
+                    typeof(RuntimeDotsInvalidValidatedDerivedBuffer)));
+        }
+
+        [Test]
+        public void Discovery_RejectsNonInTailValidatorSignature()
+        {
+            var exception = Assert.Throws<InvalidOperationException>(() =>
+                RuntimeDotsStateSchemaDiscovery.DescribeComponent(
+                    typeof(
+                        RuntimeDotsInvalidTailValidatorSignatureTestBuffer)));
+
+            Assert.That(
+                exception.Message,
+                Does.Contain("public static bool"));
+            Assert.That(exception.Message, Does.Contain("(in"));
         }
 
         [Test]
@@ -392,6 +494,69 @@ namespace DingoGameObjectsCMS.Tests.Editor
         }
 
         [Test]
+        public void Emitter_ValidatesCanonicalBufferTailBeforeCaptureAndBothPrevalidations()
+        {
+            var discovery = RuntimeDotsStateSchemaDiscovery.Discover(
+                new[] { typeof(RuntimeDotsPersistedValidatedTestBuffer) });
+            var manifest = RuntimeDotsStateSchemaReconciler.Reconcile(
+                null,
+                discovery.Components.Select(value => value.Schema).ToArray(),
+                codecVersion: 1);
+            RuntimeDotsStateSchemaGenerationCore.BindReconciledSchema(
+                discovery.Components,
+                manifest);
+
+            var source = RuntimeDotsStateCodeEmitter.Generate(
+                manifest,
+                discovery.Components,
+                new RuntimeDotsStateCodeEmissionProfile(
+                    "Generated.Tests",
+                    "GeneratedRuntimeDotsStateSchema"));
+            var call = "global::DingoGameObjectsCMS.Tests.Editor."
+                       + nameof(
+                           RuntimeDotsPersistedTailValidatorTestMethods)
+                       + ".@"
+                       + nameof(
+                           RuntimeDotsPersistedTailValidatorTestMethods
+                               .IsCanonicalTail);
+
+            Assert.That(CountOccurrences(source, call), Is.EqualTo(3));
+            Assert.That(
+                source,
+                Does.Contain(
+                    "buffer0.Length > 0 ? buffer0[buffer0.Length - 1] : default;"));
+            Assert.That(
+                source,
+                Does.Contain("if (buffer0.Length > 0 && !" + call));
+            Assert.That(
+                source,
+                Does.Contain("if (count0 > 0 && !" + call));
+            Assert.That(
+                source,
+                Does.Contain(
+                    "throw new InvalidOperationException(\"Persisted DOTS buffer id 0 has a non-canonical tail.\");"));
+            Assert.That(
+                CountOccurrences(
+                    source,
+                    "throw new FormatException(\"Persisted DOTS buffer id 0 has a non-canonical tail.\");"),
+                Is.EqualTo(2));
+            Assert.That(source, Does.Not.Contain("MethodInfo.Invoke"));
+
+            var readStart = source.IndexOf(
+                "public static void ReadPersistedEntityState(",
+                StringComparison.Ordinal);
+            var codecStart = source.IndexOf(
+                "public static readonly RuntimeDotsStateComponentCodec",
+                readStart,
+                StringComparison.Ordinal);
+            Assert.That(readStart, Is.GreaterThanOrEqualTo(0));
+            Assert.That(codecStart, Is.GreaterThan(readStart));
+            Assert.That(
+                source.Substring(readStart, codecStart - readStart),
+                Does.Not.Contain(call));
+        }
+
+        [Test]
         public void Reconciler_RejectsActiveManifestEntryWithoutDirectRuntimeType()
         {
             var discovery = RuntimeDotsStateSchemaDiscovery.Discover(
@@ -538,6 +703,13 @@ namespace DingoGameObjectsCMS.Tests.Editor
             {
                 Value = reader.ReadInt32(),
             };
+        }
+
+        private static int CountOccurrences(string source, string value)
+        {
+            return source.Split(
+                new[] { value },
+                StringSplitOptions.None).Length - 1;
         }
     }
 }

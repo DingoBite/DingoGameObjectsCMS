@@ -151,6 +151,10 @@ generated cold codecs process persisted components in fixed
 `ComponentTypeId` order and encode presence, enablement where applicable, and
 the component value or buffer contents. Rows are written into bounded hashed
 section pages; the canonical format is not a set of per-component columns.
+Persisted buffers with trimmed canonical representations may declare a
+compile-time tail validator. Generated capture rejects a non-canonical live
+tail, while both cold prevalidation overloads reject it before restore through
+a direct typed call without runtime reflection or a second serialized value.
 Factories must deterministically recreate the product signature, or provide a
 project topology/materialization hook for dynamic membership before rows are
 prevalidated and applied. Entity-reference buffers and renderer caches are
@@ -503,6 +507,10 @@ generated cold codecs обрабатывают persisted-компоненты в
 `ComponentTypeId` и кодируют presence, enablement при его наличии, а затем
 значение компонента или содержимое buffer. Строки записываются в bounded hashed
 pages секции; canonical format не является набором per-component columns.
+Persisted buffers с trimmed canonical representation могут объявить
+compile-time tail validator. Generated capture отклоняет non-canonical live
+tail, а оба cold prevalidation overload отклоняют его до restore через прямой
+typed call без runtime reflection и второго сериализованного значения.
 Фабрика должна детерминированно пересоздать product signature либо предоставить
 project topology/materialization hook для динамического membership до
 prevalidation и применения строк. Буферы Entity-ссылок и renderer caches обычно
