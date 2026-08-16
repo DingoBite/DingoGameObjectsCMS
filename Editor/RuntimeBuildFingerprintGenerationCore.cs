@@ -123,9 +123,21 @@ namespace DingoGameObjectsCMS.Editor
 
         public static bool GenerateAndWrite(RuntimeBuildFingerprintGenerationProfile profile)
         {
+            return GenerateAndWrite(profile, out _);
+        }
+
+        /// <summary>
+        /// Reports the fingerprint it computed alongside whether the generated
+        /// source changed, so a caller can name the new value without walking
+        /// the whole player content a second time.
+        /// </summary>
+        public static bool GenerateAndWrite(
+            RuntimeBuildFingerprintGenerationProfile profile,
+            out string value)
+        {
             if (profile == null)
                 throw new ArgumentNullException(nameof(profile));
-            var value = Calculate(profile);
+            value = Calculate(profile);
             var content = EmitSource(profile, value);
             var path = profile.GeneratedOutputPath;
             if (File.Exists(path) && string.Equals(File.ReadAllText(path), content, StringComparison.Ordinal))
