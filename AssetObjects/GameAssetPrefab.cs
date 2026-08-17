@@ -7,30 +7,21 @@ using UnityEngine.Scripting;
 namespace DingoGameObjectsCMS.AssetObjects
 {
     /// <summary>
-    /// Declares this GameAsset as a sparse override of another exact GameAsset
-    /// instead of a hand-duplicated copy of it.
+    /// A sparse override of a GameAsset document, without saying what it
+    /// overrides. A named derived asset pairs it with a base key in
+    /// <see cref="GameAssetPrefab"/>; a placement pairs it with the asset the
+    /// placement already references.
     ///
-    /// Composition runs on the authored JSON document before it is deserialized,
-    /// so a derived asset reaches materialization, the immutable library lock and
-    /// the wire as an ordinary complete GameAsset.
-    ///
-    /// Fields are addressed by document path, where the segment after
-    /// <c>Components</c> is a component <c>$type</c> alias rather than an array
-    /// index, for example
-    /// <c>/Components/SimpleSpriteLink_GAC/Visual/Resource/RelativePath</c>.
-    /// Operations apply in declaration order: removed components, overridden
-    /// components, removed fields, overridden fields.
+    /// Fields are addressed by a path rooted at the component list, where a
+    /// segment is a component <c>$type</c> alias and <c>..</c> walks one level
+    /// up: <c>/SimpleSpriteLink_GAC/Visual/Resource/RelativePath</c>,
+    /// <c>/../Surfaces/0/Width</c>. Operations apply in declaration order:
+    /// removed components, overridden components, removed fields, overridden
+    /// fields.
     /// </summary>
     [Serializable, Preserve]
-    public class GameAssetPrefab
+    public class GameAssetOverrides
     {
-        /// <summary>
-        /// Exact base key. A <c>latest</c> request is rejected: the effective
-        /// content of a derived asset must not drift when a new version of the
-        /// base appears.
-        /// </summary>
-        public GameAssetKey Base;
-
         /// <summary>
         /// Component <c>$type</c> aliases dropped from the base.
         /// </summary>
@@ -56,6 +47,29 @@ namespace DingoGameObjectsCMS.AssetObjects
         /// </summary>
         public Dictionary<string, JToken> OverrideFields;
 
+        public bool HasAny =>
+            RemovedComponents is { Count: > 0 } || OverrideComponents is { Count: > 0 }
+            || RemovedFields is { Count: > 0 } || OverrideFields is { Count: > 0 };
+    }
+
+    /// <summary>
+    /// Declares this GameAsset as a sparse override of another exact GameAsset
+    /// instead of a hand-duplicated copy of it.
+    ///
+    /// Composition runs on the authored JSON document before it is deserialized,
+    /// so a derived asset reaches materialization, the immutable library lock and
+    /// the wire as an ordinary complete GameAsset.
+    /// </summary>
+    [Serializable, Preserve]
+    public class GameAssetPrefab : GameAssetOverrides
+    {
+        /// <summary>
+        /// Exact base key. A <c>latest</c> request is rejected: the effective
+        /// content of a derived asset must not drift when a new version of the
+        /// base appears.
+        /// </summary>
+        public GameAssetKey Base;
+
         /// <summary>
         /// True when a base is declared at all. Deliberately permissive so that
         /// a partially filled or unpinned base reaches validation instead of
@@ -64,9 +78,5 @@ namespace DingoGameObjectsCMS.AssetObjects
         public bool HasBase =>
             !string.IsNullOrWhiteSpace(Base.Mod) || !string.IsNullOrWhiteSpace(Base.Type)
             || !string.IsNullOrWhiteSpace(Base.Key) || !string.IsNullOrWhiteSpace(Base.Version);
-
-        public bool HasOverrides =>
-            RemovedComponents is { Count: > 0 } || OverrideComponents is { Count: > 0 }
-            || RemovedFields is { Count: > 0 } || OverrideFields is { Count: > 0 };
     }
 }

@@ -8,6 +8,7 @@ using DingoGameObjectsCMS.AssetLibrary;
 using DingoGameObjectsCMS.AssetObjects;
 using DingoGameObjectsCMS.RuntimeObjects.Objects;
 using DingoGameObjectsCMS.RuntimeObjects.Stores;
+using DingoGameObjectsCMS.Serialization;
 using UnityEngine;
 
 namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
@@ -124,6 +125,60 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
             return blueprint;
         }
 
+        /// <summary>
+        /// Registers an asset composed from <paramref name="baseAsset"/> and
+        /// <paramref name="overrides"/> under its content-derived identity. The
+        /// caller composes it, because composition works on documents and this
+        /// cache works on materialized objects; the identity is verified here so
+        /// the registry cannot be poisoned with an unrelated asset.
+        /// </summary>
+        public GameAssetTemplateBlueprint RegisterDerived(
+            in ResolvedGameAssetReference baseAsset,
+            GameAssetOverrides overrides,
+            GameAsset derivedAsset)
+        {
+            if (derivedAsset == null)
+                throw new ArgumentNullException(nameof(derivedAsset));
+
+            var expectedKey = GameAssetDerivedIdentity.CreateKey(baseAsset, overrides, _registry.SchemaHash);
+            var expectedGuid = GameAssetDerivedIdentity.CreateGuid(baseAsset, overrides, _registry.SchemaHash);
+            if (!KeysEqual(derivedAsset.Key, expectedKey))
+                throw new InvalidOperationException($"Derived asset declares key '{derivedAsset.Key}' but its base and overrides resolve to '{expectedKey}'.");
+            if (derivedAsset.GUID != expectedGuid)
+                throw new InvalidOperationException($"Derived asset '{expectedKey}' declares GUID '{derivedAsset.GUID}' but its base and overrides resolve to '{expectedGuid}'.");
+
+            return GetOrCreate(new GameAssetReference(expectedKey), derivedAsset);
+        }
+
+        /// <summary>
+        /// Finds the asset derived from <paramref name="baseAsset"/> by
+        /// <paramref name="overrides"/>. It is looked up rather than composed:
+        /// a placement may only reference a variant that the session already
+        /// registered, so every baseline stays resolvable by both sides.
+        /// </summary>
+        public GameAssetTemplateBlueprint ResolveDerivedStrict(
+            in ResolvedGameAssetReference baseAsset,
+            GameAssetOverrides overrides)
+        {
+            var guid = GameAssetDerivedIdentity.CreateGuid(baseAsset, overrides, _registry.SchemaHash);
+            if (_byAssetGuid.TryGetValue(guid, out var blueprint))
+                return blueprint;
+
+            var key = GameAssetDerivedIdentity.CreateKey(baseAsset, overrides, _registry.SchemaHash);
+            throw new InvalidOperationException(
+                $"Derived asset '{key}' is not registered in this session. An authored override is registered while the session is sealed.");
+        }
+
+        private GameAssetTemplateBlueprint ResolveInstanceBlueprint(
+            GameAssetInstance instance,
+            GameAssetLibraryLock assetLock)
+        {
+            var baseBlueprint = ResolveStrict(instance.Asset, assetLock);
+            return instance.Overrides is { HasAny: true }
+                ? ResolveDerivedStrict(baseBlueprint.Asset, instance.Overrides)
+                : baseBlueprint;
+        }
+
         public GameAssetTemplateBlueprint ResolveStrict(GameAssetReference request, GameAssetLibraryLock assetLock)
         {
             if (assetLock == null)
@@ -163,7 +218,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
             if (!instance.InstanceGuid.isValid)
                 throw new InvalidOperationException("GameAsset instance requires a stable InstanceGuid.");
 
-            var blueprint = ResolveStrict(instance.Asset, assetLock);
+            var blueprint = ResolveInstanceBlueprint(instance, assetLock);
             var components = blueprint.DecodeComponents(_registry, _context);
             if (instance.Patch != null)
             {

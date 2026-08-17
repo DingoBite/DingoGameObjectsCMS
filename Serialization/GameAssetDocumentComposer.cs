@@ -46,6 +46,79 @@ namespace DingoGameObjectsCMS.Serialization
             return Compose(key, document, resolveBaseDocument, new List<GameAssetKey>());
         }
 
+        /// <summary>
+        /// Applies a sparse override to a complete base document and returns the
+        /// result. The base is not touched. <paramref name="context"/> only names
+        /// the owner in error messages, so a placement can pass the asset it
+        /// overrides.
+        /// </summary>
+        public static JObject ApplyOverrides(GameAssetKey context, JObject baseDocument, GameAssetOverrides overrides)
+        {
+            var result = (JObject)baseDocument.DeepClone();
+            if (overrides == null)
+                return result;
+
+            RemoveComponents(context, result, overrides.RemovedComponents);
+            OverrideComponents(context, result, overrides.OverrideComponents);
+            RemoveFields(context, result, overrides.RemovedFields);
+            OverrideFields(context, result, overrides.OverrideFields);
+            return result;
+        }
+
+        /// <summary>
+        /// Canonical form of an override, used as the identity input for a
+        /// derived asset. Ordinal ordering everywhere keeps two authors who
+        /// wrote the same override in a different member order on the same hash.
+        /// </summary>
+        public static string CanonicalizeOverrides(GameAssetOverrides overrides)
+        {
+            if (overrides == null || !overrides.HasAny)
+                return "{}";
+
+            var canonical = new JObject();
+            if (overrides.RemovedComponents is { Count: > 0 })
+            {
+                canonical["RemovedComponents"] = new JArray(
+                    overrides.RemovedComponents.OrderBy(value => value, StringComparer.Ordinal));
+            }
+            if (overrides.OverrideComponents is { Count: > 0 })
+            {
+                canonical["OverrideComponents"] = new JArray(overrides.OverrideComponents
+                    .OrderBy(value => value[TYPE_PROPERTY]?.Value<string>(), StringComparer.Ordinal)
+                    .Select(CanonicalizeToken));
+            }
+            if (overrides.RemovedFields is { Count: > 0 })
+            {
+                canonical["RemovedFields"] = new JArray(
+                    overrides.RemovedFields.OrderBy(value => value, StringComparer.Ordinal));
+            }
+            if (overrides.OverrideFields is { Count: > 0 })
+            {
+                var fields = new JObject();
+                foreach (var path in overrides.OverrideFields.Keys.OrderBy(value => value, StringComparer.Ordinal))
+                {
+                    fields[path] = CanonicalizeToken(overrides.OverrideFields[path]);
+                }
+                canonical["OverrideFields"] = fields;
+            }
+
+            return canonical.ToString(Formatting.None);
+        }
+
+        private static JToken CanonicalizeToken(JToken token)
+        {
+            if (token is not JObject owner)
+                return token is JArray array ? new JArray(array.Select(CanonicalizeToken)) : token;
+
+            var result = new JObject();
+            foreach (var property in owner.Properties().OrderBy(value => value.Name, StringComparer.Ordinal))
+            {
+                result[property.Name] = CanonicalizeToken(property.Value);
+            }
+
+            return result;
+        }
+
         public static bool HasBase(JObject document)
         {
             return TryReadPrefab(document, out var prefab) && prefab.HasBase;
@@ -70,7 +143,7 @@ namespace DingoGameObjectsCMS.Serialization
 
             if (!prefab.HasBase)
             {
-                if (prefab.HasOverrides)
+                if (prefab.HasAny)
                     throw new InvalidDataException($"GameAsset '{key}' declares prefab overrides without a base to apply them to.");
 
                 return document;
@@ -99,12 +172,8 @@ namespace DingoGameObjectsCMS.Serialization
                 chain.RemoveAt(chain.Count - 1);
             }
 
-            var result = (JObject)baseDocument.DeepClone();
+            var result = ApplyOverrides(key, baseDocument, prefab);
             ApplyRootType(key, result, document);
-            RemoveComponents(key, result, prefab.RemovedComponents);
-            OverrideComponents(key, result, prefab.OverrideComponents);
-            RemoveFields(key, result, prefab.RemovedFields);
-            OverrideFields(key, result, prefab.OverrideFields);
             ApplyIdentity(result, document);
 
             // The composed document must be indistinguishable from a hand

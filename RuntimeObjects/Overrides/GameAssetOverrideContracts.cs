@@ -38,6 +38,20 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
     {
         public Hash128 InstanceGuid;
         public GameAssetReference Asset;
+
+        /// <summary>
+        /// Authored sparse override of <see cref="Asset"/>, in the same document
+        /// vocabulary a prefab uses. A placement carrying one resolves to a
+        /// derived asset instead of the referenced one, which is how a one-off
+        /// variant stays inside the level that needs it.
+        /// </summary>
+        public GameAssetOverrides Overrides;
+
+        /// <summary>
+        /// Runtime-binary override carried by the replication lane. This is not
+        /// authored content: authored overrides go through
+        /// <see cref="Overrides"/>.
+        /// </summary>
         [SerializeReference]
         public RuntimeObjectPatch Patch;
 
@@ -45,7 +59,15 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
         {
             InstanceGuid = instanceGuid;
             Asset = asset;
+            Overrides = null;
             Patch = patch;
+        }
+
+        public GameAssetInstance WithOverrides(GameAssetOverrides overrides)
+        {
+            var result = this;
+            result.Overrides = overrides;
+            return result;
         }
     }
 

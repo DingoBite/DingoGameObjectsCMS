@@ -5,6 +5,7 @@ using DingoGameObjectsCMS.AssetObjects;
 using DingoGameObjectsCMS.Modding;
 using DingoGameObjectsCMS.RuntimeObjects;
 using DingoGameObjectsCMS.RuntimeObjects.Overrides;
+using DingoGameObjectsCMS.Serialization;
 
 namespace DingoGameObjectsCMS.AssetLibrary
 {
@@ -22,6 +23,7 @@ namespace DingoGameObjectsCMS.AssetLibrary
             var assetLock = new GameAssetLibraryLock();
             var latestByIdentity = new Dictionary<string, GameAsset>(
                 StringComparer.Ordinal);
+            var authoredAssets = new List<GameAsset>();
             var moduleIds = new HashSet<string>(StringComparer.Ordinal);
             var orderedModules = mountedModules
                 .OrderBy(module => module?.ModuleId, StringComparer.Ordinal)
@@ -61,6 +63,7 @@ namespace DingoGameObjectsCMS.AssetLibrary
                         templateCache,
                         gameAsset.Key,
                         gameAsset);
+                    authoredAssets.Add(gameAsset);
                     var identity = GameAssetIdentityKey.Normalize(
                         gameAsset.Key);
                     if (!latestByIdentity.TryGetValue(
@@ -83,6 +86,13 @@ namespace DingoGameObjectsCMS.AssetLibrary
                     BuildIdentityRequest(gameAsset.Key),
                     gameAsset);
             }
+
+            // Last, because a placement may name its base by identity alone and
+            // the latest-version entries above are what resolves that.
+            GameAssetDerivedAssetRegistrar.RegisterAuthoredOverrides(
+                assetLock,
+                templateCache,
+                authoredAssets);
 
             return assetLock.Seal();
         }
@@ -157,6 +167,13 @@ namespace DingoGameObjectsCMS.AssetLibrary
             {
                 var identity = kv.Key;
                 var entry = kv.Value;
+
+                // A derived asset has no document on disk to drift against: it
+                // is composed from a base that this same loop already checks,
+                // and its identity is a hash of that base plus the override.
+                if (GameAssetDerivedIdentity.IsDerived(entry.ResolvedKey))
+                    continue;
+
                 var request = BuildIdentityRequest(entry.ResolvedKey);
 
                 if (string.IsNullOrWhiteSpace(entry.MaterializedContentHash))

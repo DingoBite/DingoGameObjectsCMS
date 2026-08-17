@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Reflection;
+using DingoGameObjectsCMS.AssetObjects;
 using DingoGameObjectsCMS.RuntimeObjects.Objects;
 using UnityEngine;
 
@@ -49,6 +50,9 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
                         continue;
                     }
 
+                    if (IsAuthoredOverride(field.FieldType))
+                        continue;
+
                     result.Add(field);
                 }
             }
@@ -70,6 +74,18 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
             }
 
             return result;
+        }
+
+        /// <summary>
+        /// An authored override never travels this lane. It is resolved into a
+        /// derived asset while the session is sealed, so by the time a placement
+        /// is replicated its reference already names that asset exactly, and the
+        /// receiver resolves the baseline without the override. Carrying it
+        /// would also mean encoding arbitrary authored JSON as runtime binary.
+        /// </summary>
+        private static bool IsAuthoredOverride(Type fieldType)
+        {
+            return typeof(GameAssetOverrides).IsAssignableFrom(fieldType);
         }
 
         private static int CompareFields(FieldInfo first, FieldInfo second)
