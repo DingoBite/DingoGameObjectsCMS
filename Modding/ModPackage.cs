@@ -19,6 +19,7 @@ namespace DingoGameObjectsCMS.Modding
         private readonly Dictionary<GameAssetKey, ModManifestEntry> _byKey;
         private readonly Dictionary<GameAssetKey, GameAssetScriptableObject> _cache = new();
         private readonly Dictionary<GameAssetKey, JObject> _documents = new(new GameAssetKeyComparer());
+        private readonly Dictionary<GameAssetKey, JObject> _composedDocuments = new(new GameAssetKeyComparer());
         private Func<GameAssetKey, JObject> _resolveMountedDocument;
 
         public string ModuleId => ContentSnapshot.ModuleId;
@@ -149,6 +150,7 @@ namespace DingoGameObjectsCMS.Modding
         {
             _resolveMountedDocument = resolveMountedDocument;
             _cache.Clear();
+            _composedDocuments.Clear();
         }
 
         /// <summary>
@@ -168,6 +170,39 @@ namespace DingoGameObjectsCMS.Modding
 
             document = ReadDocument(entry);
             _documents[key] = document;
+            return true;
+        }
+
+        /// <summary>
+        /// Returns the effective document: the authored one with prefab
+        /// composition already applied, in the same shape a hand duplicated
+        /// asset would have been written in.
+        ///
+        /// Anything that reads authored content without needing the
+        /// deserialized asset — resource discovery, sprite visuals — must read
+        /// it here rather than from <see cref="TryGetDocument"/>. A derived
+        /// asset states its content only as an override of its base, so the raw
+        /// document does not carry the components at all.
+        ///
+        /// The returned document is shared and must not be mutated; a document
+        /// without a base is returned as-is rather than copied.
+        /// </summary>
+        public bool TryGetComposedDocument(GameAssetKey key, out JObject document)
+        {
+            if (_composedDocuments.TryGetValue(key, out document))
+                return true;
+
+            if (!TryGetDocument(key, out var authored))
+            {
+                document = null;
+                return false;
+            }
+
+            document = GameAssetDocumentComposer.Compose(
+                key,
+                authored,
+                ResolveBaseDocument);
+            _composedDocuments[key] = document;
             return true;
         }
 

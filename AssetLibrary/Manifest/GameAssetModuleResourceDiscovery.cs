@@ -95,17 +95,12 @@ namespace DingoGameObjectsCMS.AssetLibrary.Manifest
                         $"Module manifest asset '{assetResource}' is not classified as a GameAsset.");
                 }
 
-                JToken document;
-                try
-                {
-                    document = JToken.Parse(package.ReadAllText(assetResource));
-                }
-                catch (Exception exception) when (exception is Newtonsoft.Json.JsonException
-                                                  || exception is ArgumentException)
+                // The composed document, not the authored one: a derived asset
+                // names its resources only through the base it overrides.
+                if (!package.TryGetComposedDocument(entry.Key, out var document))
                 {
                     throw new InvalidDataException(
-                        $"Module GameAsset '{assetResource}' is not valid JSON.",
-                        exception);
+                        $"Module GameAsset '{assetResource}' cannot be composed.");
                 }
 
                 CollectFromToken(
