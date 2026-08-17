@@ -90,7 +90,7 @@ This is where the asset model becomes the runtime model.
 
 - `Key`
 - `AssetGUID`
-- `SourceAssetGUID`
+- `SourceAssetKey`
 - a list of `GameRuntimeComponent`
 - `InstanceId`
 - `StoreId`
@@ -107,7 +107,28 @@ Dirty rule:
 
 - `TakeRW<T>()` marks the component dirty automatically;
 - if a system mutates a `GameRuntimeComponent` through an already captured reference, query result, or `RuntimeInstance` lookup, it must explicitly call `SetDirty(...)` on `GameRuntimeObject` or `RuntimeStore`.
-`SourceAssetGUID` is used for source/presentation linkage and related runtime scenarios. It is not version lineage metadata.
+`SourceAssetKey` is used for source/presentation linkage and related runtime scenarios. It is not version lineage metadata and it is not inheritance — see `GameAssetPrefab` for that.
+
+### `GameAssetPrefab`
+
+A `GameAsset` may declare `Prefab` instead of duplicating another asset: an exact base key plus four sparse override lists — `RemovedComponents`, `OverrideComponents`, `RemovedFields`, `OverrideFields`. They apply in that order.
+
+Components are addressed by `$type` alias; a component in `OverrideComponents` replaces one the base already provides and is otherwise added, always as a whole. Everything else is addressed by a path rooted at the component list:
+
+```json
+"Prefab": {
+  "Base": { "Mod": "base", "Type": "static", "Key": "tavern_mage", "Version": "0.0.0" },
+  "OverrideFields": { "/UnitStack_GAC/InitialMemberCount": 1 }
+}
+```
+
+A `..` segment walks one level up, so a sibling component is `/A_GAC/../B_GAC/Field` and a document root field is `/../Surfaces/0/Width`. Identity and composition properties stay unreachable however the path gets to them.
+
+A path reaches any nested leaf, so overriding one field never means restating its parent. A value is replaced as a whole — there is no deep merge — which keeps a collection override atomic exactly like the runtime patch lane. `OverrideFields` is applied in ordinal path order, so the result never depends on the order the document happened to list the paths in.
+
+Component position inside the document carries no meaning: materialization order comes from `[GameAssetSetupOrder(n)]` on the component type, lowest first, so an appended component behaves the same as an authored one. Components without the attribute share order `0` and keep their authored order among themselves.
+
+Composition runs in `GameAssetDocumentComposer` while the module document is loaded, before it is deserialized, so everything downstream — materialization, the immutable library lock, the wire — sees an ordinary complete asset and cannot tell a derived asset from a duplicated one. The base may live in any mounted module. The composed document keeps no prefab declaration, so composing twice is a no-op; read lineage from the raw document with `GameAssetDocumentComposer.TryReadBaseKey`.
 
 ### `GameRuntimeCommand`
 

@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Linq;
 using DingoGameObjectsCMS.RuntimeObjects;
 using DingoGameObjectsCMS.RuntimeObjects.Commands;
 using DingoGameObjectsCMS.RuntimeObjects.Objects;
@@ -12,28 +13,29 @@ namespace DingoGameObjectsCMS.AssetObjects
     {
         [SerializeReference, SubclassSelector, JsonProperty("Components", ItemTypeNameHandling = TypeNameHandling.Auto)] private List<GameAssetComponent> _components;
 
-        [Header("Keep value by default if there is no SourceAsset")]
-        [SerializeField, Tooltip("If this GameAsset is representation of other GameAsset"), JsonProperty("SourceAssetGUID")] private Hash128 _sourceAssetGUID;
+        /// <summary>
+        /// Source/presentation linkage: the GameAsset this one represents. It is
+        /// not lineage and not the baseline identity; use <see cref="Prefab"/>
+        /// for inheritance.
+        /// </summary>
+        public GameAssetKey SourceAssetKey;
+
+        public GameAssetPrefab Prefab;
 
         [JsonIgnore] public List<GameAssetComponent> Components => _components;
-        [JsonIgnore] public Hash128 SourceAssetGUID => _sourceAssetGUID;
 
         public void ResetToDefault(GameAssetKey key, Hash128 guid = default)
         {
             name = $"{key.Key}@{key.Version}";
             SetIdentity(key, guid);
-            _sourceAssetGUID = default;
+            SourceAssetKey = default;
+            Prefab = null;
             _components = new List<GameAssetComponent>();
         }
 
         public void SetComponents(IEnumerable<GameAssetComponent> components)
         {
             _components = components != null ? new List<GameAssetComponent>(components) : new List<GameAssetComponent>();
-        }
-
-        public void SetSourceAssetGuid(Hash128 sourceAssetGuid)
-        {
-            _sourceAssetGUID = sourceAssetGuid;
         }
 
         public void ClearComponents()
@@ -87,14 +89,24 @@ namespace DingoGameObjectsCMS.AssetObjects
         {
             g.Key = Key;
             g.AssetGUID = GUID;
-            g.SourceAssetGUID = _sourceAssetGUID;
+            g.SourceAssetKey = SourceAssetKey;
             if (_components == null)
                 return;
 
-            foreach (var component in _components)
+            foreach (var component in SetupOrdered())
             {
                 component.SetupRuntimeComponent(g);
             }
+        }
+
+        /// <summary>
+        /// Components in materialization order. OrderBy is a stable sort, so
+        /// components sharing a <see cref="GameAssetSetupOrderAttribute"/> order
+        /// keep their authored order.
+        /// </summary>
+        public IEnumerable<GameAssetComponent> SetupOrdered()
+        {
+            return _components.OrderBy(GameAssetSetupOrderUtils.GetOrder);
         }
 
         public GameRuntimeCommand CreateRuntimeCommand()
@@ -105,7 +117,7 @@ namespace DingoGameObjectsCMS.AssetObjects
             if (_components == null)
                 return g;
 
-            foreach (var component in _components)
+            foreach (var component in SetupOrdered())
             {
                 component.SetupRuntimeCommand(g);
             }

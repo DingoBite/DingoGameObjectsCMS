@@ -97,14 +97,26 @@ namespace DingoGameObjectsCMS.AssetLibrary.Manifest
         public string GeneratedUtc { get; }
         public IReadOnlyList<GameAssetModuleAssetEntry> Assets { get; }
         public IReadOnlyList<GameAssetModuleContentFile> Files { get; }
+        public IReadOnlyList<ModDependency> DependsOn { get; }
         public string ContentHash { get; }
+
+        /// <summary>
+        /// Hash over this module's assets as they are on disk right now. A
+        /// dependent module pins this value; the manifest merely publishes it so
+        /// an author has something to copy. Deliberately recomputed rather than
+        /// read back from the manifest, so editing an asset outside the CMS is
+        /// caught by whoever depends on it instead of by the module itself.
+        /// </summary>
+        public string AssetContentHash { get; }
 
         public GameAssetModuleContentSnapshot(
             string sourceRootPath,
             string moduleId,
             ModManifest manifest,
-            IReadOnlyList<GameAssetModuleContentFile> files)
+            IReadOnlyList<GameAssetModuleContentFile> files,
+            IReadOnlyList<ModDependency> dependsOn = null)
         {
+            DependsOn = dependsOn ?? Array.Empty<ModDependency>();
             SourceRootPath = Path.GetFullPath(
                 sourceRootPath
                 ?? throw new ArgumentNullException(nameof(sourceRootPath)));
@@ -166,6 +178,10 @@ namespace DingoGameObjectsCMS.AssetLibrary.Manifest
             ContentHash = GameAssetModuleContentScanner.CalculateContentHash(
                 ModuleId,
                 copiedFiles);
+            AssetContentHash = GameAssetModuleContentScanner.CalculateAssetContentHash(
+                ModuleId,
+                manifest,
+                _files);
         }
 
         public bool Contains(string relativePath)
@@ -245,7 +261,8 @@ namespace DingoGameObjectsCMS.AssetLibrary.Manifest
                 root,
                 expectedModuleId,
                 manifest,
-                Array.AsReadOnly(files.ToArray()));
+                Array.AsReadOnly(files.ToArray()),
+                LoadDependencies(root, expectedModuleId, files));
         }
 
         public static string RequireCanonicalModuleId(string moduleId)
@@ -623,6 +640,118 @@ namespace DingoGameObjectsCMS.AssetLibrary.Manifest
             return manifest;
         }
 
+        /// <summary>
+        /// Hash over the module's assets only. It excludes manifest.json and
+        /// dependency.json, so a module can publish it inside its own manifest
+        /// without the value feeding back into itself.
+        /// </summary>
+        public static string CalculateAssetContentHash(
+            string moduleId,
+            ModManifest manifest,
+            IReadOnlyDictionary<string, GameAssetModuleContentFile> filesByPath)
+        {
+            moduleId = RequireCanonicalModuleId(moduleId);
+            using var buffer = new MemoryStream();
+            using (var writer = new BinaryWriter(buffer, Encoding.UTF8, leaveOpen: true))
+            {
+                writer.Write(CONTENT_HASH_FORMAT_VERSION);
+                writer.Write(moduleId);
+                var ordered = (manifest.Assets ?? new List<ModManifestEntry>())
+                    .OrderBy(entry => entry.RelativeJsonPath, StringComparer.Ordinal)
+                    .ToArray();
+                writer.Write(ordered.Length);
+                for (var index = 0; index < ordered.Length; index++)
+                {
+                    var entry = ordered[index];
+                    writer.Write(entry.RelativeJsonPath);
+                    writer.Write(entry.Key.ToString());
+                    writer.Write(entry.GUID.ToString());
+                    // A missing file is a manifest error that its own validation
+                    // reports; this hash stays total so it never pre-empts it.
+                    writer.Write(
+                        filesByPath.TryGetValue(entry.RelativeJsonPath, out var file)
+                            ? file.Sha256
+                            : string.Empty);
+                }
+            }
+
+            return CalculateBytesHash(buffer.ToArray());
+        }
+
+        private static IReadOnlyList<ModDependency> LoadDependencies(
+            string root,
+            string expectedModuleId,
+            IReadOnlyList<GameAssetModuleContentFile> files)
+        {
+            GameAssetModuleContentFile dependencyFile = null;
+            for (var index = 0; index < files.Count; index++)
+            {
+                if (string.Equals(
+                        files[index].RelativePath,
+                        ModDependencies.FILE_NAME,
+                        StringComparison.Ordinal))
+                {
+                    dependencyFile = files[index];
+                    break;
+                }
+            }
+            if (dependencyFile == null)
+            {
+                return Array.Empty<ModDependency>();
+            }
+
+            ModDependencies dependencies;
+            try
+            {
+                dependencies = JsonConvert.DeserializeObject<ModDependencies>(
+                    dependencyFile.ReadAllText(),
+                    GameAssetJson.DataSettings);
+            }
+            catch (Exception exception) when (
+                exception is JsonException
+                || exception is ArgumentException)
+            {
+                throw new InvalidDataException(
+                    $"GameAsset dependency file '{Path.Combine(root, ModDependencies.FILE_NAME)}' is invalid JSON.",
+                    exception);
+            }
+
+            if (dependencies == null)
+            {
+                throw new InvalidDataException(
+                    $"GameAsset dependency file at '{root}' is empty.");
+            }
+
+            var declared = dependencies.DependsOn ?? new List<ModDependency>();
+            var unique = new HashSet<string>(StringComparer.Ordinal);
+            for (var index = 0; index < declared.Count; index++)
+            {
+                var dependency = declared[index]
+                                 ?? throw new InvalidDataException(
+                                     $"GameAsset module '{expectedModuleId}' dependency {index} is null.");
+                dependency.Mod = RequireCanonicalModuleId(dependency.Mod);
+                if (string.Equals(dependency.Mod, expectedModuleId, StringComparison.Ordinal))
+                {
+                    throw new InvalidDataException(
+                        $"GameAsset module '{expectedModuleId}' declares a dependency on itself.");
+                }
+                if (!unique.Add(dependency.Mod))
+                {
+                    throw new InvalidDataException(
+                        $"GameAsset module '{expectedModuleId}' declares duplicate dependency '{dependency.Mod}'.");
+                }
+                if (string.IsNullOrWhiteSpace(dependency.ContentHash))
+                {
+                    throw new InvalidDataException(
+                        $"GameAsset module '{expectedModuleId}' dependency '{dependency.Mod}' has no ContentHash. Pin the value its manifest publishes.");
+                }
+            }
+
+            return Array.AsReadOnly(declared
+                .OrderBy(value => value.Mod, StringComparer.Ordinal)
+                .ToArray());
+        }
+
         private static void PromoteManifestAssets(
             IList<GameAssetModuleContentFile> files,
             ModManifest manifest)
@@ -726,6 +855,13 @@ namespace DingoGameObjectsCMS.AssetLibrary.Manifest
                     StringComparison.Ordinal))
             {
                 return "manifest";
+            }
+            if (string.Equals(
+                    relativePath,
+                    ModDependencies.FILE_NAME,
+                    StringComparison.Ordinal))
+            {
+                return "dependency";
             }
 
             var extension = Path.GetExtension(relativePath).ToLowerInvariant();

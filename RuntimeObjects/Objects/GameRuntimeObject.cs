@@ -17,7 +17,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
     {
         public GameAssetKey Key;
         public Hash128 AssetGUID;
-        public Hash128 SourceAssetGUID;
+        public GameAssetKey SourceAssetKey;
 
         [SerializeField, JsonProperty("Origin")]
         private RuntimeObjectOrigin _origin;

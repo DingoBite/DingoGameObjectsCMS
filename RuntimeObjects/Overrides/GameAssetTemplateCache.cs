@@ -18,16 +18,16 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
         private readonly ReadOnlyCollection<uint> _componentTypeIds;
 
         public ResolvedGameAssetReference Asset { get; }
-        public Hash128 SourceAssetGuid { get; }
+        public GameAssetKey SourceAssetKey { get; }
         public IReadOnlyList<uint> ComponentTypeIds => _componentTypeIds;
 
         internal GameAssetTemplateBlueprint(
             ResolvedGameAssetReference asset,
-            Hash128 sourceAssetGuid,
+            GameAssetKey sourceAssetKey,
             IReadOnlyDictionary<uint, byte[]> componentPayloads)
         {
             Asset = asset;
-            SourceAssetGuid = sourceAssetGuid;
+            SourceAssetKey = sourceAssetKey;
             _componentPayloads = new Dictionary<uint, byte[]>(componentPayloads.Count);
             foreach (var pair in componentPayloads)
                 _componentPayloads.Add(pair.Key, (byte[])pair.Value.Clone());
@@ -119,7 +119,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
 
             var contentHash = CalculateContentHash(asset.Key, payloads);
             var resolved = new ResolvedGameAssetReference(asset.Key, asset.GUID, contentHash);
-            var blueprint = new GameAssetTemplateBlueprint(resolved, asset.SourceAssetGUID, payloads);
+            var blueprint = new GameAssetTemplateBlueprint(resolved, asset.SourceAssetKey, payloads);
             _byAssetGuid.Add(asset.GUID, blueprint);
             return blueprint;
         }
@@ -341,7 +341,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
             {
                 Key = blueprint.Asset.ExactKey,
                 AssetGUID = blueprint.Asset.AssetGuid,
-                SourceAssetGUID = blueprint.SourceAssetGuid,
+                SourceAssetKey = blueprint.SourceAssetKey,
             };
             runtimeObject.SetGuidRequired(instance.InstanceGuid);
             runtimeObject.SetOrigin(new RuntimeObjectOrigin(blueprint.Asset, instance.InstanceGuid));

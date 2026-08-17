@@ -8,6 +8,7 @@ using DingoGameObjectsCMS.AssetObjects;
 using DingoGameObjectsCMS.RuntimeObjects;
 using DingoGameObjectsCMS.Serialization;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 
 namespace DingoGameObjectsCMS.Modding
 {
@@ -17,6 +18,8 @@ namespace DingoGameObjectsCMS.Modding
 
         private readonly Dictionary<GameAssetKey, ModManifestEntry> _byKey;
         private readonly Dictionary<GameAssetKey, GameAssetScriptableObject> _cache = new();
+        private readonly Dictionary<GameAssetKey, JObject> _documents = new(new GameAssetKeyComparer());
+        private Func<GameAssetKey, JObject> _resolveMountedDocument;
 
         public string ModuleId => ContentSnapshot.ModuleId;
         public string ContentHash => ContentSnapshot.ContentHash;
@@ -25,6 +28,8 @@ namespace DingoGameObjectsCMS.Modding
         public string GeneratedUtc => ContentSnapshot.GeneratedUtc;
         public IReadOnlyList<GameAssetModuleAssetEntry> Assets =>
             ContentSnapshot.Assets;
+        public IReadOnlyList<ModDependency> DependsOn => ContentSnapshot.DependsOn;
+        public string AssetContentHash => ContentSnapshot.AssetContentHash;
 
         public ModPackage(GameAssetModuleContentSnapshot contentSnapshot)
         {
@@ -136,6 +141,36 @@ namespace DingoGameObjectsCMS.Modding
             }
         }
 
+        /// <summary>
+        /// Lets this package resolve a prefab base that lives in another mounted
+        /// module. Without it a base is only looked up inside this package.
+        /// </summary>
+        public void BindMountedDocumentResolver(Func<GameAssetKey, JObject> resolveMountedDocument)
+        {
+            _resolveMountedDocument = resolveMountedDocument;
+            _cache.Clear();
+        }
+
+        /// <summary>
+        /// Returns the authored document as written on disk, before prefab
+        /// composition. This is what a derived asset composes against.
+        /// </summary>
+        public bool TryGetDocument(GameAssetKey key, out JObject document)
+        {
+            if (_documents.TryGetValue(key, out document))
+                return true;
+
+            if (!_byKey.TryGetValue(key, out var entry))
+            {
+                document = null;
+                return false;
+            }
+
+            document = ReadDocument(entry);
+            _documents[key] = document;
+            return true;
+        }
+
         public bool TryGet(GameAssetKey key, out GameAssetScriptableObject asset)
         {
             if (_cache.TryGetValue(key, out asset))
@@ -173,14 +208,40 @@ namespace DingoGameObjectsCMS.Modding
             return ContentSnapshot.RequireFile(resource.RelativePath);
         }
 
+        private JObject ReadDocument(ModManifestEntry entry)
+        {
+            try
+            {
+                return JObject.Parse(ContentSnapshot.ReadAllText(entry.RelativeJsonPath));
+            }
+            catch (JsonException exception)
+            {
+                throw new InvalidDataException(
+                    $"GameAsset '{ModuleId}:{entry.RelativeJsonPath}' is invalid JSON.",
+                    exception);
+            }
+        }
+
+        private JObject ResolveBaseDocument(GameAssetKey key)
+        {
+            if (_resolveMountedDocument != null)
+                return _resolveMountedDocument(key);
+
+            return TryGetDocument(key, out var document) ? document : null;
+        }
+
         private GameAssetScriptableObject ReadAsset(
             ModManifestEntry entry)
         {
             GameAssetScriptableObject asset;
             try
             {
-                asset = GameAssetJson.FromJson(
-                    ContentSnapshot.ReadAllText(entry.RelativeJsonPath));
+                TryGetDocument(entry.Key, out var document);
+                var composed = GameAssetDocumentComposer.Compose(
+                    entry.Key,
+                    document,
+                    ResolveBaseDocument);
+                asset = GameAssetJson.FromJObject(composed);
             }
             catch (Exception exception) when (
                 exception is JsonException

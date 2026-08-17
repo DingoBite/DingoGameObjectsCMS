@@ -7,6 +7,7 @@ using DingoGameObjectsCMS.AssetLibrary.Manifest;
 using DingoGameObjectsCMS.AssetObjects;
 using DingoGameObjectsCMS.Modding;
 using DingoGameObjectsCMS.RuntimeObjects;
+using Newtonsoft.Json.Linq;
 using UnityEngine;
 
 namespace DingoGameObjectsCMS.AssetLibrary
@@ -313,6 +314,8 @@ namespace DingoGameObjectsCMS.AssetLibrary
                     immutableByGuid);
             }
 
+            BindMountedDocumentResolvers(packages);
+
             lock (_cacheLock)
             {
                 _packages.Clear();
@@ -481,6 +484,84 @@ namespace DingoGameObjectsCMS.AssetLibrary
             }
 
             return result;
+        }
+
+        /// <summary>
+        /// A prefab base may live in another module, so every package resolves
+        /// base documents across the mounted set — but only inside itself and
+        /// the modules its dependency.json declares. This runs once the set is
+        /// complete and before any asset is deserialized.
+        /// </summary>
+        private static void BindMountedDocumentResolvers(List<ModPackage> packages)
+        {
+            var mounted = packages.ToArray();
+            for (var index = 0; index < mounted.Length; index++)
+            {
+                var owner = mounted[index];
+                owner.BindMountedDocumentResolver(key => ResolveMountedDocument(mounted, owner, key));
+            }
+        }
+
+        private static JObject ResolveMountedDocument(ModPackage[] packages, ModPackage owner, GameAssetKey key)
+        {
+            if (!string.Equals(owner.ModuleId, key.Mod, StringComparison.Ordinal))
+            {
+                RequireDeclaredDependency(packages, owner, key);
+            }
+
+            for (var index = 0; index < packages.Length; index++)
+            {
+                if (packages[index].TryGetDocument(key, out var document))
+                    return document;
+            }
+
+            return null;
+        }
+
+        private static void RequireDeclaredDependency(ModPackage[] packages, ModPackage owner, GameAssetKey key)
+        {
+            ModDependency declared = null;
+            for (var index = 0; index < owner.DependsOn.Count; index++)
+            {
+                if (string.Equals(owner.DependsOn[index].Mod, key.Mod, StringComparison.Ordinal))
+                {
+                    declared = owner.DependsOn[index];
+                    break;
+                }
+            }
+            if (declared == null)
+            {
+                throw new InvalidDataException(
+                    $"GameAsset module '{owner.ModuleId}' reaches into '{key.Mod}' for '{key}' without declaring it in {ModDependencies.FILE_NAME}.");
+            }
+
+            for (var index = 0; index < packages.Length; index++)
+            {
+                if (!string.Equals(packages[index].ModuleId, key.Mod, StringComparison.Ordinal))
+                    continue;
+
+                var published = packages[index].AssetContentHash;
+                if (string.IsNullOrWhiteSpace(published)
+                    || string.Equals(published, declared.ContentHash, StringComparison.Ordinal))
+                {
+                    return;
+                }
+
+                // Authoring edits content between dependency updates all the
+                // time, so in the editor a stale pin is a prompt to re-run the
+                // dependency update, not a dead session. A build has no such
+                // opportunity and must not run on unpinned content.
+                var message =
+                    $"GameAsset module '{owner.ModuleId}' pins '{key.Mod}' at '{declared.ContentHash}' but the mounted module publishes '{published}'.";
+                if (!Application.isEditor)
+                    throw new InvalidDataException(message);
+
+                Debug.LogWarning($"{message} Run the dependency update to re-pin it.");
+                return;
+            }
+
+            throw new InvalidDataException(
+                $"GameAsset module '{owner.ModuleId}' declares a dependency on '{key.Mod}', which is not mounted.");
         }
 
         private static void TryMountModRoot(
