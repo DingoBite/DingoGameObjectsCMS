@@ -118,8 +118,6 @@ namespace DingoGameObjectsCMS.Tests.Editor
 
         private GameAssetTemplateBlueprint RegisterDerived(GameAssetOverrides overrides)
         {
-            // The composition step the library will own once authored overrides
-            // are registered while the session is sealed.
             var composed = GameAssetDocumentComposer.ApplyOverrides(
                 BASE_KEY,
                 JObject.Parse(_baseAsset.ToJson()),
@@ -134,11 +132,6 @@ namespace DingoGameObjectsCMS.Tests.Editor
             return _cache.RegisterDerived(_baseBlueprint.Asset, overrides, _derivedAsset);
         }
 
-        /// <summary>
-        /// A derived asset is a first-class lock entry, because the runtime
-        /// object takes its catalog indices from the lock. This models what
-        /// registering authored overrides at session seal will produce.
-        /// </summary>
         private GameAssetLibraryLock BuildLock(params GameAssetTemplateBlueprint[] derived)
         {
             var assetLock = new GameAssetLibraryLock();

@@ -179,8 +179,6 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
         private readonly RuntimeReplicationPolicyRegistry _replicationPolicies;
         private readonly RuntimeInboundNetworkPatchPolicyValidator _inboundPatchValidator;
 
-        // Test-double hook only. Subclasses using it must override resolve,
-        // validation and spawn; base Spawn fails closed without policies.
         protected RuntimeReplicaBaselineSpawnFactory() { }
 
         public RuntimeReplicaBaselineSpawnFactory(

@@ -7,10 +7,6 @@ using UnityEngine;
 
 namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
 {
-    /// <summary>
-    /// Defines the single serialized-field contract shared by runtime patch
-    /// schema generation and canonical authoring materialization.
-    /// </summary>
     public static class RuntimePatchSerializableFieldDiscovery
     {
         public static List<FieldInfo> Collect(Type runtimeType)
@@ -76,13 +72,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
             return result;
         }
 
-        /// <summary>
-        /// An authored override never travels this lane. It is resolved into a
-        /// derived asset while the session is sealed, so by the time a placement
-        /// is replicated its reference already names that asset exactly, and the
-        /// receiver resolves the baseline without the override. Carrying it
-        /// would also mean encoding arbitrary authored JSON as runtime binary.
-        /// </summary>
         private static bool IsAuthoredOverride(Type fieldType)
         {
             return typeof(GameAssetOverrides).IsAssignableFrom(fieldType);

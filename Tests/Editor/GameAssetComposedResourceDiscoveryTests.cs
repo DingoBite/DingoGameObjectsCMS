@@ -19,12 +19,6 @@ namespace DingoGameObjectsCMS.Tests.Editor
         public GameAssetResourceRef Sprite;
     }
 
-    /// <summary>
-    /// A derived asset states its content only as an override of its base, so
-    /// resource discovery has to read the composed document. Reading the
-    /// authored one loses every resource the override introduces — the sprite
-    /// of a variant becomes invisible to the atlas, which then cannot pack it.
-    /// </summary>
     public class GameAssetComposedResourceDiscoveryTests
     {
         private const string MODULE = "base";

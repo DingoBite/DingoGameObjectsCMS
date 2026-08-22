@@ -6,10 +6,6 @@ using DingoGameObjectsCMS.RuntimeObjects.Overrides;
 
 namespace DingoGameObjectsCMS.Mirror.Protocol
 {
-    /// <summary>
-    /// Immutable session-local mapping. AssetNetId values never escape the
-    /// manifest/session that created this catalog.
-    /// </summary>
     public sealed class RuntimeSessionAssetCatalog
     {
         private readonly GameAssetSessionCatalog _catalog;

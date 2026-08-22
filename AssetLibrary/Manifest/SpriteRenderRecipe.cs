@@ -110,10 +110,6 @@ namespace DingoGameObjectsCMS.AssetLibrary.Manifest
         public List<SpriteRenderPreset> Presets = new();
     }
 
-    /// <summary>
-    /// Sparse per-sprite exception applied over a named module preset.
-    /// Null fields inherit the selected preset value.
-    /// </summary>
     [Serializable, Preserve]
     public class SpriteRenderRecipe
     {

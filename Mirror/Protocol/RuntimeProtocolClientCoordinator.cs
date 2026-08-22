@@ -579,11 +579,6 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                     stages[i].Build();
                 }
 
-                // Catch up every completed initial baseline while all required
-                // stores are still prepared and invisible. A later invalid
-                // delta can therefore abort the whole generation without a
-                // view, ECS projection or registry lifecycle ever observing a
-                // prefix of the initial state.
                 foreach (var pair in _initialStores)
                 {
                     var initial = pair.Value;
@@ -623,9 +618,6 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                         throw new InvalidOperationException($"Prepared initial receiver for '{initial.Store}' did not apply its baseline.");
                 }
 
-                // Build and staged catch-up enqueue Factory-GRC projection in
-                // EndSimulation. Materialize the complete staged topology
-                // before the project checkpoint participant binds its roots.
                 RuntimeCheckpointProjectionBarrier.Playback(_context.World);
 
                 if (_initialRecoveryCheckpoint != null)
@@ -657,9 +649,6 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                 }
 
                 _baselineApplier.PublishGroup(stages, StoreNetDir.S2C);
-                // Group publication retires the previous live stores through
-                // the same EndSimulation ECB. Do not expose a committed
-                // checkpoint while old and new ECS products coexist.
                 RuntimeCheckpointProjectionBarrier.Playback(_context.World);
                 restoreTransaction?.Commit();
             }

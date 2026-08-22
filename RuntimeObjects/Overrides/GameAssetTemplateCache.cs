@@ -125,13 +125,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
             return blueprint;
         }
 
-        /// <summary>
-        /// Registers an asset composed from <paramref name="baseAsset"/> and
-        /// <paramref name="overrides"/> under its content-derived identity. The
-        /// caller composes it, because composition works on documents and this
-        /// cache works on materialized objects; the identity is verified here so
-        /// the registry cannot be poisoned with an unrelated asset.
-        /// </summary>
         public GameAssetTemplateBlueprint RegisterDerived(
             in ResolvedGameAssetReference baseAsset,
             GameAssetOverrides overrides,
@@ -150,12 +143,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
             return GetOrCreate(new GameAssetReference(expectedKey), derivedAsset);
         }
 
-        /// <summary>
-        /// Finds the asset derived from <paramref name="baseAsset"/> by
-        /// <paramref name="overrides"/>. It is looked up rather than composed:
-        /// a placement may only reference a variant that the session already
-        /// registered, so every baseline stays resolvable by both sides.
-        /// </summary>
         public GameAssetTemplateBlueprint ResolveDerivedStrict(
             in ResolvedGameAssetReference baseAsset,
             GameAssetOverrides overrides)
@@ -240,12 +227,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
         }
 
 #if UNITY_EDITOR
-        /// <summary>
-        /// Materializes an explicitly supplied local authoring asset without
-        /// resolving it through the sealed in-memory session snapshot. This is
-        /// editor-only by design and is intended for isolated production-runtime
-        /// playgrounds. Network/session code must use the session-backed overload.
-        /// </summary>
         public GameRuntimeObject MaterializeLocalAuthoringAsset(
             GameAssetInstance instance,
             GameAsset asset,
@@ -280,11 +261,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
         }
 #endif
 
-        /// <summary>
-        /// Materializes an already validated runtime-binary projection. Unlike
-        /// authored local overrides, this path applies only the component lanes
-        /// selected by the caller and never semantic-clones untouched values.
-        /// </summary>
         public GameRuntimeObject MaterializeProjected(
             GameAssetInstance instance,
             GameAssetLibraryLock assetLock,

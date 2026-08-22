@@ -3,10 +3,6 @@ using DingoGameObjectsCMS.RuntimeObjects.Overrides;
 
 namespace DingoGameObjectsCMS.Mirror.Protocol
 {
-    /// <summary>
-    /// Semantic replication lanes. These describe mutation meaning, not the
-    /// physical message that happens to carry it.
-    /// </summary>
     public enum RuntimeReplicationDataClass : byte
     {
         StructuralReliable = 1,

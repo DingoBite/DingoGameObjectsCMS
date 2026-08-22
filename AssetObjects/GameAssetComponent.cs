@@ -6,12 +6,6 @@ using UnityEngine.Scripting;
 
 namespace DingoGameObjectsCMS.AssetObjects
 {
-    /// <summary>
-    /// Materialization order for a <see cref="GameAssetComponent"/>, lowest
-    /// first. Setup is applied in this order instead of the authored list order,
-    /// so the position of a component inside the document carries no meaning and
-    /// an override may append one anywhere. Ties keep the authored order.
-    /// </summary>
     [AttributeUsage(AttributeTargets.Class, Inherited = true)]
     public class GameAssetSetupOrderAttribute : Attribute
     {

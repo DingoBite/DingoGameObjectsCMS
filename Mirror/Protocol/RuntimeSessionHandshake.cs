@@ -59,10 +59,6 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
 #endif
     }
 
-    /// <summary>
-    /// Immutable local expectation used by every connection in one network session.
-    /// Asset and store arrays are normalized and copied during construction.
-    /// </summary>
     public class RuntimeSessionManifestTemplate
     {
         private readonly RuntimeAssetCatalogEntry[] _assets;
@@ -121,9 +117,6 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
         }
     }
 
-    /// <summary>
-    /// Validated immutable manifest for one connection/session id.
-    /// </summary>
     public class RuntimeSessionManifestSnapshot
     {
         private readonly RuntimeAssetCatalogEntry[] _assets;
@@ -331,12 +324,6 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
         }
     }
 
-    /// <summary>
-    /// Client-side immutable expectation. Store generations are authoritative
-    /// session data and are therefore intentionally absent here; the client
-    /// validates only the exact required StoreId set and freezes the non-zero
-    /// generations received in the accepted server manifest.
-    /// </summary>
     public class RuntimeSessionClientExpectation
     {
         private readonly RuntimeAssetCatalogEntry[] _assets;
@@ -396,10 +383,6 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             if (manifest == null)
                 throw new ArgumentNullException(nameof(manifest));
             var validation = RuntimeSessionDescriptorValidator.Validate(Descriptor, manifest.Descriptor);
-            // A manifest carries the exact catalog entries, unlike Hello. If
-            // its declared catalog is internally consistent but differs from
-            // the local immutable catalog, report the exact-manifest contract
-            // violation below instead of stopping at the descriptor hash.
             if (validation != RuntimeProtocolRejectCode.None
                 && validation != RuntimeProtocolRejectCode.AssetCatalogMismatch)
             {
@@ -427,9 +410,6 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             if (!_storeIds.SequenceEqual(actualStoreIds, StringComparer.Ordinal))
                 return RuntimeSessionHandshakeResult.Reject(RuntimeProtocolRejectCode.InvalidManifest, "Manifest StoreId set does not match the required client store set.");
 
-            // Defensive fallback. With canonical validated catalogs, equal
-            // exact entries necessarily have the same hash, but preserve the
-            // descriptor error if a future hash contract changes that rule.
             if (validation == RuntimeProtocolRejectCode.AssetCatalogMismatch)
                 return RuntimeSessionHandshakeResult.Reject(validation, $"Session descriptor mismatch: {validation}.");
             return RuntimeSessionHandshakeResult.Success();

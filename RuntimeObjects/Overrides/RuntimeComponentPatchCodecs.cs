@@ -7,15 +7,10 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
 {
     public enum RuntimeComponentPatchProjectionMode : byte
     {
-        // Materializes the baseline and delegates value comparison/encoding to
-        // the generated component codec.
         SemanticDiff = 1,
 
-        // Compares component type-id membership only. Codec value methods are
-        // deliberately outside this path.
         StructuralPresence = 2,
 
-        // Removes an inherited baseline component and omits runtime-only data.
         Excluded = 3,
     }
 
@@ -612,13 +607,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
             return result;
         }
 
-        /// <summary>
-        /// Applies a lane-projected runtime patch without cloning components
-        /// that the patch does not touch. The caller therefore owns every
-        /// baseline value passed here: fresh GA materialization owns decoded
-        /// instances, while replica delta staging commits only patched ids.
-        /// Structural-presence lanes never enter semantic codec operations.
-        /// </summary>
         public Dictionary<uint, GameRuntimeComponent> ApplyProjectedPatch(
             IReadOnlyDictionary<uint, GameRuntimeComponent> baseline,
             RuntimeObjectPatch patch,
@@ -669,9 +657,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
                                 $"Semantic component {componentPatch.ComponentTypeId} cannot use payloadless AddPresence.");
                         }
 
-                        // Custom codecs may mutate their input. Clone only this
-                        // affected reliable component so detached validation
-                        // cannot mutate the live replica.
                         var semanticBaseline = componentPatch.Kind == ComponentPatchKind.Custom
                             && baselineComponent != null
                                 ? codec.Clone(baselineComponent)

@@ -19,12 +19,6 @@ using Object = UnityEngine.Object;
 
 namespace DingoGameObjectsCMS.Tests.Editor
 {
-    /// <summary>
-    /// Covers the session seal: every variant an authored placement asks for
-    /// becomes an entry of the immutable library lock, so a runtime object
-    /// materialized from that placement can take its catalog indices from the
-    /// session like any other asset.
-    /// </summary>
     public class GameAssetDerivedAssetRegistrarTests
     {
         private const string MODULE = "base";
@@ -131,9 +125,6 @@ namespace DingoGameObjectsCMS.Tests.Editor
         [Test]
         public void Build_RegistersVariantsIntroducedInsideADerivedAsset()
         {
-            // The level rewrites the unit's own placement of its weapon. That
-            // inner variant exists in no authored document — only in the
-            // composed one — so it is found by scanning the derived asset.
             var assetLock = BuildLock(
                 Weapon(maximum: 10),
                 Unit(maximum: 100, new DiscoveryFixture_GAC { Direct = Placement(WEAPON, Maximum(5)) }),
@@ -189,10 +180,6 @@ namespace DingoGameObjectsCMS.Tests.Editor
                 StringComparison.Ordinal);
         }
 
-        /// <summary>
-        /// The placement authored inside the asset the lock resolves for
-        /// <paramref name="owner"/>.
-        /// </summary>
         private static GameAssetInstance Placement(GameAssetKey owner, GameAssetLibraryLock assetLock)
         {
             GameAssetLibraryLockBuilder.TryResolve(owner, assetLock, out var resolved);
@@ -249,11 +236,6 @@ namespace DingoGameObjectsCMS.Tests.Editor
             return asset;
         }
 
-        /// <summary>
-        /// Writes the authored assets as a real mounted module and builds the
-        /// session lock from it, so the registration runs exactly where the
-        /// session seals rather than through a hand-assembled lock.
-        /// </summary>
         private GameAssetLibraryLock BuildLock(params GameAsset[] assets)
         {
             var moduleRoot = Path.Combine(_root, MODULE);

@@ -8,14 +8,6 @@ using DingoGameObjectsCMS.Stores;
 
 namespace DingoGameObjectsCMS.Mirror.Protocol
 {
-    /// <summary>
-    /// Validates spawns and patched semantic values on detached instances, then
-    /// commits them to the active RuntimeStore in one replication-suppressed
-    /// dirty batch. Untouched component references (including hot state) may be
-    /// shallow-preserved in the validation plan but are never committed. A
-    /// commit exception retires and hides the failed generation before the
-    /// receiver requests one rebaseline.
-    /// </summary>
     public class RuntimeReplicaDeltaTransaction
     {
         private readonly RuntimeProtocolContext _context;
@@ -67,10 +59,6 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             catch (Exception exception)
             {
                 LastFailure = exception;
-                // Decode and detached-plan validation failures must not hide a
-                // healthy active generation. Only a failure after mutation of
-                // the active store begins makes that generation unsafe to
-                // expose and requires retirement before rebaseline.
                 if (active != null && commitStarted)
                 {
                     active.AbortNetApply();

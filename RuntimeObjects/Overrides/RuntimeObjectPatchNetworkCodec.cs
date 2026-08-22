@@ -3,10 +3,6 @@ using System.Collections.Generic;
 
 namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
 {
-    /// <summary>
-    /// Protocol patch encoding. The session schema hash fixes the numeric id
-    /// table, therefore no CLR or authoring names travel on the wire.
-    /// </summary>
     public sealed class RuntimeObjectPatchNetworkCodec
     {
         public const uint FORMAT_MAGIC = 0x32504147;

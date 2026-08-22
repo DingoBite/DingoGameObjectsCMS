@@ -9,11 +9,6 @@ using UnityEngine.Scripting;
 
 namespace DingoGameObjectsCMS.AssetLibrary
 {
-    /// <summary>
-    /// Compact exact-asset identity within one immutable runtime session.
-    /// Zero is reserved as an invalid value. The value is never persistent
-    /// content identity; disk formats continue to store GameAsset keys.
-    /// </summary>
     [Serializable, Preserve]
     public readonly struct GameAssetIndex : IEquatable<GameAssetIndex>
     {
@@ -40,11 +35,6 @@ namespace DingoGameObjectsCMS.AssetLibrary
             GameAssetIndex right) => !left.Equals(right);
     }
 
-    /// <summary>
-    /// Compact versionless mod/type/key identity within one immutable runtime
-    /// session. Every exact version of one named asset receives the same value.
-    /// Zero is reserved as an invalid value.
-    /// </summary>
     [Serializable, Preserve]
     public readonly struct GameAssetIdentityIndex :
         IEquatable<GameAssetIdentityIndex>
@@ -92,11 +82,6 @@ namespace DingoGameObjectsCMS.AssetLibrary
         }
     }
 
-    /// <summary>
-    /// The single bidirectional numeric catalog owned by a sealed
-    /// GameAssetLibraryLock. Indices are deterministic only within the exact
-    /// immutable catalog that created them.
-    /// </summary>
     public class GameAssetSessionCatalog
     {
         private readonly GameAssetSessionCatalogEntry[] _entries;

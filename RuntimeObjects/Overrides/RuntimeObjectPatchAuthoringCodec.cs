@@ -13,11 +13,6 @@ using UnityEngine;
 
 namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
 {
-    /// <summary>
-    /// Converts between numeric-id/canonical-JSON authored patches and the
-    /// generated-binary patches consumed by runtime and network code.
-    /// Reflection is deliberately confined to this authoring/materialization path.
-    /// </summary>
     public sealed class RuntimeObjectPatchAuthoringCodec
     {
         private readonly RuntimePatchCodecRegistry _registry;

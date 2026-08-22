@@ -174,10 +174,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects.DotsState
         RuntimeReplayCheckpointReader reader)
         where T : unmanaged;
 
-    /// <summary>
-    /// Canonical field-wise value codec used at completed-tick checkpoint and
-    /// restore barriers. It is not a hot rollback or per-tick replay API.
-    /// </summary>
     public sealed class RuntimeDotsStateComponentCodec<T>
         where T : unmanaged
     {

@@ -54,12 +54,6 @@ namespace DingoGameObjectsCMS.Stores
 
         public static RuntimeStore Get(FixedString32Bytes key) => ResolveStore(key);
 
-        /// <summary>
-        /// Keeps existing store-backed presentation bound to its current
-        /// stores while an atomic restore prepares a replacement world.
-        /// Disposing the returned scope publishes the final active-store set
-        /// once, without exposing intermediate restore states.
-        /// </summary>
         public static IDisposable SuspendActiveStoreBindingNotifications()
         {
             _activeStoreBindingSuspensionDepth++;

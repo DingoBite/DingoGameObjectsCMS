@@ -38,11 +38,6 @@ namespace DingoGameObjectsCMS.AssetLibrary.Manifest
         }
     }
 
-    /// <summary>
-    /// Discovers physical resources from references serialized into GameAssets
-    /// listed by the mounted module manifest. Project code never supplies a
-    /// parallel file-name catalog.
-    /// </summary>
     public static class GameAssetModuleResourceDiscovery
     {
         public static IReadOnlyList<GameAssetResourceRef> CollectLocalResources(
@@ -95,8 +90,6 @@ namespace DingoGameObjectsCMS.AssetLibrary.Manifest
                         $"Module manifest asset '{assetResource}' is not classified as a GameAsset.");
                 }
 
-                // The composed document, not the authored one: a derived asset
-                // names its resources only through the base it overrides.
                 if (!package.TryGetComposedDocument(entry.Key, out var document))
                 {
                     throw new InvalidDataException(

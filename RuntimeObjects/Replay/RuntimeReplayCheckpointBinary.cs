@@ -124,12 +124,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
             WriteRawBytes(value);
         }
 
-        /// <summary>
-        /// Starts a length-prefixed payload that is written directly into this
-        /// writer. Complete it with <see cref="EndLengthPrefixedBlock"/>.
-        /// This avoids allocating one temporary byte array per component
-        /// record while preserving the existing binary wire layout.
-        /// </summary>
         public int BeginLengthPrefixedBlock()
         {
             var lengthOffset = Length;

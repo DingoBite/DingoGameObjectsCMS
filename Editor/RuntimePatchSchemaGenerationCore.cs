@@ -51,13 +51,6 @@ namespace DingoGameObjectsCMS.Editor
         public bool AnyOutputChanged => GeneratedCodeChanged;
     }
 
-    /// <summary>
-    /// Generic deterministic runtime patch generator. Its complete component
-    /// universe comes from the generated compiled RuntimeComponentTypeRegistry
-    /// manifest factory. Component ids come directly from that typed ledger;
-    /// field ids are emitted by the current typed codec layout. No string type
-    /// identity, tombstone ledger, or mutable JSON participates in generation.
-    /// </summary>
     public static class RuntimePatchSchemaGenerationCore
     {
         public static RuntimePatchSchemaGenerationResult GenerateAndWrite(

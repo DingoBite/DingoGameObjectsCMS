@@ -731,10 +731,6 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             {
                 if (projectionCommitted)
                     throw;
-                // Visibility is configuration owned by the game. Reject a bad
-                // proposed projection locally; do not mutate live shadow or
-                // membership, emit a protocol reject, or disconnect a healthy
-                // client session.
                 return new RuntimeInterestRefreshResult(
                     RuntimeInterestRefreshStatus.InvalidProjection,
                     detail: exception.Message);

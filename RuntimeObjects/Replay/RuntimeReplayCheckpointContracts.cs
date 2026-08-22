@@ -4,12 +4,6 @@ using Unity.Entities;
 
 namespace DingoGameObjectsCMS.RuntimeObjects.Replay
 {
-    /// <summary>
-    /// Explicit structural-change barrier shared by durable and network
-    /// checkpoint restore. Factory projection and store retirement both use
-    /// the EndSimulation ECB, so a restore coordinator must cross this
-    /// barrier before observing projected topology or completing publication.
-    /// </summary>
     public static class RuntimeCheckpointProjectionBarrier
     {
         public static void Playback(World world)
@@ -47,12 +41,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
         void Prevalidate(RuntimeReplayCheckpointReader reader);
     }
 
-    /// <summary>
-    /// Adds participant-specific state-schema identity to the checkpoint
-    /// section schema. Implement this when the binary section layout is
-    /// driven by a generated component/codec schema in addition to the
-    /// participant CLR type and section version.
-    /// </summary>
     public interface IRuntimeReplayCheckpointSchemaFingerprintContributor
     {
         void AppendCheckpointSchemaFingerprint(

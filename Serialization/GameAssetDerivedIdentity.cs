@@ -10,27 +10,12 @@ using UnityEngine;
 
 namespace DingoGameObjectsCMS.Serialization
 {
-    /// <summary>
-    /// Identity of an asset derived from a base plus a sparse override.
-    ///
-    /// It is content-derived rather than authored, so two sides that compose the
-    /// same base with the same override arrive at the same key and GUID without
-    /// communicating. That is what lets a placement carry its own variant and
-    /// still name a baseline the other side can resolve.
-    ///
-    /// The generated schema hash participates because the same override against
-    /// a different schema materializes into different components.
-    /// </summary>
     public static class GameAssetDerivedIdentity
     {
         public const int FORMAT_VERSION = 1;
         public const string KEY_SUFFIX_SEPARATOR = "#";
         public const int KEY_SUFFIX_LENGTH = 12;
 
-        /// <summary>
-        /// Derived key, kept inside the base module and type so the origin stays
-        /// readable: <c>tavern_mage#4f1c9a02b7d3</c>.
-        /// </summary>
         public static GameAssetKey CreateKey(
             in ResolvedGameAssetReference baseAsset,
             GameAssetOverrides overrides,
@@ -52,11 +37,6 @@ namespace DingoGameObjectsCMS.Serialization
             return Hash128.Parse(Fingerprint(baseAsset, overrides, schemaHash)[..32]);
         }
 
-        /// <summary>
-        /// True when the key was produced by <see cref="CreateKey"/>. Authored
-        /// keys never contain the separator, which the module path policy
-        /// rejects as a path segment.
-        /// </summary>
         public static bool IsDerived(in GameAssetKey key)
         {
             return key.Key != null && key.Key.Contains(KEY_SUFFIX_SEPARATOR, StringComparison.Ordinal);

@@ -4,11 +4,6 @@ using UnityEngine;
 
 namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
 {
-    /// <summary>
-    /// Shared deterministic operations used by generated patch codecs for
-    /// non-scalar values which cannot be delegated to CLR/Newtonsoft
-    /// reflection.
-    /// </summary>
     public static class RuntimePatchGeneratedValueCodec
     {
         public const int MAX_COLLECTION_ELEMENTS = 1_048_576;

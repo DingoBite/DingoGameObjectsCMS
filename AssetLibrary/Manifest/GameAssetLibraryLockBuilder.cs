@@ -87,8 +87,6 @@ namespace DingoGameObjectsCMS.AssetLibrary
                     gameAsset);
             }
 
-            // Last, because a placement may name its base by identity alone and
-            // the latest-version entries above are what resolves that.
             GameAssetDerivedAssetRegistrar.RegisterAuthoredOverrides(
                 assetLock,
                 templateCache,
@@ -168,9 +166,6 @@ namespace DingoGameObjectsCMS.AssetLibrary
                 var identity = kv.Key;
                 var entry = kv.Value;
 
-                // A derived asset has no document on disk to drift against: it
-                // is composed from a base that this same loop already checks,
-                // and its identity is a hash of that base plus the override.
                 if (GameAssetDerivedIdentity.IsDerived(entry.ResolvedKey))
                     continue;
 

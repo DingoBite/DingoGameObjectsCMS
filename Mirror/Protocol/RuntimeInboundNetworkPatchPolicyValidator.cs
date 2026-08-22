@@ -4,12 +4,6 @@ using DingoGameObjectsCMS.RuntimeObjects.Overrides;
 
 namespace DingoGameObjectsCMS.Mirror.Protocol
 {
-    /// <summary>
-    /// Fail-closed policy gate for patches received from protocol. This is
-    /// deliberately independent from patch decoding: the binary codec proves
-    /// shape and schema, while this gate proves that the patch kind belongs to
-    /// the component's declared replication lane.
-    /// </summary>
     public class RuntimeInboundNetworkPatchPolicyValidator
     {
         private readonly RuntimeReplicationPolicyRegistry _policies;

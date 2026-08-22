@@ -5,11 +5,6 @@ using DingoGameObjectsCMS.RuntimeObjects.Stores;
 
 namespace DingoGameObjectsCMS.Mirror.Protocol
 {
-    /// <summary>
-    /// Actual encoded wire streams. This is intentionally independent from
-    /// RuntimeReplicationDataClass because one reliable store envelope can
-    /// contain both structural operations and reliable field state.
-    /// </summary>
     public enum RuntimeNetworkStreamKind : byte
     {
         Baseline = 1,
@@ -194,8 +189,6 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
     public readonly struct RuntimeNetworkConnectionMetrics
     {
         public readonly int ConnectionId;
-        // Current outgoing projection and last ACKed membership are separate
-        // snapshots. During a pending leave either count may be larger.
         public readonly int ProjectedObjects;
         public readonly int AcknowledgedObjects;
 

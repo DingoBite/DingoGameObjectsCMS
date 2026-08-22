@@ -13,10 +13,6 @@ using UnityEngine.Scripting;
 
 namespace DingoGameObjectsCMS.AssetLibrary.Manifest
 {
-    /// <summary>
-    /// One immutable file captured while a module session snapshot is built.
-    /// Runtime consumers read the captured bytes, never the mutable source path.
-    /// </summary>
     [Serializable, Preserve]
     public sealed class GameAssetModuleContentFile
     {
@@ -82,11 +78,6 @@ namespace DingoGameObjectsCMS.AssetLibrary.Manifest
         }
     }
 
-    /// <summary>
-    /// Immutable session-owned module revision calculated from the actual
-    /// AppData files. The source root is diagnostic only after construction;
-    /// all reads are served from captured bytes.
-    /// </summary>
     public sealed class GameAssetModuleContentSnapshot
     {
         private readonly Dictionary<string, GameAssetModuleContentFile> _files;
@@ -100,13 +91,6 @@ namespace DingoGameObjectsCMS.AssetLibrary.Manifest
         public IReadOnlyList<ModDependency> DependsOn { get; }
         public string ContentHash { get; }
 
-        /// <summary>
-        /// Hash over this module's assets as they are on disk right now. A
-        /// dependent module pins this value; the manifest merely publishes it so
-        /// an author has something to copy. Deliberately recomputed rather than
-        /// read back from the manifest, so editing an asset outside the CMS is
-        /// caught by whoever depends on it instead of by the module itself.
-        /// </summary>
         public string AssetContentHash { get; }
 
         public GameAssetModuleContentSnapshot(
@@ -216,10 +200,6 @@ namespace DingoGameObjectsCMS.AssetLibrary.Manifest
         }
     }
 
-    /// <summary>
-    /// Builds a deterministic content snapshot directly from a module folder.
-    /// A cold session always scans current AppData files.
-    /// </summary>
     public static class GameAssetModuleContentScanner
     {
         private const int CONTENT_HASH_FORMAT_VERSION = 1;
@@ -237,8 +217,6 @@ namespace DingoGameObjectsCMS.AssetLibrary.Manifest
             expectedModuleId = RequireCanonicalModuleId(expectedModuleId);
             var exclusions = BuildExclusions(excludedRelativePaths);
 
-            // Capture twice. This keeps startup I/O outside the tick loop while
-            // rejecting a module that is being modified during session boot.
             var firstCapture = CaptureFiles(root, exclusions);
             var files = CaptureFiles(root, exclusions);
             if (!HaveIdenticalContent(firstCapture, files))
@@ -640,11 +618,6 @@ namespace DingoGameObjectsCMS.AssetLibrary.Manifest
             return manifest;
         }
 
-        /// <summary>
-        /// Hash over the module's assets only. It excludes manifest.json and
-        /// dependency.json, so a module can publish it inside its own manifest
-        /// without the value feeding back into itself.
-        /// </summary>
         public static string CalculateAssetContentHash(
             string moduleId,
             ModManifest manifest,
@@ -666,8 +639,6 @@ namespace DingoGameObjectsCMS.AssetLibrary.Manifest
                     writer.Write(entry.RelativeJsonPath);
                     writer.Write(entry.Key.ToString());
                     writer.Write(entry.GUID.ToString());
-                    // A missing file is a manifest error that its own validation
-                    // reports; this hash stays total so it never pre-empts it.
                     writer.Write(
                         filesByPath.TryGetValue(entry.RelativeJsonPath, out var file)
                             ? file.Sha256

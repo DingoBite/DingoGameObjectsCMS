@@ -17,7 +17,7 @@ namespace DingoGameObjectsCMS.Examples.Profiles.StateElements
         [SerializeField] private EventContainer _delete;
         [SerializeField] private ValueContainer<bool> _active;
 
-        private ProfilesModel Model => new ProfilesModel(); // TODO Take your model
+        private ProfilesModel Model => new ProfilesModel();
 
         protected override void OnGRODestroy(GameRuntimeObject value)
         {

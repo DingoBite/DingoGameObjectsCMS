@@ -393,14 +393,6 @@ namespace DingoGameObjectsCMS.Stores
             return store;
         }
 
-        /// <summary>
-        /// Assigns the authoritative generation and its stable local epoch to
-        /// a client staging store without exposing it through the registry.
-        /// Rebaselining the same authoritative generation must preserve the
-        /// epoch: RuntimeInstance values held by other active replica stores
-        /// remain valid across the atomic store replacement. A new generation
-        /// is the only operation that advances the local epoch.
-        /// </summary>
         public static void PrepareReplicaStore(RuntimeStore store, uint authoritativeGeneration)
         {
             if (store == null)
@@ -598,11 +590,6 @@ namespace DingoGameObjectsCMS.Stores
                 Array.AsReadOnly(published)));
         }
 
-        /// <summary>
-        /// Atomically swaps a completely validated/prepared replica generation
-        /// into the observable registry. Rebaseline of the same authoritative
-        /// generation preserves its local epoch.
-        /// </summary>
         public static RuntimeStore PublishPreparedReplicaStore(RuntimeStore store, StoreNetDir dir = StoreNetDir.S2C)
         {
             if (store == null)
@@ -647,12 +634,6 @@ namespace DingoGameObjectsCMS.Stores
             return store;
         }
 
-        /// <summary>
-        /// Publishes a complete set of prepared replica stores as one registry
-        /// swap. Every store is validated before any active dictionary or bind
-        /// is changed; lifecycle notifications are emitted only after the full
-        /// set is visible.
-        /// </summary>
         public static void PublishPreparedReplicaStores(
             IReadOnlyList<RuntimeStore> stores,
             StoreNetDir dir = StoreNetDir.S2C)

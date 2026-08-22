@@ -108,11 +108,6 @@ namespace DingoGameObjectsCMS.Editor
         private static string NormalizePath(string path) => path.Replace('\\', '/');
     }
 
-    /// <summary>
-    /// Generates one deterministic player-content fingerprint shared by the
-    /// client and dedicated-server builds produced from the same checkout.
-    /// Runtime code never derives protocol identity from a mutable filesystem.
-    /// </summary>
     public static class RuntimeBuildFingerprintGenerationCore
     {
         private static readonly string[] TransientPerformanceTestResources =
@@ -126,11 +121,6 @@ namespace DingoGameObjectsCMS.Editor
             return GenerateAndWrite(profile, out _);
         }
 
-        /// <summary>
-        /// Reports the fingerprint it computed alongside whether the generated
-        /// source changed, so a caller can name the new value without walking
-        /// the whole player content a second time.
-        /// </summary>
         public static bool GenerateAndWrite(
             RuntimeBuildFingerprintGenerationProfile profile,
             out string value)
@@ -386,9 +376,6 @@ namespace DingoGameObjectsCMS.Editor
 
         private static bool IsTransientBuildInput(string relativePath)
         {
-            // The Performance Testing package creates these in its build
-            // preprocessor and deletes them in postprocess. They describe the
-            // current test invocation, not immutable player content.
             for (var i = 0; i < TransientPerformanceTestResources.Length; i++)
             {
                 var resourcePath = TransientPerformanceTestResources[i];
@@ -438,10 +425,6 @@ namespace DingoGameObjectsCMS.Editor
 
         private static string CanonicalizeUnityAssetYaml(string text)
         {
-            // URP serializes two caches into authored assets while a player is
-            // being built. Their values depend on the current client/server
-            // subtarget, so they are neither authored content nor a stable
-            // protocol identity input.
             var containsUrpPrefilterCache = text.IndexOf(
                 "m_PrefilteringModeMainLightShadows:",
                 StringComparison.Ordinal) >= 0;

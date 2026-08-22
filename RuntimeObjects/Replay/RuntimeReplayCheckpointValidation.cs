@@ -6,10 +6,6 @@ using DingoGameObjectsCMS.RuntimeObjects.Stores;
 
 namespace DingoGameObjectsCMS.RuntimeObjects.Replay
 {
-    /// <summary>
-    /// Optional first phase for checkpoint participants that publish immutable
-    /// facts derived from one section for validation by other sections.
-    /// </summary>
     public interface IRuntimeReplayCheckpointValidationContextContributor
     {
         void ContributeValidationContext(
@@ -17,11 +13,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
             RuntimeReplayCheckpointValidationContext context);
     }
 
-    /// <summary>
-    /// Optional second validation phase. It runs only after every section has
-    /// passed its normal prevalidation and every contributor has published its
-    /// immutable validation facts.
-    /// </summary>
     public interface IRuntimeReplayCheckpointContextPrevalidator
     {
         void Prevalidate(

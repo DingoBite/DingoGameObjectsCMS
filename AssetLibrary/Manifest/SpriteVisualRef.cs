@@ -3,10 +3,6 @@ using UnityEngine.Scripting;
 
 namespace DingoGameObjectsCMS.AssetLibrary.Manifest
 {
-    /// <summary>
-    /// A domain-owned visual choice. The physical sprite, preset tag and
-    /// optional sparse exception travel together on the owning GameAsset.
-    /// </summary>
     [Serializable, Preserve]
     public struct SpriteVisualRef : IEquatable<SpriteVisualRef>
     {

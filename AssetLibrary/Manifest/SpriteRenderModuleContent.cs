@@ -22,9 +22,6 @@ namespace DingoGameObjectsCMS.AssetLibrary.Manifest
         }
     }
 
-    /// <summary>
-    /// Validated module-level sprite preset catalog plus sparse recipe exceptions.
-    /// </summary>
     public class SpriteRenderModuleContent
     {
         private readonly ModPackage _package;

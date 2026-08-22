@@ -8,11 +8,6 @@ using DingoGameObjectsCMS.Stores;
 
 namespace DingoGameObjectsCMS.Mirror.Protocol
 {
-    /// <summary>
-    /// Reusable default-visible live-interest policy. Exact
-    /// connection/store/object overrides are refreshed through a
-    /// revision-neutral protocol membership envelope.
-    /// </summary>
     public sealed class RuntimeVisibilityOverrides : IDisposable
     {
         private readonly DingoNetworkManager _networkManager;

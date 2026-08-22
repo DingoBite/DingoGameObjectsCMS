@@ -193,12 +193,6 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
 #endif
     }
 
-    /// <summary>
-    /// Per-session, per-store reliable receive state. The baseline apply delegate
-    /// and delta apply delegates must provide atomic commit semantics: false means
-    /// that no replica state was published. Deltas are never invoked before a
-    /// successful baseline apply.
-    /// </summary>
     public class RuntimeClientLogicalEnvelopeReceiver
     {
         public const double DEFAULT_GAP_TIMEOUT_SECONDS = 2d;
@@ -301,9 +295,6 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                 && chunk.BaselineId == _currentBaselineId
                 && _appliedBaselineId != _currentBaselineId)
             {
-                // A corrupt/timed-out transfer may be retransmitted with the
-                // same logical baseline id. Resetting the assembler is safe:
-                // no state from this baseline has been published yet.
                 BeginSupersedingBaseline(chunk, nowSeconds);
             }
 
@@ -609,9 +600,6 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
 
             _resyncRequested = true;
             _baselineAssembler.Reset();
-            // A pure reliable-sequence gap can be repaired by retransmitting
-            // the one missing envelope. Preserve already buffered later
-            // envelopes so they drain immediately after that recovery.
             if (reason != RuntimeClientResyncReason.DeltaGapTimedOut)
                 ClearPendingDeltas();
             ulong expectedSequence;

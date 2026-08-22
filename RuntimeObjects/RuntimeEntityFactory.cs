@@ -124,11 +124,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects
             return entity;
         }
 
-        /// <summary>
-        /// Creates an identified product from its final archetype. The
-        /// archetype must contain <see cref="RuntimeEntityFactoryOwner"/> and
-        /// <see cref="RuntimeEntityFactoryProductIdentity"/>.
-        /// </summary>
         public static Entity CreateOwnedEntity(
             this EntityCommandBuffer ecb,
             Entity factoryRoot,
@@ -153,12 +148,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects
             return entity;
         }
 
-        /// <summary>
-        /// Instantiates an identified product from a fully projected ECS
-        /// prefab. The prefab must contain
-        /// <see cref="RuntimeEntityFactoryOwner"/> and
-        /// <see cref="RuntimeEntityFactoryProductIdentity"/>.
-        /// </summary>
         public static Entity InstantiateOwnedEntity(
             this EntityCommandBuffer ecb,
             Entity factoryRoot,

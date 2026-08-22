@@ -19,9 +19,6 @@ namespace DingoGameObjectsCMS.View
                 return true;
             }
 
-            // Fast Script Reload and prefab reimport can preserve the cache flags while
-            // replacing the palette components. A requested view that exists on the
-            // current prefab is authoritative evidence that the retained cache is stale.
             if (!ContainsComponentView(componentTypeId))
             {
                 return false;

@@ -233,11 +233,6 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
         }
     }
 
-    /// <summary>
-    /// Owns the delivery sequence for one connection/store/profile stream.
-    /// Rebaseline replaces projection state, but keeps this cursor while the
-    /// same connection and NetStoreRef remain alive.
-    /// </summary>
     public sealed class RuntimeStateStreamSequenceCursor
     {
         public readonly NetStoreRef Store;

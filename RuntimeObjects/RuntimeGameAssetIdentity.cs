@@ -6,11 +6,6 @@ using UnityEngine.Scripting;
 
 namespace DingoGameObjectsCMS.RuntimeObjects
 {
-    /// <summary>
-    /// Reconstructable session-local asset identity projected only onto the
-    /// ECS root of a locked GA-backed GRO. Factory products reach it through
-    /// RuntimeEntityFactoryOwner instead of copying it into every product.
-    /// </summary>
     [RuntimeDotsDerived]
     [Serializable, Preserve]
     public struct RuntimeGameAssetIdentity :

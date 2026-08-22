@@ -24,36 +24,15 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
         RuntimeStore store,
         long objectId);
 
-    /// <summary>
-    /// Returns a recovery boundary only while every checkpoint-scoped
-    /// RuntimeStore still has the revision captured by that checkpoint and
-    /// the journal recovery window is retained. Pass
-    /// <see cref="RuntimeDotsCheckpointCoordinator.ProvideRecoveryBoundary"/>
-    /// rather than exposing <c>CurrentBoundary</c> directly.
-    /// </summary>
     public delegate RuntimeCheckpointBoundary?
         RuntimeCheckpointBoundaryProvider();
     public delegate RuntimeRecoveryCheckpoint
         RuntimeRecoveryCheckpointProvider();
 
-    /// <summary>
-    /// Transaction prepared by project checkpoint restore while replica
-    /// RuntimeStores are still staged. Commit is called only after grouped
-    /// store publication and retirement playback. Dispose without Commit must
-    /// restore any shared live state changed during preparation.
-    /// </summary>
     public interface IRuntimeCheckpointStageRestoreTransaction : IDisposable
     {
-        /// <summary>
-        /// Performs every validation and preparation step that can fail.
-        /// The protocol invokes this while RuntimeStores are still staged.
-        /// </summary>
         void PrepareCommit();
 
-        /// <summary>
-        /// Applies only prevalidated, non-throwing state swaps. Implementations
-        /// must not invoke untrusted callbacks from this method.
-        /// </summary>
         void Commit();
     }
 
@@ -64,12 +43,6 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
         IReadOnlyList<RuntimeStore> stagedStores);
     public delegate void RuntimeJournalCatchupCompletion(World world);
 
-    /// <summary>
-    /// Immutable game-supplied composition boundary for protocol. The
-    /// transport never reflects over game assemblies and never creates a store
-    /// through GetOrAdd; every store is resolved by the exact immutable
-    /// manifest generation.
-    /// </summary>
     public class RuntimeProtocolContext
     {
         public readonly RuntimeSessionManifestTemplate ManifestTemplate;

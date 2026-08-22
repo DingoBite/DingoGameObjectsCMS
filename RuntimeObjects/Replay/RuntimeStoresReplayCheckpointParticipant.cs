@@ -262,13 +262,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
             return PrepareStage(snapshot);
         }
 
-        /// <summary>
-        /// Materializes a validated RuntimeStore checkpoint into an
-        /// unpublished stage. Hybrid hosts can bind dependent DOTS state to
-        /// the staged factory projections, prevalidate and restore that state,
-        /// and publish the whole store group only after every dependent
-        /// section succeeds.
-        /// </summary>
         public RuntimeStoresReplayCheckpointStage PrepareRestoreStage(
             RuntimeReplayCheckpointReader reader)
         {

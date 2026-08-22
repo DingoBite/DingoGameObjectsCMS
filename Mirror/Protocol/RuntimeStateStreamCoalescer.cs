@@ -146,11 +146,6 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             return RuntimeStateStreamSubmitResult.Accepted;
         }
 
-        /// <summary>
-        /// Requests an authoritative complete-set cycle at the next send slot.
-        /// Large snapshots are segmented; normal pending samples wait until the
-        /// immutable Begin..End cycle has been emitted.
-        /// </summary>
         public void RequestKeyframe()
         {
             _keyframeRequested = true;
@@ -402,9 +397,6 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                         entry.StopFramesRemaining--;
                 }
             }
-            // The first delivery sequence is also the cycle identity. The
-            // cursor survives rebaseline, so a replacement encoder cannot
-            // accidentally reuse the id of an incomplete receiver buffer.
             _activeReconciliationId = RuntimeStateStreamSequence.Next(_sequenceCursor.LastSequence);
             _activeReconciliationTick = simulationTick;
             _reconciliationOffset = 0;
@@ -412,9 +404,6 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
 
         private bool CanContinueReconciliation(Func<RuntimeStateStreamKey, bool> isEligible)
         {
-            // Recheck the complete immutable set, including fragments that
-            // were already emitted. If one key left interest, finishing the
-            // old cycle would make its buffered prefix visible at End.
             for (var i = 0; i < _reconciliationSamples.Count; i++)
             {
                 var key = _reconciliationSamples[i].Sample.Key;
@@ -430,10 +419,6 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
 
         private void AbortReconciliation()
         {
-            // No End was emitted, so the receiver cannot have observed any
-            // snapshot value. Restore unchanged entries as pending and roll
-            // back snapshot-only stop/heartbeat accounting. A newer Submit or
-            // Despawn owns its own counters and remains untouched.
             for (var i = 0; i < _reconciliationSamples.Count; i++)
             {
                 var snapshot = _reconciliationSamples[i];
@@ -476,9 +461,6 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                     segmentBytes = headerSize;
                 }
 
-                // BeginReconciliation already validates that every individual
-                // sample fits. Keep the invariant local to this exact packing
-                // preflight so future callers cannot accidentally diverge.
                 if (segmentBytes + sampleBytes > maxPayloadBytes)
                 {
                     throw new InvalidOperationException(

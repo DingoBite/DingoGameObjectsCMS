@@ -13,11 +13,6 @@ namespace DingoGameObjectsCMS.AssetObjects
     {
         [SerializeReference, SubclassSelector, JsonProperty("Components", ItemTypeNameHandling = TypeNameHandling.Auto)] private List<GameAssetComponent> _components;
 
-        /// <summary>
-        /// Source/presentation linkage: the GameAsset this one represents. It is
-        /// not lineage and not the baseline identity; use <see cref="Prefab"/>
-        /// for inheritance.
-        /// </summary>
         public GameAssetKey SourceAssetKey;
 
         public GameAssetPrefab Prefab;
@@ -99,11 +94,6 @@ namespace DingoGameObjectsCMS.AssetObjects
             }
         }
 
-        /// <summary>
-        /// Components in materialization order. OrderBy is a stable sort, so
-        /// components sharing a <see cref="GameAssetSetupOrderAttribute"/> order
-        /// keep their authored order.
-        /// </summary>
         public IEnumerable<GameAssetComponent> SetupOrdered()
         {
             return _components.OrderBy(GameAssetSetupOrderUtils.GetOrder);

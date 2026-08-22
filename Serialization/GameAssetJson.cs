@@ -49,8 +49,6 @@ namespace DingoGameObjectsCMS.Serialization
         private static void ConfigureBaseSettings(JsonSerializerSettings settings)
         {
             settings.ReferenceLoopHandling = ReferenceLoopHandling.Ignore;
-            // An unset optional member is absent from the document rather than
-            // an explicit null, so adding one does not rewrite every asset.
             settings.NullValueHandling = NullValueHandling.Ignore;
             settings.MetadataPropertyHandling = MetadataPropertyHandling.ReadAhead;
             settings.ObjectCreationHandling = ObjectCreationHandling.Replace;

@@ -32,11 +32,6 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
         }
     }
 
-    /// <summary>
-    /// Source-agnostic typed hot-state collector. ECS systems, a RuntimeStore
-    /// bridge or another simulation source publish complete typed samples.
-    /// The collector never computes semantic field/component diffs.
-    /// </summary>
     public class RuntimeStateStreamCollector<TSample>
     {
         private readonly RuntimeStateStreamProfile<TSample> _profile;
@@ -121,11 +116,6 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                 Array.AsReadOnly(removed.ToArray()));
         }
 
-        /// <summary>
-        /// Captures the complete current stream state without historical
-        /// tombstones. A connection uses this after baseline/rebaseline because
-        /// hot state is deliberately absent from the reliable baseline.
-        /// </summary>
         public RuntimeStateStreamCollectorSnapshot<TSample> TakeCurrentSnapshot()
         {
             var samples = new List<TSample>(_latest.Count);

@@ -5,10 +5,6 @@ using UnityEngine;
 
 namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
 {
-    /// <summary>
-    /// Authoring/save representation of RuntimeInstance. It stores stable
-    /// StoreId + object GUID and reconstructs the process-local id/epoch.
-    /// </summary>
     public sealed class RuntimePersistentPatchCodecContext : RuntimePatchCodecContext
     {
         private readonly Func<RuntimeInstance, RuntimePatchObjectReference> _encode;

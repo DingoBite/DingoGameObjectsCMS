@@ -475,10 +475,6 @@ namespace DingoGameObjectsCMS.AssetLibrary
                     mod,
                     priority: 0,
                     order,
-                    // Installed mods are discovered before the runtime lock is
-                    // sealed. Include them in that immutable session snapshot
-                    // so gameplay assets from external modules can be resolved
-                    // deterministically for the lifetime of the session.
                     isSessionBaseline: true));
                 order++;
             }
@@ -486,12 +482,6 @@ namespace DingoGameObjectsCMS.AssetLibrary
             return result;
         }
 
-        /// <summary>
-        /// A prefab base may live in another module, so every package resolves
-        /// base documents across the mounted set — but only inside itself and
-        /// the modules its dependency.json declares. This runs once the set is
-        /// complete and before any asset is deserialized.
-        /// </summary>
         private static void BindMountedDocumentResolvers(List<ModPackage> packages)
         {
             var mounted = packages.ToArray();
@@ -547,10 +537,6 @@ namespace DingoGameObjectsCMS.AssetLibrary
                     return;
                 }
 
-                // Authoring edits content between dependency updates all the
-                // time, so in the editor a stale pin is a prompt to re-run the
-                // dependency update, not a dead session. A build has no such
-                // opportunity and must not run on unpinned content.
                 var message =
                     $"GameAsset module '{owner.ModuleId}' pins '{key.Mod}' at '{declared.ContentHash}' but the mounted module publishes '{published}'.";
                 if (!Application.isEditor)

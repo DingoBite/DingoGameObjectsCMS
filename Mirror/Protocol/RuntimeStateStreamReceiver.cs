@@ -39,11 +39,6 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
         }
     }
 
-    /// <summary>
-    /// Typed receiver shared by GRO-backed and ECS-only streams. Ordinary
-    /// frames are applied atomically one by one. Segmented reconciliation is
-    /// buffered by contiguous sequence and becomes visible only at End.
-    /// </summary>
     public class RuntimeStateStreamReceiver<TSample>
     {
         public const double INTERPOLATION_DELAY_SECONDS = RuntimeStateStreamProtocol.INTERPOLATION_DELAY_SECONDS;
@@ -137,12 +132,6 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             return RuntimeStateStreamFrameAcceptResult.Accepted;
         }
 
-        /// <summary>
-        /// Applies one atomic despawn batch when an ephemeral stream has stopped
-        /// producing frames for the configured stale timeout. Returns true when
-        /// the apply callback was invoked. A rejected callback keeps the tracked
-        /// keys so the caller can retry expiration.
-        /// </summary>
         public bool TryExpireStale(
             NetStoreRef store,
             double localSimulationTimeSeconds,
@@ -299,9 +288,6 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                 reconciledDespawns.AsReadOnly());
             if (applyResult != RuntimeStateStreamFrameAcceptResult.Accepted)
             {
-                // A one-frame reconciliation has no committed prefix to keep.
-                // Drop its provisional buffer so the exact uncommitted frame
-                // can be retried. Multipart End retries retain their prefix.
                 if (frame.StartsReconciliation)
                     _reconciliationByStore.Remove(frame.Store);
                 return applyResult;

@@ -52,12 +52,6 @@ namespace DingoGameObjectsCMS.Editor
         public bool GeneratedCodeChanged;
     }
 
-    /// <summary>
-    /// Generic GRC registry code generation. The previous generated static
-    /// manifest is the reconciliation ledger. Active identity is the direct
-    /// CLR Type; removed slots retain only their numeric ids. No string type
-    /// lookup or StreamingAssets JSON participates in generation or runtime.
-    /// </summary>
     public static class RuntimeComponentTypeManifestGenerator
     {
         public static RuntimeComponentTypeGenerationResult GenerateAndWrite(

@@ -39,19 +39,8 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
         public Hash128 InstanceGuid;
         public GameAssetReference Asset;
 
-        /// <summary>
-        /// Authored sparse override of <see cref="Asset"/>, in the same document
-        /// vocabulary a prefab uses. A placement carrying one resolves to a
-        /// derived asset instead of the referenced one, which is how a one-off
-        /// variant stays inside the level that needs it.
-        /// </summary>
         public GameAssetOverrides Overrides;
 
-        /// <summary>
-        /// Runtime-binary override carried by the replication lane. This is not
-        /// authored content: authored overrides go through
-        /// <see cref="Overrides"/>.
-        /// </summary>
         [SerializeReference]
         public RuntimeObjectPatch Patch;
 
@@ -116,11 +105,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
         Remove = 2,
         Fields = 3,
         Custom = 4,
-        /// <summary>
-        /// Adds only component presence. The receiver creates the component
-        /// with its default value; semantic state must arrive through the
-        /// component's typed hot-state stream.
-        /// </summary>
         AddPresence = 5,
     }
 

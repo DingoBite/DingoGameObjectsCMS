@@ -5,10 +5,6 @@ using DingoGameObjectsCMS.Stores;
 
 namespace DingoGameObjectsCMS.Mirror.Protocol
 {
-    /// <summary>
-    /// Protocol RuntimeInstance codec. Epoch is always reconstructed from
-    /// local state and is never written to the network payload.
-    /// </summary>
     public sealed class RuntimeNetworkPatchCodecContext : RuntimePatchCodecContext
     {
         private readonly Func<RuntimeInstance, NetObjectRef> _encode;

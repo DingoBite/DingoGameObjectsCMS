@@ -215,12 +215,6 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             return RuntimeConnectionDeltaEnqueueResult.Enqueued;
         }
 
-        /// <summary>
-        /// Enqueues a reliable membership/topology projection without creating
-        /// an authoritative store revision. The envelope may cover filtered
-        /// revisions already observed by this connection, or use an equal
-        /// from/to revision when only interest changed.
-        /// </summary>
         public RuntimeConnectionDeltaEnqueueResult TryEnqueueInterestDelta(
             byte[] payload,
             IReadOnlyList<NetObjectRef> enters,
@@ -266,12 +260,6 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             return RuntimeConnectionDeltaEnqueueResult.Enqueued;
         }
 
-        /// <summary>
-        /// Advances the observed authoritative revision when filtering produced
-        /// no logical envelope. The next non-empty envelope starts at
-        /// <see cref="ProjectedRevision"/> and therefore covers the complete
-        /// skipped revision range without emitting empty network messages.
-        /// </summary>
         public void ObserveFilteredRevision(ulong storeRevision)
         {
             if (StoreRevision == ulong.MaxValue || storeRevision != StoreRevision + 1)

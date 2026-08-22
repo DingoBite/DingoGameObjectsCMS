@@ -103,11 +103,6 @@ namespace DingoGameObjectsCMS.Mirror
             {
                 if (RtServer == null || RtServer.IsSessionInvalidated)
                 {
-                    // Required-store lifecycle changes invalidate the frozen
-                    // manifest for every current connection. The process can
-                    // accept a later session once game code has recreated the
-                    // required stores: compose a fresh immutable manifest and
-                    // transport endpoint before this connection sends Hello.
                     ReplaceServerEndpoint();
                     NotifyRuntimeRoleChanged();
                 }
@@ -143,9 +138,6 @@ namespace DingoGameObjectsCMS.Mirror
 
         public override void OnServerReady(NetworkConnectionToClient connection)
         {
-            // Protocol readiness is RtSessionReady, not Mirror's scene-ready
-            // callback. Baselines are sent only after the strict manifest is
-            // accepted by this specific connection.
             base.OnServerReady(connection);
         }
 
@@ -188,9 +180,6 @@ namespace DingoGameObjectsCMS.Mirror
 
         private void ReplaceServerEndpoint()
         {
-            // Compose first. If a required store has been removed but not yet
-            // recreated, the current invalid endpoint remains available only
-            // to finish disconnect callbacks and a later connection retries.
             var context = RequireContext(StoreRealm.Server);
             DisposeServerEndpoint();
             UnregisterServerHandlers();
@@ -205,8 +194,6 @@ namespace DingoGameObjectsCMS.Mirror
             if (server == null)
                 return;
 
-            // Dispose while forwarding ConnectionRemoved so game-owned
-            // ownership and motion state are released for every old session.
             server.Dispose();
             server.ConnectionReady -= OnProtocolConnectionReady;
             server.ConnectionRemoved -= OnProtocolConnectionRemoved;

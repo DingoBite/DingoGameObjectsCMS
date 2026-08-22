@@ -322,13 +322,6 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                 desiredIds.Add(topology.Nodes[i].ObjectId);
             }
 
-            // Membership changes can invalidate RuntimeInstance fields on an
-            // otherwise non-dirty surviving object (for example A still
-            // points at B while B leaves interest). Validate every surviving
-            // reliable component against the new projection before touching
-            // the connection shadow. An escaping reference is a projection
-            // configuration error and must never become a silent stale client
-            // reference.
             if (!desiredIds.SetEquals(shadow.ObjectIds))
                 ValidateReliableReferences(store, topology, patchEngine);
 
@@ -486,9 +479,6 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                 desiredIds.Add(topology.Nodes[i].ObjectId);
             }
 
-            // Validate the complete proposed projection before mutating even
-            // this staged shadow. A surviving reliable component may still
-            // reference an object that is about to leave interest.
             ValidateReliableReferences(store, topology, patchEngine);
 
             var leavingNodes = new List<(long Id, RuntimeConnectionObjectShadow Shadow)>();
@@ -519,8 +509,6 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                 shadow.Remove(objectId);
             }
 
-            // The topology is parent-first, so newly visible objects are
-            // spawned in an immediately applicable order.
             for (var i = 0; i < topology.Nodes.Count; i++)
             {
                 var node = topology.Nodes[i];
@@ -733,9 +721,6 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                 if (!store.TryTakeRO(objectId, out var runtimeObject))
                     throw new InvalidOperationException($"Projected object {objectId} disappeared during reference validation.");
 
-                // Building Add patches serializes each complete reliable
-                // component through the restricted network codec context.
-                // The patch itself is intentionally discarded.
                 patchEngine.BuildPatch(empty, SnapshotReliableComponents(runtimeObject));
             }
         }

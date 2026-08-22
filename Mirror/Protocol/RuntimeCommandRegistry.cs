@@ -206,8 +206,6 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             if (envelope.ClientSequence != expectedSequence)
                 return Reject(envelope, RuntimeCommandRejectCode.InvalidSequence);
 
-            // Once a sequence is syntactically accepted it is consumed even if validation fails.
-            // This prevents replaying an expensive invalid command indefinitely.
             _lastSequenceByConnection[authority.SenderConnectionId] = envelope.ClientSequence;
 
             if (!_registrations.TryGetValue(envelope.CommandTypeId, out var registration))

@@ -19,7 +19,7 @@ namespace DingoGameObjectsCMS.Examples.Profiles.StateElements
 
         private RuntimeStore _store;
 
-        private ProfilesModel Model => new ProfilesModel(); // TODO Take your model
+        private ProfilesModel Model => new ProfilesModel();
 
         private void OnStoreChanged(RuntimeStore store)
         {

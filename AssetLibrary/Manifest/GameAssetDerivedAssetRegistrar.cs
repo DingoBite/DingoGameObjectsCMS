@@ -11,35 +11,8 @@ using UnityEngine;
 
 namespace DingoGameObjectsCMS.AssetLibrary
 {
-    /// <summary>
-    /// Registers the variant every authored placement override asks for as a
-    /// first-class asset of the session.
-    ///
-    /// A placement carrying overrides resolves to a derived asset instead of the
-    /// one it references, and a materialized runtime object reads its catalog
-    /// indices out of the library lock — so a derived asset has to be a lock
-    /// entry, not only a template cache registration. This runs while the lock
-    /// is still mutable, immediately before it is sealed.
-    ///
-    /// Composition happens on the document, exactly like a named prefab does:
-    /// the resolved base is written back to its document, the sparse override is
-    /// applied to it, and the result is deserialized as an ordinary complete
-    /// GameAsset carrying the derived identity. Nothing downstream can tell it
-    /// from a hand duplicated asset.
-    /// </summary>
     public static class GameAssetDerivedAssetRegistrar
     {
-        /// <summary>
-        /// Composes and registers every derived asset the mounted content can
-        /// reach, and returns their exact keys in registration order.
-        ///
-        /// A derived asset is authored content too, so it is scanned in turn: an
-        /// override may change a placement that itself carries overrides, and
-        /// that inner variant exists only inside the composed document. The walk
-        /// closes because identity is content-derived — a placement that the
-        /// composition left alone lands back on the derived asset already
-        /// registered, and the queue drops it.
-        /// </summary>
         public static IReadOnlyList<GameAssetKey> RegisterAuthoredOverrides(
             GameAssetLibraryLock assetLock,
             GameAssetTemplateCache templateCache,
@@ -147,9 +120,6 @@ namespace DingoGameObjectsCMS.AssetLibrary
                 JObject.FromObject(key, GameAssetJson.JsonSerializer);
             document[GameAssetDocumentComposer.GUID_PROPERTY] = guid.ToString();
 
-            // Lineage belongs to the base document alone. Keeping it would let a
-            // later composition re-derive this asset from its own base with the
-            // overrides already applied.
             document.Remove(GameAssetDocumentComposer.PREFAB_PROPERTY);
 
             GameAssetScriptableObject composed;

@@ -196,12 +196,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Objects
             SetupEntityProjection(_runtimeStore, ecb, _entity);
         }
 
-        /// <summary>
-        /// Projects this GRO's complete component composition onto an ECS
-        /// entity owned by another runtime object's topology or pool.
-        /// The owning factory creates the entity and controls its lifetime;
-        /// this GRO remains the sole authority for the product signature.
-        /// </summary>
         public void SetupEntityProjection(
             RuntimeStore store,
             EntityCommandBuffer ecb,

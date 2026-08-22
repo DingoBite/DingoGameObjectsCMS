@@ -2,27 +2,15 @@ using System;
 
 namespace DingoGameObjectsCMS.RuntimeObjects
 {
-    /// <summary>
-    /// Canonical stable hashing primitives used by authored identities and
-    /// deterministic topology signatures. The 64-bit offset and prime below
-    /// are the standard FNV-1a parameters. The project's established 128-bit
-    /// identities use two FNV-inspired lanes; they are not standard FNV-128.
-    /// </summary>
     public static class StableIdentityHash
     {
         public const ulong FNV1A_64_OFFSET_BASIS =
             14695981039346656037UL;
         public const ulong FNV1A_64_PRIME = 1099511628211UL;
 
-        // A fixed, independent start for the second lane of the project's
-        // stable 128-bit identities. This is not another hash algorithm.
         public const ulong SECONDARY_LANE_OFFSET_BASIS =
             7809847782465536322UL;
 
-        // Historical token-mix seed used by existing runtime structure and
-        // collision-zone identities. It is intentionally not the standard
-        // FNV-1a offset basis. Keep it named so consumers cannot accidentally
-        // "correct" one copy and silently split the persisted contract.
         public const ulong LEGACY_TOKEN_MIX_SEED =
             1469598103934665603UL;
 

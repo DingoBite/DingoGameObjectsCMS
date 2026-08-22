@@ -10,15 +10,6 @@ using Newtonsoft.Json.Linq;
 
 namespace DingoGameObjectsCMS.Serialization
 {
-    /// <summary>
-    /// Resolves <see cref="GameAssetPrefab"/> inheritance on the authored JSON
-    /// document, before it becomes a <see cref="GameAssetScriptableObject"/>.
-    ///
-    /// Components are addressed by their <c>$type</c> alias and everything else
-    /// by document path, so a patch is written in the vocabulary the CMS
-    /// document already shows. Nothing here reflects over CLR members, and the
-    /// composed result is an ordinary complete GameAsset document.
-    /// </summary>
     public static class GameAssetDocumentComposer
     {
         public const int MAX_BASE_DEPTH = 8;
@@ -36,22 +27,11 @@ namespace DingoGameObjectsCMS.Serialization
             TYPE_PROPERTY, KEY_PROPERTY, GUID_PROPERTY, PREFAB_PROPERTY, SOURCE_ASSET_KEY_PROPERTY, COMPONENTS_PROPERTY,
         };
 
-        /// <summary>
-        /// Returns the effective document. A document without a base is returned
-        /// unchanged. <paramref name="resolveBaseDocument"/> must return the raw
-        /// authored document for an exact key, from any mounted module.
-        /// </summary>
         public static JObject Compose(GameAssetKey key, JObject document, Func<GameAssetKey, JObject> resolveBaseDocument)
         {
             return Compose(key, document, resolveBaseDocument, new List<GameAssetKey>());
         }
 
-        /// <summary>
-        /// Applies a sparse override to a complete base document and returns the
-        /// result. The base is not touched. <paramref name="context"/> only names
-        /// the owner in error messages, so a placement can pass the asset it
-        /// overrides.
-        /// </summary>
         public static JObject ApplyOverrides(GameAssetKey context, JObject baseDocument, GameAssetOverrides overrides)
         {
             var result = (JObject)baseDocument.DeepClone();
@@ -65,11 +45,6 @@ namespace DingoGameObjectsCMS.Serialization
             return result;
         }
 
-        /// <summary>
-        /// Canonical form of an override, used as the identity input for a
-        /// derived asset. Ordinal ordering everywhere keeps two authors who
-        /// wrote the same override in a different member order on the same hash.
-        /// </summary>
         public static string CanonicalizeOverrides(GameAssetOverrides overrides)
         {
             if (overrides == null || !overrides.HasAny)
@@ -176,10 +151,6 @@ namespace DingoGameObjectsCMS.Serialization
             ApplyRootType(key, result, document);
             ApplyIdentity(result, document);
 
-            // The composed document must be indistinguishable from a hand
-            // duplicated one. Keeping the declaration would make a second
-            // composition re-derive from the base with the overrides already
-            // gone; lineage is read from the raw document with TryReadBaseKey.
             result.Remove(PREFAB_PROPERTY);
             return result;
         }
@@ -195,8 +166,6 @@ namespace DingoGameObjectsCMS.Serialization
             if (document?[PREFAB_PROPERTY] is not JObject node)
                 return false;
 
-            // An unknown member would otherwise be dropped silently and compose
-            // the asset from its base with the overrides missing.
             foreach (var member in node.Properties())
             {
                 if (Array.IndexOf(PREFAB_MEMBERS, member.Name) < 0)
@@ -220,9 +189,6 @@ namespace DingoGameObjectsCMS.Serialization
 
         private static GameAssetKey RequireExactBaseKey(GameAssetKey key, GameAssetKey baseKey)
         {
-            // An unset segment arrives either empty or as the sentinel the
-            // GameAssetKey constructor substitutes, depending on how the
-            // document spelled it.
             if (string.IsNullOrWhiteSpace(baseKey.Mod) || string.IsNullOrWhiteSpace(baseKey.Type) || string.IsNullOrWhiteSpace(baseKey.Key)
                 || baseKey.Mod == GameAssetKey.UNDEFINED || baseKey.Type == GameAssetKey.NONE || baseKey.Key == GameAssetKey.NONE)
             {
@@ -264,9 +230,6 @@ namespace DingoGameObjectsCMS.Serialization
 
         private static void ApplyIdentity(JObject result, JObject document)
         {
-            // Identity and source linkage are never inherited: they describe the
-            // derived asset itself. The module loader validates key and GUID
-            // against the manifest.
             CopyOrRemove(result, document, KEY_PROPERTY);
             CopyOrRemove(result, document, GUID_PROPERTY);
             CopyOrRemove(result, document, SOURCE_ASSET_KEY_PROPERTY);
@@ -374,8 +337,6 @@ namespace DingoGameObjectsCMS.Serialization
             if (overrides == null || overrides.Count == 0)
                 return;
 
-            // Ordinal ordering keeps the composed document independent of the
-            // order the authored document happened to list the paths in.
             var paths = overrides.Keys.OrderBy(path => path, StringComparer.Ordinal).ToArray();
             for (var index = 0; index < paths.Length; index++)
             {
@@ -398,13 +359,6 @@ namespace DingoGameObjectsCMS.Serialization
             }
         }
 
-        /// <summary>
-        /// A field path is rooted at the component list, because components are
-        /// what an override normally targets: <c>/UnitStack_GAC/InitialMemberCount</c>.
-        /// A <c>..</c> segment walks one level up, so a sibling component is
-        /// <c>/A_GAC/../B_GAC/Field</c> and a document root field is
-        /// <c>/../Surfaces/0/Width</c>.
-        /// </summary>
         private static string[] RequireFieldPath(GameAssetKey key, string path)
         {
             if (string.IsNullOrWhiteSpace(path) || path[0] != '/')

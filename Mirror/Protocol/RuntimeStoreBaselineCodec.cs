@@ -25,9 +25,6 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
         public RuntimeObjectPatch Overrides;
     }
 
-    /// <summary>
-    /// Deterministic parent-before-child baseline payload used before chunking.
-    /// </summary>
     public sealed class RuntimeStoreBaselineCodec
     {
         public const uint FORMAT_MAGIC = 0x32425347;

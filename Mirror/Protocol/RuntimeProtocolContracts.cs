@@ -21,18 +21,9 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
         public const int MAX_JOURNAL_BATCH_BYTES = 1024 * 1024;
         public const int MAX_PENDING_JOURNAL_ENTRIES = 16 * 1_024;
         public const int MAX_PENDING_JOURNAL_BYTES = 16 * 1024 * 1024;
-        // Reliable deltas deliberately stay small even when the selected
-        // transport supports very large reliable packets. Large mutation
-        // batches are represented by the existing chunked baseline path so a
-        // single delta cannot introduce multi-frame head-of-line blocking.
         public const int MAX_RELIABLE_DELTA_BATCH_BYTES = 32 * 1024;
     }
 
-    /// <summary>
-    /// Allocation-free description of the next reliable delta at the protocol
-    /// to transport boundary. The payload buffer is owned by the caller and is
-    /// only borrowed for the synchronous budget check.
-    /// </summary>
     public readonly struct RuntimeReliableDeltaTransportEnvelope
     {
         public readonly ulong SessionId;

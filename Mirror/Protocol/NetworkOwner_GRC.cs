@@ -5,10 +5,6 @@ using UnityEngine.Scripting;
 
 namespace DingoGameObjectsCMS.Mirror.Protocol
 {
-    /// <summary>
-    /// Server-only authority metadata. It is intentionally never projected to
-    /// ECS or replicated to clients.
-    /// </summary>
     [Serializable, Preserve]
     public sealed class NetworkOwner_GRC : GameRuntimeComponent, IStoreDataDirty
     {

@@ -120,10 +120,6 @@ namespace DingoGameObjectsCMS.AssetLibrary
             return this;
         }
 
-        /// <summary>
-        /// Resolves an authored request key, including a latest-version
-        /// request, to the compact exact index of its pinned session asset.
-        /// </summary>
         public bool TryResolveAssetIndex(
             in GameAssetKey requestedKey,
             out GameAssetIndex index)

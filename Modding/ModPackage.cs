@@ -142,10 +142,6 @@ namespace DingoGameObjectsCMS.Modding
             }
         }
 
-        /// <summary>
-        /// Lets this package resolve a prefab base that lives in another mounted
-        /// module. Without it a base is only looked up inside this package.
-        /// </summary>
         public void BindMountedDocumentResolver(Func<GameAssetKey, JObject> resolveMountedDocument)
         {
             _resolveMountedDocument = resolveMountedDocument;
@@ -153,10 +149,6 @@ namespace DingoGameObjectsCMS.Modding
             _composedDocuments.Clear();
         }
 
-        /// <summary>
-        /// Returns the authored document as written on disk, before prefab
-        /// composition. This is what a derived asset composes against.
-        /// </summary>
         public bool TryGetDocument(GameAssetKey key, out JObject document)
         {
             if (_documents.TryGetValue(key, out document))
@@ -173,20 +165,6 @@ namespace DingoGameObjectsCMS.Modding
             return true;
         }
 
-        /// <summary>
-        /// Returns the effective document: the authored one with prefab
-        /// composition already applied, in the same shape a hand duplicated
-        /// asset would have been written in.
-        ///
-        /// Anything that reads authored content without needing the
-        /// deserialized asset — resource discovery, sprite visuals — must read
-        /// it here rather than from <see cref="TryGetDocument"/>. A derived
-        /// asset states its content only as an override of its base, so the raw
-        /// document does not carry the components at all.
-        ///
-        /// The returned document is shared and must not be mutated; a document
-        /// without a base is returned as-is rather than copied.
-        /// </summary>
         public bool TryGetComposedDocument(GameAssetKey key, out JObject document)
         {
             if (_composedDocuments.TryGetValue(key, out document))

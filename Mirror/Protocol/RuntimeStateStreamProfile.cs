@@ -81,11 +81,6 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
         }
     }
 
-    /// <summary>
-    /// Typed hot-state contract. The profile owns quantization and complete
-    /// sample packing. RuntimeObjectPatch, component semantic diff and
-    /// per-connection component shadows are deliberately absent.
-    /// </summary>
     public abstract class RuntimeStateStreamProfile<TSample> : RuntimeStateStreamProfile
     {
         protected RuntimeStateStreamProfile(

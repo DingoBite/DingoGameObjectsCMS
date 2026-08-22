@@ -88,10 +88,6 @@ namespace DingoGameObjectsCMS.Editor
             };
         }
 
-        /// <summary>
-        /// Rebuilds the expected outputs in memory and verifies the checked-in
-        /// manifest/code without mutating either file.
-        /// </summary>
         public static bool AreOutputsCurrent(
             RuntimeDotsStateSchemaGenerationProfile profile)
         {

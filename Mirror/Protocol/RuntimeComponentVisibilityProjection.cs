@@ -39,9 +39,6 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                         || channel == RuntimeComponentProjectionChannel.ReliableOverride;
 
                 case RuntimeReplicationPolicy.UnreliableState:
-                    // Spawn visibility means structural presence only. Hot
-                    // fields are exclusively owned by the typed state stream
-                    // and must never be copied into RuntimeObjectPatch.
                     return channel == RuntimeComponentProjectionChannel.Spawn
                         || channel == RuntimeComponentProjectionChannel.HotState;
 
@@ -89,10 +86,6 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                 return false;
             if (!value.IsValid || value.Store != state.Store)
                 return false;
-            // Object membership alone cannot prove that a newly added hot-state
-            // component exists on the replica yet. Coarsely hold this store's
-            // stream behind every outstanding reliable envelope; once
-            // structural component ACKs become explicit this can be narrowed.
             if (state.PendingReliableCount != 0)
                 return false;
 

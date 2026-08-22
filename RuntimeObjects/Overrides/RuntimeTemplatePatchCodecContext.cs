@@ -3,11 +3,6 @@ using DingoGameObjectsCMS.RuntimeObjects;
 
 namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
 {
-    /// <summary>
-    /// Canonical context for immutable GameAsset blueprints. A GA baseline may
-    /// contain an empty reference, but it may never capture a runtime object.
-    /// Instance-specific references belong in the sparse override patch.
-    /// </summary>
     public sealed class RuntimeTemplatePatchCodecContext : RuntimePatchCodecContext
     {
         public static readonly RuntimeTemplatePatchCodecContext Instance = new();

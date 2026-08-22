@@ -173,9 +173,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
             if (_flushInProgress)
                 throw new InvalidOperationException($"RuntimeStore '{Id}' cannot finalize a snapshot while a flush is in progress.");
 
-            // Snapshot construction is staging work, not a local mutation
-            // batch. The fully built store becomes observable only when the
-            // registry swaps it in, so no dirty stream is emitted here.
             foreach (var runtimeObject in _all.V.Values)
             {
                 runtimeObject?.ClearDirty();
@@ -261,9 +258,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
                 {
                     try
                     {
-                        // Component cleanup records its ECBs above. Creating the
-                        // destroy buffer afterwards guarantees RemoveFromEntity
-                        // commands play before the final entity destruction.
                         destroyBuffer = _world.TakeGRCEditingECB();
                     }
                     catch (Exception e)
@@ -552,11 +546,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
         }
 
 #if UNITY_EDITOR
-        /// <summary>
-        /// Publishes an already materialized exact-origin baseline. Kept
-        /// editor-only so playground assets cannot bypass the immutable lock in
-        /// a player or a network session.
-        /// </summary>
         public GameRuntimeObject SpawnLocalAuthoringBaseline(
             GameRuntimeObject materialized,
             GameAssetTemplateCache templateCache,
@@ -574,11 +563,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
         }
 #endif
 
-        /// <summary>
-        /// Publishes a lane-projected replica spawn atomically. This is kept
-        /// separate from authored Spawn so network code cannot accidentally
-        /// route hot presence through normal semantic patch materialization.
-        /// </summary>
         public GameRuntimeObject SpawnProjected(
             long objectId,
             GameAssetInstance instance,
@@ -624,9 +608,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
             if (parentId.HasValue)
                 EnsureExactGameAssetOrigin(_all.V[parentId.Value], "attach child to");
 
-            // Materialization and patch validation happen before the object is
-            // observable through the store. A failed baseline or patch cannot
-            // publish a partially initialized GRO.
             var runtimeObject = materialize();
             runtimeObject.InstanceId = objectId;
             EnsureExactGameAssetOrigin(runtimeObject, "spawn");
@@ -856,11 +837,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
             return TrySetDirty(runtimeInstance, typeof(T).GetId());
         }
 
-        /// <summary>
-        /// Publishes a component refresh for a client replica without recording an
-        /// authoritative store mutation. This is reserved for presentation state
-        /// projected from transient replica ECS data, such as interpolated motion.
-        /// </summary>
         public bool TrySetReplicaPresentationDirty<T>(RuntimeInstance runtimeInstance)
             where T : GameRuntimeComponent
         {
@@ -1871,9 +1847,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
                     publicComponentChanges = emitPresentationComp.AsArray();
                 }
 
-                // BindDict listeners are legacy structure observers. Notify them
-                // only for the captured structure publish; callback mutations are
-                // recorded into the next publish buffers.
                 if (emitStructure.IsCreated && emitStructure.Length > 0)
                 {
                     _all.V = _all.V;

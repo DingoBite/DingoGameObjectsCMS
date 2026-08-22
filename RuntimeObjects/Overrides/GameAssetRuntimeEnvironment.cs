@@ -6,11 +6,6 @@ using DingoGameObjectsCMS.RuntimeObjects.Stores;
 
 namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
 {
-    /// <summary>
-    /// Generic immutable GA environment. A project only supplies its generated
-    /// codec registry and codec context; the SDK owns manifest initialization
-    /// and seals the selected content catalog for the lifetime of the session.
-    /// </summary>
     public sealed class GameAssetRuntimeEnvironment
     {
         public RuntimePatchCodecRegistry PatchCodecs { get; }

@@ -23,12 +23,6 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
         }
     }
 
-    /// <summary>
-    /// Measures the exact generated Mirror representation of RtStoreDelta.
-    /// The limit accounts for both Mirror's message id and its batch timestamp
-    /// and VarUInt message-length header. Production also clamps the protocol
-    /// cap to the active transport's reliable packet limit.
-    /// </summary>
     public static class RuntimeReliableDeltaTransportBudget
     {
         public static bool Fits(in RuntimeReliableDeltaTransportEnvelope envelope)

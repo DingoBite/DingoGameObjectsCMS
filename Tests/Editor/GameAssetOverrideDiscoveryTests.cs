@@ -110,8 +110,6 @@ namespace DingoGameObjectsCMS.Tests.Editor
         [Test]
         public void Collect_DoesNotWalkIntoRawOverrideJson()
         {
-            // The override payload is arbitrary JSON and can be huge; walking it
-            // would be pointless and could recurse for a long time.
             var overrides = new GameAssetOverrides
             {
                 OverrideComponents = new List<JObject>

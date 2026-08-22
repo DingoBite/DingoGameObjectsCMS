@@ -38,11 +38,6 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
         TimedOut = 7,
     }
 
-    /// <summary>
-    /// Projects the canonical checkpoint sections directly onto the reliable
-    /// transport. A wire chunk is one canonical checkpoint page, so the
-    /// transport never materializes an encoded envelope-sized byte array.
-    /// </summary>
     public static class RuntimeCheckpointChunker
     {
         public static IReadOnlyList<RuntimeCheckpointChunk> Split(
@@ -79,8 +74,6 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                     $"Checkpoint contains {totalPages} pages; limit is {RuntimeReplayCheckpointCodec.MAX_ENVELOPE_PAGES}.");
             }
 
-            // A header-only chunk makes a valid empty checkpoint transferable
-            // without inventing a synthetic replay section.
             if (envelope.Sections.Count == 0)
             {
                 return new[]

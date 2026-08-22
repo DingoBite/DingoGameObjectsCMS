@@ -8,11 +8,6 @@ using DingoGameObjectsCMS.RuntimeObjects.DotsState;
 
 namespace DingoGameObjectsCMS.Editor
 {
-    /// <summary>
-    /// Reconciles active component Types with compact numeric ids. Removed
-    /// components leave only reserved numeric ids; no CLR-name tombstones or
-    /// string type identity are retained.
-    /// </summary>
     public static class RuntimeDotsStateSchemaReconciler
     {
         public const int FORMAT_VERSION = 1;
