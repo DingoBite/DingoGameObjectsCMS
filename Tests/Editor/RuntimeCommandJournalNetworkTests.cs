@@ -122,7 +122,7 @@ namespace DingoGameObjectsCMS.Tests.Editor
             var expected = CreateDescriptor(RuntimeProtocol.VERSION);
             var actual = CreateDescriptor((ushort)(RuntimeProtocol.VERSION + 1));
 
-            Assert.That(RuntimeProtocol.VERSION, Is.EqualTo(1));
+            Assert.That(RuntimeProtocol.VERSION, Is.EqualTo(2));
             Assert.That(
                 RuntimeSessionDescriptorValidator.Validate(expected, actual),
                 Is.EqualTo(RuntimeProtocolRejectCode.ProtocolVersionMismatch));

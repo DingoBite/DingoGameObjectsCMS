@@ -33,6 +33,7 @@ namespace DingoGameObjectsCMS.Mirror
         }
 
         public bool IsReplicaReady => _coordinator.IsReplicaReady;
+        public int AssignedConnectionId { get; private set; } = -1;
         public RuntimeNetworkTelemetry Telemetry => _coordinator.Telemetry;
 
         public RuntimeStoreNetClient(RuntimeProtocolContext context, ulong clientNonce)
@@ -65,6 +66,7 @@ namespace DingoGameObjectsCMS.Mirror
 
         public void BeginHandshake()
         {
+            AssignedConnectionId = -1;
             _coordinator.BeginHandshake();
             if (_tickScheduled)
                 return;
@@ -86,6 +88,7 @@ namespace DingoGameObjectsCMS.Mirror
 
         public void Dispose()
         {
+            AssignedConnectionId = -1;
             NetworkClient.UnregisterHandler<RtSessionManifest>();
             NetworkClient.UnregisterHandler<RtProtocolReject>();
             NetworkClient.UnregisterHandler<RtBaselineChunk>();
@@ -109,11 +112,17 @@ namespace DingoGameObjectsCMS.Mirror
 
         private void OnManifest(RtSessionManifest message)
         {
-            _coordinator.ReceiveManifest(
+            var result = _coordinator.ReceiveManifest(
                 message.SessionId,
                 message.Descriptor,
                 message.Assets,
                 message.Stores);
+            if (result.Accepted)
+            {
+                AssignedConnectionId = message.AssignedConnectionId > 0
+                    ? message.AssignedConnectionId
+                    : -1;
+            }
         }
 
         private void OnReject(RtProtocolReject message)

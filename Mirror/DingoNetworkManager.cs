@@ -14,6 +14,9 @@ namespace DingoGameObjectsCMS.Mirror
         public RuntimeStoreNetServer RtServer { get; private set; }
         public RuntimeStoreNetClient RtClient { get; private set; }
         public RuntimeNetRole RuntimeRole => ResolveRuntimeRole();
+        public int LocalConnectionId => RuntimeRole == RuntimeNetRole.Client
+            ? RtClient?.AssignedConnectionId ?? -1
+            : -1;
 
         public event Action<RuntimeNetRole> RuntimeRoleChanged;
         public event Action<int, ulong> ProtocolConnectionReady;

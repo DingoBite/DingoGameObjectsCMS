@@ -202,7 +202,9 @@ namespace DingoGameObjectsCMS.Mirror
 
         private static void SendManifest(int connectionId, RuntimeSessionManifestSnapshot manifest)
         {
-            RequireConnection(connectionId).Send(manifest.ToWireManifest(), Channels.Reliable);
+            var message = manifest.ToWireManifest();
+            message.AssignedConnectionId = connectionId;
+            RequireConnection(connectionId).Send(message, Channels.Reliable);
         }
 
         private static void SendReject(int connectionId, RuntimeProtocolRejectCode code, string detail)

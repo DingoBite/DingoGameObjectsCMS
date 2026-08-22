@@ -84,6 +84,7 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
     public struct RtSessionManifest : NetworkMessage
     {
         public ulong SessionId;
+        public int AssignedConnectionId;
         public RuntimeSessionDescriptor Descriptor;
         public RuntimeAssetCatalogEntry[] Assets;
         public RuntimeStoreCatalogEntry[] Stores;
