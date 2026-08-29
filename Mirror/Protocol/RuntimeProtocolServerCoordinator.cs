@@ -18,6 +18,7 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
         public readonly Action<int, RuntimeCommandJournalBatch> JournalBatch;
         public readonly Action<int, RuntimeCheckpointChunk> CheckpointChunk;
         public readonly RuntimeReliableDeltaTransportBudgetCheck ReliableDeltaFitsTransport;
+        public readonly RuntimeBaselineChunkPayloadBudget BaselineChunkPayloadBytes;
 
         public RuntimeProtocolServerOutput(
             Action<int, RuntimeSessionManifestSnapshot> manifest,
@@ -26,6 +27,7 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             Action<int, RuntimeClientDeltaEnvelope> delta,
             Action<int, RuntimeCommandResult> commandResult,
             RuntimeReliableDeltaTransportBudgetCheck reliableDeltaFitsTransport,
+            RuntimeBaselineChunkPayloadBudget baselineChunkPayloadBytes,
             Action<int, RtStateStreamFrameData> stateStream = null,
             Action<int, RuntimeCommandJournalBatch> journalBatch = null,
             Action<int, RuntimeCheckpointChunk> checkpointChunk = null)
@@ -40,6 +42,9 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             StateStream = stateStream ?? ((connectionId, value) => { });
             JournalBatch = journalBatch;
             CheckpointChunk = checkpointChunk;
+            BaselineChunkPayloadBytes = baselineChunkPayloadBytes
+                                        ?? throw new ArgumentNullException(
+                                            nameof(baselineChunkPayloadBytes));
         }
     }
 
@@ -1041,14 +1046,35 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                     connection.CheckpointBoundary;
             }
 
+            var payload = transfer.CopyPayload();
+            var transportHeader = new RuntimeBaselineChunk
+            {
+                SessionId = connection.Handshake.SessionId,
+                Store = transfer.Store,
+                BaselineId = transfer.BaselineId,
+                DeliverySequence = transfer.DeliverySequence,
+                StoreRevision = transfer.StoreRevision,
+                CheckpointGroupId = checkpointBoundary?.GroupId,
+                CompletedTick = checkpointBoundary?.CompletedTick ?? 0,
+                JournalCursor = checkpointBoundary?.JournalCursor ?? 0,
+                CheckpointHash = checkpointBoundary?.CheckpointHash,
+                ChunkIndex = 0,
+                ChunkCount = 1,
+                LogicalLength = payload.Length,
+                PayloadHash = new byte[32],
+                Payload = Array.Empty<byte>(),
+            };
+            var chunkPayloadBytes =
+                _output.BaselineChunkPayloadBytes(transportHeader);
             var chunks = RuntimeBaselineChunker.Split(
                 connection.Handshake.SessionId,
                 transfer.Store,
                 transfer.BaselineId,
                 transfer.DeliverySequence,
                 transfer.StoreRevision,
-                transfer.CopyPayload(),
-                checkpointBoundary);
+                payload,
+                checkpointBoundary,
+                chunkPayloadBytes);
             for (var i = 0; i < chunks.Count; i++)
             {
                 _output.BaselineChunk(connectionId, chunks[i]);

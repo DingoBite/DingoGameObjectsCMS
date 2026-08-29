@@ -46,7 +46,8 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             ulong deliverySequence,
             ulong storeRevision,
             byte[] payload,
-            RuntimeCheckpointBoundary? checkpointBoundary = null)
+            RuntimeCheckpointBoundary? checkpointBoundary = null,
+            int chunkPayloadBytes = RuntimeProtocol.BASELINE_CHUNK_BYTES)
         {
             if (sessionId == 0)
                 throw new ArgumentOutOfRangeException(nameof(sessionId));
@@ -60,8 +61,18 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             payload ??= Array.Empty<byte>();
             if (payload.Length > RuntimeProtocol.MAX_BASELINE_BYTES)
                 throw new ArgumentOutOfRangeException(nameof(payload), $"Baseline exceeds {RuntimeProtocol.MAX_BASELINE_BYTES} bytes.");
+            if (chunkPayloadBytes <= 0
+                || chunkPayloadBytes > RuntimeProtocol.BASELINE_CHUNK_BYTES)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(chunkPayloadBytes),
+                    $"Baseline chunk payload must be between 1 and {RuntimeProtocol.BASELINE_CHUNK_BYTES} bytes.");
+            }
 
-            var count = Math.Max(1, (payload.Length + RuntimeProtocol.BASELINE_CHUNK_BYTES - 1) / RuntimeProtocol.BASELINE_CHUNK_BYTES);
+            var count = Math.Max(
+                1,
+                (payload.Length + chunkPayloadBytes - 1)
+                / chunkPayloadBytes);
             if (count > RuntimeProtocol.MAX_BASELINE_CHUNKS)
                 throw new InvalidOperationException($"Baseline requires {count} chunks; limit is {RuntimeProtocol.MAX_BASELINE_CHUNKS}.");
 
@@ -72,8 +83,10 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             var chunks = new RuntimeBaselineChunk[count];
             for (var i = 0; i < count; i++)
             {
-                var offset = i * RuntimeProtocol.BASELINE_CHUNK_BYTES;
-                var length = Math.Min(RuntimeProtocol.BASELINE_CHUNK_BYTES, payload.Length - offset);
+                var offset = i * chunkPayloadBytes;
+                var length = Math.Min(
+                    chunkPayloadBytes,
+                    payload.Length - offset);
                 if (length < 0)
                     length = 0;
 
@@ -109,6 +122,7 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
         private RuntimeBaselineChunk _header;
         private byte[][] _chunks;
         private int _received;
+        private int _receivedBytes;
         private double _startedAt;
 
         private ulong _lastCompletedSessionId;
@@ -154,6 +168,12 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
 
             _chunks[index] = (byte[])chunk.Payload.Clone();
             _received++;
+            _receivedBytes += chunk.Payload.Length;
+            if (_receivedBytes > _header.LogicalLength)
+            {
+                ResetActive();
+                return RuntimeBaselineChunkResult.Corrupt;
+            }
             if (_received != _chunks.Length)
                 return RuntimeBaselineChunkResult.Accepted;
 
@@ -209,15 +229,18 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                 return false;
             if (chunk.PayloadHash == null || chunk.PayloadHash.Length != 32 || chunk.Payload == null)
                 return false;
-
-            var expectedCount = Math.Max(1, (chunk.LogicalLength + RuntimeProtocol.BASELINE_CHUNK_BYTES - 1) / RuntimeProtocol.BASELINE_CHUNK_BYTES);
-            if (chunk.ChunkCount != expectedCount)
+            if (chunk.Payload.Length > RuntimeProtocol.BASELINE_CHUNK_BYTES)
                 return false;
+            if (chunk.LogicalLength == 0)
+            {
+                return chunk.ChunkCount == 1
+                       && chunk.ChunkIndex == 0
+                       && chunk.Payload.Length == 0;
+            }
 
-            var expectedLength = chunk.ChunkIndex + 1 < chunk.ChunkCount
-                ? RuntimeProtocol.BASELINE_CHUNK_BYTES
-                : chunk.LogicalLength - chunk.ChunkIndex * RuntimeProtocol.BASELINE_CHUNK_BYTES;
-            return chunk.Payload.Length == expectedLength;
+            return chunk.ChunkCount <= chunk.LogicalLength
+                   && chunk.Payload.Length > 0
+                   && chunk.Payload.Length <= chunk.LogicalLength;
         }
 
         private void Begin(in RuntimeBaselineChunk chunk, double nowSeconds)
@@ -227,6 +250,7 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             _header.PayloadHash = (byte[])chunk.PayloadHash.Clone();
             _chunks = new byte[chunk.ChunkCount][];
             _received = 0;
+            _receivedBytes = 0;
             _startedAt = nowSeconds;
         }
 
@@ -294,6 +318,7 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             _header = default;
             _chunks = null;
             _received = 0;
+            _receivedBytes = 0;
             _startedAt = 0;
         }
     }

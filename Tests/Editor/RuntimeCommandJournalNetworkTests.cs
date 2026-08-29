@@ -122,7 +122,7 @@ namespace DingoGameObjectsCMS.Tests.Editor
             var expected = CreateDescriptor(RuntimeProtocol.VERSION);
             var actual = CreateDescriptor((ushort)(RuntimeProtocol.VERSION + 1));
 
-            Assert.That(RuntimeProtocol.VERSION, Is.EqualTo(2));
+            Assert.That(RuntimeProtocol.VERSION, Is.EqualTo(3));
             Assert.That(
                 RuntimeSessionDescriptorValidator.Validate(expected, actual),
                 Is.EqualTo(RuntimeProtocolRejectCode.ProtocolVersionMismatch));
@@ -387,6 +387,8 @@ namespace DingoGameObjectsCMS.Tests.Editor
                         (_, _) => { },
                         (_, _) => { },
                         (in RuntimeReliableDeltaTransportEnvelope _) => true,
+                        (in RuntimeBaselineChunk _) =>
+                            RuntimeProtocol.BASELINE_CHUNK_BYTES,
                         journalBatch: (_, _) => order.Add("journal"),
                         checkpointChunk: (_, _) =>
                             order.Add("checkpoint")),
@@ -1007,6 +1009,8 @@ namespace DingoGameObjectsCMS.Tests.Editor
                         (_, _) => { },
                         (in RuntimeReliableDeltaTransportEnvelope _) =>
                             true,
+                        (in RuntimeBaselineChunk _) =>
+                            RuntimeProtocol.BASELINE_CHUNK_BYTES,
                         journalBatch: (_, batch) =>
                             batches.Add(batch)),
                     firstSessionId: 71);
@@ -1200,6 +1204,8 @@ namespace DingoGameObjectsCMS.Tests.Editor
                         (_, _) => { },
                         (in RuntimeReliableDeltaTransportEnvelope _) =>
                             true,
+                        (in RuntimeBaselineChunk _) =>
+                            RuntimeProtocol.BASELINE_CHUNK_BYTES,
                         journalBatch: (_, _) => { }),
                     firstSessionId: 91);
             coordinator.AddConnection(1);

@@ -38,9 +38,6 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             }
 
             var catalog = assetLock.AssetCatalog;
-            if (catalog.Count == 0)
-                throw new InvalidOperationException("Asset lock has no resolved GameAssets.");
-
             var manifestEntries = new RuntimeAssetCatalogEntry[catalog.Count];
             for (var i = 0; i < catalog.Entries.Count; i++)
             {

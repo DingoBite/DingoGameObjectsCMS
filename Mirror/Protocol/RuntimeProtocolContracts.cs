@@ -10,10 +10,10 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
 {
     public static class RuntimeProtocol
     {
-        public const ushort VERSION = 2;
+        public const ushort VERSION = 3;
         public const int BASELINE_CHUNK_BYTES = 32 * 1024;
         public const int MAX_BASELINE_BYTES = 16 * 1024 * 1024;
-        public const int MAX_BASELINE_CHUNKS = 512;
+        public const int MAX_BASELINE_CHUNKS = ushort.MaxValue;
         public const double BASELINE_TIMEOUT_SECONDS = 10d;
         public const int MAX_PENDING_ENVELOPES = 256;
         public const int MAX_PENDING_ENVELOPE_BYTES = 4 * 1024 * 1024;
@@ -60,6 +60,9 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
 
     public delegate bool RuntimeReliableDeltaTransportBudgetCheck(
         in RuntimeReliableDeltaTransportEnvelope envelope);
+
+    public delegate int RuntimeBaselineChunkPayloadBudget(
+        in RuntimeBaselineChunk header);
 
     [Serializable, Preserve]
     public struct RuntimeSessionDescriptor

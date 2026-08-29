@@ -48,6 +48,8 @@ namespace DingoGameObjectsCMS.Mirror
                     SendDelta,
                     SendCommandResult,
                     RuntimeReliableDeltaTransportBudget.Fits,
+                    RuntimeBaselineChunkTransportBudget
+                        .GetPayloadCapacity,
                     SendStateStreamMessage,
                     SendJournalBatch,
                     SendCheckpointChunk));

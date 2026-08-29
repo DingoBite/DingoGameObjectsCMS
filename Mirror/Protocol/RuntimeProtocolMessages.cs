@@ -73,6 +73,79 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
         }
     }
 
+    public static class RuntimeBaselineChunkTransportBudget
+    {
+        public static int GetPayloadCapacity(
+            in RuntimeBaselineChunk header)
+        {
+            var transport = Transport.active;
+            if (transport == null)
+            {
+                throw new InvalidOperationException(
+                    "Mirror requires an active Transport before baseline "
+                    + "chunk sizing can be resolved.");
+            }
+
+            return GetPayloadCapacity(
+                header,
+                transport.GetMaxPacketSize(Channels.Reliable));
+        }
+
+        public static int GetPayloadCapacity(
+            in RuntimeBaselineChunk header,
+            int reliableTransportPacketBytes)
+        {
+            if (reliableTransportPacketBytes <= 0)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(reliableTransportPacketBytes));
+            }
+            if (header.PayloadHash == null
+                || header.PayloadHash.Length != 32)
+            {
+                throw new ArgumentException(
+                    "Baseline transport sizing requires a SHA-256 payload hash.",
+                    nameof(header));
+            }
+
+            var emptyPayloadHeader = header;
+            emptyPayloadHeader.Payload = Array.Empty<byte>();
+            using var writer = NetworkWriterPool.Get();
+            NetworkMessages.Pack(
+                new RtBaselineChunk { Value = emptyPayloadHeader },
+                writer);
+
+            var maxPackedBytes = reliableTransportPacketBytes
+                                 - Batcher.MaxMessageOverhead(
+                                     reliableTransportPacketBytes);
+            var emptyPayloadLengthBytes =
+                Compression.VarUIntSize(1u);
+            var fixedPackedBytes = writer.Position
+                                   - emptyPayloadLengthBytes;
+            var availablePayloadBytes = Math.Min(
+                RuntimeProtocol.BASELINE_CHUNK_BYTES,
+                maxPackedBytes - fixedPackedBytes
+                - emptyPayloadLengthBytes);
+            while (availablePayloadBytes > 0
+                   && fixedPackedBytes
+                   + Compression.VarUIntSize(
+                       checked((uint)availablePayloadBytes + 1u))
+                   + availablePayloadBytes > maxPackedBytes)
+            {
+                availablePayloadBytes--;
+            }
+            if (availablePayloadBytes <= 0)
+            {
+                throw new InvalidOperationException(
+                    $"Mirror reliable packet budget "
+                    + $"{reliableTransportPacketBytes} cannot fit a baseline "
+                    + $"chunk header of {writer.Position} bytes.");
+            }
+
+            return availablePayloadBytes;
+        }
+    }
+
     [Serializable, Preserve]
     public struct RtSessionHello : NetworkMessage
     {
