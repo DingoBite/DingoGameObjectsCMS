@@ -412,6 +412,13 @@ namespace DingoGameObjectsCMS.AssetLibrary.Manifest
                     var relativePath = ToCanonicalRelativePath(
                         root,
                         diskFiles[index]);
+                    if (string.Equals(
+                            Path.GetExtension(relativePath),
+                            ".meta",
+                            StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
                     if (exclusions.Contains(relativePath))
                     {
                         continue;
