@@ -11,6 +11,9 @@ namespace DingoGameObjectsCMS.Mirror
     [DisallowMultipleComponent]
     public class DingoNetworkManager : NetworkManager
     {
+        /// <summary>Keep new connections unobserving until gameplay calls AddPlayerForConnection.</summary>
+        public bool DeferPlayerObservation { get; set; }
+
         public RuntimeStoreNetServer RtServer { get; private set; }
         public RuntimeStoreNetClient RtClient { get; private set; }
         public RuntimeNetRole RuntimeRole => ResolveRuntimeRole();
@@ -162,7 +165,10 @@ namespace DingoGameObjectsCMS.Mirror
 
         public override void OnServerReady(NetworkConnectionToClient connection)
         {
-            base.OnServerReady(connection);
+            if (!DeferPlayerObservation || connection.identity != null)
+            {
+                base.OnServerReady(connection);
+            }
         }
 
         public void ClientSendCommand(GameRuntimeCommand command)
