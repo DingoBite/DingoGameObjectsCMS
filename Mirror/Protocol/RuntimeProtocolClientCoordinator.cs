@@ -4,6 +4,7 @@ using DingoGameObjectsCMS.RuntimeObjects.Commands;
 using DingoGameObjectsCMS.RuntimeObjects.Replay;
 using DingoGameObjectsCMS.RuntimeObjects.Stores;
 using DingoGameObjectsCMS.Stores;
+using UnityEngine;
 
 namespace DingoGameObjectsCMS.Mirror.Protocol
 {
@@ -38,6 +39,8 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
 
     public class RuntimeProtocolClientCoordinator : IDisposable
     {
+        private const int MAX_INITIAL_PUBLICATION_FAILURES = 3;
+
         private readonly RuntimeProtocolContext _context;
         private readonly RuntimeProtocolClientOutput _output;
         private readonly RuntimeSessionClientHandshake _handshake;
@@ -65,6 +68,7 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
         private bool _journalFullBaselineRequested;
         private bool _helloSent;
         private bool _initialPublicationComplete;
+        private int _initialPublicationFailureCount;
         private bool _disposed;
 
         public event Action<RuntimeCommandResult> CommandResultReceived;
@@ -138,6 +142,9 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                 throw new InvalidOperationException("Protocol client hello has already been sent.");
             var descriptor = _handshake.BeginHello();
             _helloSent = true;
+            Trace(
+                $"Handshake begun. nonce={_handshake.ClientNonce}, protocol={descriptor.ProtocolVersion}, "
+                + $"build='{descriptor.BuildId}'.");
             _output.Hello(descriptor, _handshake.ClientNonce);
         }
 
@@ -151,9 +158,16 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             var result = _handshake.ReceiveManifest(sessionId, descriptor, assets, stores);
             if (!result.Accepted)
             {
+                Trace(
+                    $"Manifest rejected. session={sessionId}, code={result.RejectCode}, "
+                    + $"detail='{result.Detail}'.");
                 _output.Reject(result.RejectCode, result.Detail);
                 return result;
             }
+
+            Trace(
+                $"Manifest accepted. session={sessionId}, assets={assets?.Count ?? 0}, "
+                + $"stores={stores?.Count ?? 0}; resetting initial publication state.");
 
             _initialStores.Clear();
             _pendingJournalBatches.Clear();
@@ -168,6 +182,7 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             _initialCheckpointBoundaryObserved = false;
             _checkpointWaitStartedAt = 0;
             _checkpointAssembler.Reset();
+            _initialPublicationFailureCount = 0;
             for (var i = 0; i < _handshake.Manifest.Stores.Count; i++)
             {
                 var entry = _handshake.Manifest.Stores[i];
@@ -176,6 +191,7 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             }
 
             _output.Ready(sessionId);
+            Trace($"Initial store catalog prepared. session={sessionId}, stores={_initialStores.Count}; Ready emitted.");
             return result;
         }
 
@@ -554,12 +570,17 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                 if (!pair.Value.IsComplete)
                     return Accepted(RuntimeClientReceiveResultKind.Buffered);
             }
+            Trace(
+                $"Every initial baseline is complete. session={_handshake.Manifest.SessionId}, "
+                + $"stores={_initialStores.Count}, checkpointRequired={_context.RestoreCheckpointStage != null}, "
+                + $"checkpointReceived={_initialRecoveryCheckpoint != null}.");
             if (_context.RestoreCheckpointStage != null
                 && _initialRecoveryCheckpoint == null)
             {
                 if (_checkpointWaitStartedAt <= 0)
                 {
                     _checkpointWaitStartedAt = nowSeconds;
+                    Trace("Waiting for initial recovery checkpoint after grouped baselines completed.");
                 }
                 return Accepted(RuntimeClientReceiveResultKind.Buffered);
             }
@@ -651,9 +672,19 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                 _baselineApplier.PublishGroup(stages, StoreNetDir.S2C);
                 RuntimeCheckpointProjectionBarrier.Playback(_context.World);
                 restoreTransaction?.Commit();
+                Trace(
+                    $"Initial baseline group published. session={_handshake.Manifest.SessionId}, "
+                    + $"stages={stages.Count}, checkpointRestored={_initialRecoveryCheckpoint != null}.");
+                _initialPublicationFailureCount = 0;
             }
-            catch
+            catch (Exception exception)
             {
+                _initialPublicationFailureCount++;
+                Trace(
+                    $"Initial baseline publication failed attempt={_initialPublicationFailureCount}/"
+                    + $"{MAX_INITIAL_PUBLICATION_FAILURES}. "
+                    + $"{exception.GetType().Name}: {exception.Message}");
+                Debug.LogException(exception);
                 restoreTransaction?.Dispose();
                 restoreTransaction = null;
                 for (var i = 0; i < stages.Count; i++)
@@ -666,6 +697,21 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                     }
                 }
                 RuntimeCheckpointProjectionBarrier.Playback(_context.World);
+                if (_initialPublicationFailureCount
+                    >= MAX_INITIAL_PUBLICATION_FAILURES)
+                {
+                    var detail =
+                        "Initial replica baseline publication failed "
+                        + $"{_initialPublicationFailureCount} times: "
+                        + exception.Message;
+                    Trace($"Replica startup aborted: {detail}");
+                    _output.Reject(
+                        RuntimeProtocolRejectCode.InvalidEnvelope,
+                        detail);
+                    SetReplicaReady(false);
+                    return Rejected(
+                        RuntimeProtocolRejectCode.InvalidEnvelope);
+                }
                 foreach (var pair in _initialStores)
                 {
                     pair.Value.Receiver = null;
@@ -689,6 +735,9 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             }
 
             _baselineGroupPublished = true;
+            Trace(
+                $"Initial publication committed. session={_handshake.Manifest.SessionId}, "
+                + $"receivers={_receivers.Count}, journalBoundary={_initialCheckpointBoundary.HasValue}.");
             foreach (var receiver in _receivers.Values)
                 SendAppliedAck(receiver);
             if (_initialCheckpointBoundary.HasValue)
@@ -1046,8 +1095,18 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
         {
             if (_initialPublicationComplete == ready && RuntimeExecutionContext.IsReplicaReady == ready)
                 return;
+            Trace(
+                $"Replica readiness {_initialPublicationComplete}->{ready}; "
+                + $"executionContextReady={RuntimeExecutionContext.IsReplicaReady}, "
+                + $"baselinePublished={_baselineGroupPublished}, journalObserved={_journalCatchupObserved}.");
             _initialPublicationComplete = ready;
             ReplicaReadyChanged?.Invoke(ready);
+        }
+
+        private static void Trace(string message)
+        {
+            Debug.Log(
+                $"[NETTRACE][RuntimeClientCore][t={Time.realtimeSinceStartupAsDouble:F3}] {message}");
         }
 
         private bool AcceptInitialCheckpointBoundary(in RuntimeBaselineChunk chunk)

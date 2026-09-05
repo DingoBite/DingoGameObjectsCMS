@@ -35,33 +35,41 @@ namespace DingoGameObjectsCMS.Mirror
         public void SetProtocolContextFactory(RuntimeProtocolContextFactory contextFactory)
         {
             _contextFactory = contextFactory ?? throw new ArgumentNullException(nameof(contextFactory));
+            Trace("Protocol context factory configured.");
         }
 
         public void SetRuntimeCommandsBusGetter(Func<RuntimeCommandsBus> commandsBusGetter)
         {
             _commandsBusGetter = commandsBusGetter ?? throw new ArgumentNullException(nameof(commandsBusGetter));
+            Trace("RuntimeCommandsBus getter configured.");
         }
 
         public override void OnStartServer()
         {
+            Trace($"OnStartServer begin. server={NetworkServer.active}, client={NetworkClient.active}.");
             base.OnStartServer();
             ReplaceServerEndpoint();
             NotifyRuntimeRoleChanged();
+            Trace($"OnStartServer complete. role={RuntimeRole}, endpoint={RtServer != null}.");
         }
 
         public override void OnStopServer()
         {
+            Trace($"OnStopServer begin. endpoint={RtServer != null}.");
             DisposeServerEndpoint();
             base.OnStopServer();
             NotifyRuntimeRoleChanged();
+            Trace($"OnStopServer complete. role={RuntimeRole}.");
         }
 
         public override void OnStartClient()
         {
+            Trace($"OnStartClient begin. server={NetworkServer.active}, client={NetworkClient.active}.");
             base.OnStartClient();
             if (NetworkServer.active)
             {
                 NotifyRuntimeRoleChanged();
+                Trace("OnStartClient host-local branch; replica endpoint is not created.");
                 return;
             }
 
@@ -72,10 +80,12 @@ namespace DingoGameObjectsCMS.Mirror
             RtClient = new RuntimeStoreNetClient(context, CreateClientNonce());
             RtClient.ReplicaReadyChanged += RuntimeExecutionContext.SetReplicaReady;
             NotifyRuntimeRoleChanged();
+            Trace($"OnStartClient complete. role={RuntimeRole}, endpoint={RtClient != null}.");
         }
 
         public override void OnStopClient()
         {
+            Trace($"OnStopClient begin. endpoint={RtClient != null}, connected={NetworkClient.isConnected}.");
             if (RtClient != null)
             {
                 RtClient.ReplicaReadyChanged -= RuntimeExecutionContext.SetReplicaReady;
@@ -85,22 +95,27 @@ namespace DingoGameObjectsCMS.Mirror
             RuntimeExecutionContext.SetReplicaReady(false);
             base.OnStopClient();
             NotifyRuntimeRoleChanged();
+            Trace($"OnStopClient complete. role={RuntimeRole}.");
         }
 
         public override void OnStartHost()
         {
             base.OnStartHost();
             NotifyRuntimeRoleChanged();
+            Trace($"OnStartHost. role={RuntimeRole}.");
         }
 
         public override void OnStopHost()
         {
+            Trace("OnStopHost begin.");
             base.OnStopHost();
             NotifyRuntimeRoleChanged();
+            Trace($"OnStopHost complete. role={RuntimeRole}.");
         }
 
         public override void OnServerConnect(NetworkConnectionToClient connection)
         {
+            Trace($"OnServerConnect begin. connection={connection?.connectionId ?? -1}, authenticated={connection?.isAuthenticated ?? false}.");
             base.OnServerConnect(connection);
             try
             {
@@ -110,9 +125,11 @@ namespace DingoGameObjectsCMS.Mirror
                     NotifyRuntimeRoleChanged();
                 }
                 RtServer.OnConnectionConnected(connection.connectionId);
+                Trace($"OnServerConnect registered protocol connection={connection.connectionId}.");
             }
             catch (Exception exception)
             {
+                Trace($"OnServerConnect failed for connection={connection?.connectionId ?? -1}: {exception.GetType().Name}: {exception.Message}");
                 Debug.LogException(exception);
                 connection.Disconnect();
             }
@@ -120,6 +137,7 @@ namespace DingoGameObjectsCMS.Mirror
 
         public override void OnServerDisconnect(NetworkConnectionToClient connection)
         {
+            Trace($"OnServerDisconnect. connection={connection?.connectionId ?? -1}.");
             RtServer?.OnConnectionDisconnected(connection.connectionId);
             base.OnServerDisconnect(connection);
             NotifyRuntimeRoleChanged();
@@ -127,13 +145,16 @@ namespace DingoGameObjectsCMS.Mirror
 
         public override void OnClientConnect()
         {
+            Trace($"OnClientConnect begin. connectionPresent={NetworkClient.connection != null}, authenticated={NetworkClient.connection?.isAuthenticated ?? false}.");
             base.OnClientConnect();
             RtClient?.BeginHandshake();
             NotifyRuntimeRoleChanged();
+            Trace($"OnClientConnect complete. handshakeStarted={RtClient != null}, role={RuntimeRole}.");
         }
 
         public override void OnClientDisconnect()
         {
+            Trace($"OnClientDisconnect. connectionPresent={NetworkClient.connection != null}, replicaReady={RtClient?.IsReplicaReady == true}.");
             RuntimeExecutionContext.SetReplicaReady(false);
             base.OnClientDisconnect();
             NotifyRuntimeRoleChanged();
@@ -183,12 +204,14 @@ namespace DingoGameObjectsCMS.Mirror
 
         private void ReplaceServerEndpoint()
         {
+            Trace("Replacing RuntimeStore server endpoint.");
             var context = RequireContext(StoreRealm.Server);
             DisposeServerEndpoint();
             UnregisterServerHandlers();
             RtServer = new RuntimeStoreNetServer(context);
             RtServer.ConnectionReady += OnProtocolConnectionReady;
             RtServer.ConnectionRemoved += OnProtocolConnectionRemoved;
+            Trace("RuntimeStore server endpoint created.");
         }
 
         private void DisposeServerEndpoint()
@@ -197,6 +220,7 @@ namespace DingoGameObjectsCMS.Mirror
             if (server == null)
                 return;
 
+            Trace("Disposing RuntimeStore server endpoint.");
             server.Dispose();
             server.ConnectionReady -= OnProtocolConnectionReady;
             server.ConnectionRemoved -= OnProtocolConnectionRemoved;
@@ -219,6 +243,7 @@ namespace DingoGameObjectsCMS.Mirror
             var role = ResolveRuntimeRole();
             RuntimeExecutionContext.SetNetworkRole(role);
             RuntimeRoleChanged?.Invoke(role);
+            Trace($"Runtime role published: {role}; server={NetworkServer.active}, client={NetworkClient.active}, connected={NetworkClient.isConnected}.");
         }
 
         private static ulong CreateClientNonce()
@@ -230,12 +255,21 @@ namespace DingoGameObjectsCMS.Mirror
 
         private void OnProtocolConnectionReady(int connectionId, ulong sessionId)
         {
+            Trace($"Protocol connection ready. connection={connectionId}, session={sessionId}.");
             ProtocolConnectionReady?.Invoke(connectionId, sessionId);
         }
 
         private void OnProtocolConnectionRemoved(int connectionId)
         {
+            Trace($"Protocol connection removed. connection={connectionId}.");
             ProtocolConnectionRemoved?.Invoke(connectionId);
+        }
+
+        private void Trace(string message)
+        {
+            Debug.Log(
+                $"[NETTRACE][MirrorManager][t={Time.realtimeSinceStartupAsDouble:F3}] {message}",
+                this);
         }
 
         private static void UnregisterServerHandlers()

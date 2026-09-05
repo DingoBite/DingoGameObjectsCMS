@@ -5,6 +5,7 @@ using DingoGameObjectsCMS.Mirror.Protocol;
 using DingoGameObjectsCMS.RuntimeObjects.Stores;
 using DingoUnityExtensions;
 using Mirror;
+using UnityEngine;
 
 namespace DingoGameObjectsCMS.Mirror
 {
@@ -65,15 +66,18 @@ namespace DingoGameObjectsCMS.Mirror
             NetworkServer.RegisterHandler<RtCommandEnvelope>(OnCommand, requireAuthentication: true);
             _lastStateStreamTickTime = NetworkTime.localTime;
             CoroutineParent.AddLateUpdater(this, TickStateStreams, RuntimeStore.UPDATE_ORDER + 3);
+            Trace("Endpoint created; Mirror handlers registered.");
         }
 
         public void OnConnectionConnected(int connectionId)
         {
+            Trace($"Connection connected id={connectionId}; adding protocol state.");
             _coordinator.AddConnection(connectionId);
         }
 
         public void OnConnectionDisconnected(int connectionId)
         {
+            Trace($"Connection disconnected id={connectionId}; removing protocol state.");
             _coordinator.RemoveConnection(connectionId);
         }
 
@@ -98,6 +102,7 @@ namespace DingoGameObjectsCMS.Mirror
 
         public void RequestBaseline(int connectionId, in NetStoreRef store)
         {
+            Trace($"Baseline requested connection={connectionId}, store={store}.");
             _coordinator.RequestBaseline(connectionId, store);
         }
 
@@ -133,6 +138,7 @@ namespace DingoGameObjectsCMS.Mirror
 
         public void Dispose()
         {
+            Trace($"Dispose. sessionInvalidated={IsSessionInvalidated}, readyConnections={_coordinator.GetReadyConnections().Count}.");
             NetworkServer.UnregisterHandler<RtSessionHello>();
             NetworkServer.UnregisterHandler<RtSessionReady>();
             NetworkServer.UnregisterHandler<RtStoreAck>();
@@ -157,16 +163,24 @@ namespace DingoGameObjectsCMS.Mirror
 
         private void OnHello(NetworkConnectionToClient connection, RtSessionHello message)
         {
+            Trace(
+                $"RECV Hello connection={connection.connectionId}, nonce={message.ClientNonce}, "
+                + $"protocol={message.Descriptor.ProtocolVersion}, build='{message.Descriptor.BuildId}', "
+                + $"schema='{message.Descriptor.RuntimeSchemaHash}', assets='{message.Descriptor.AssetCatalogHash}'.");
             _coordinator.ReceiveHello(connection.connectionId, message.Descriptor, message.ClientNonce);
         }
 
         private void OnReady(NetworkConnectionToClient connection, RtSessionReady message)
         {
+            Trace($"RECV Ready connection={connection.connectionId}, session={message.SessionId}.");
             _coordinator.ReceiveReady(connection.connectionId, message.SessionId);
         }
 
         private void OnAck(NetworkConnectionToClient connection, RtStoreAck message)
         {
+            Trace(
+                $"RECV Ack connection={connection.connectionId}, session={message.SessionId}, "
+                + $"store={message.Store}, baseline={message.BaselineId}, delivery={message.DeliverySequence}.");
             _coordinator.ReceiveAck(connection.connectionId, new RtStoreAckData(
                 message.SessionId,
                 message.Store,
@@ -176,6 +190,9 @@ namespace DingoGameObjectsCMS.Mirror
 
         private void OnResync(NetworkConnectionToClient connection, RtStoreResyncRequest message)
         {
+            Trace(
+                $"RECV Resync connection={connection.connectionId}, session={message.SessionId}, "
+                + $"store={message.Store}, baseline={message.BaselineId}, expectedDelivery={message.ExpectedDeliverySequence}.");
             _coordinator.ReceiveResync(connection.connectionId, new RtStoreResyncData(
                 message.SessionId,
                 message.Store,
@@ -185,6 +202,10 @@ namespace DingoGameObjectsCMS.Mirror
 
         private void OnCommand(NetworkConnectionToClient connection, RtCommandEnvelope message)
         {
+            Trace(
+                $"RECV Command connection={connection.connectionId}, type={message.Value.CommandTypeId}, "
+                + $"sequence={message.Value.ClientSequence}, generation={message.Value.ExpectedStoreGeneration}, "
+                + $"payload={message.Value.Payload?.Length ?? 0}.");
             _coordinator.ReceiveCommand(connection.connectionId, message.Value, NetworkTime.localTime);
         }
 
@@ -192,6 +213,10 @@ namespace DingoGameObjectsCMS.Mirror
             NetworkConnectionToClient connection,
             RtCommandJournalResyncRequest message)
         {
+            Trace(
+                $"RECV JournalResync connection={connection.connectionId}, session={message.SessionId}, "
+                + $"group='{message.CheckpointGroupId}', cursor={message.ExpectedCursor}, "
+                + $"fullBaseline={message.ForceCheckpointBaseline}.");
             _coordinator.ReceiveJournalResync(
                 connection.connectionId,
                 new RtCommandJournalResyncData(
@@ -206,11 +231,15 @@ namespace DingoGameObjectsCMS.Mirror
         {
             var message = manifest.ToWireManifest();
             message.AssignedConnectionId = connectionId;
+            Trace(
+                $"SEND Manifest connection={connectionId}, session={message.SessionId}, "
+                + $"assets={message.Assets?.Length ?? 0}, stores={message.Stores?.Length ?? 0}.");
             RequireConnection(connectionId).Send(message, Channels.Reliable);
         }
 
         private static void SendReject(int connectionId, RuntimeProtocolRejectCode code, string detail)
         {
+            Trace($"SEND Reject connection={connectionId}, code={code}, detail='{detail}'.");
             var connection = RequireConnection(connectionId);
             connection.Send(new RtProtocolReject
             {
@@ -222,6 +251,11 @@ namespace DingoGameObjectsCMS.Mirror
 
         private static void SendBaselineChunk(int connectionId, RuntimeBaselineChunk chunk)
         {
+            Trace(
+                $"SEND BaselineChunk connection={connectionId}, session={chunk.SessionId}, store={chunk.Store}, "
+                + $"baseline={chunk.BaselineId}, delivery={chunk.DeliverySequence}, "
+                + $"chunk={chunk.ChunkIndex + 1}/{chunk.ChunkCount}, payload={chunk.Payload?.Length ?? 0}, "
+                + $"logical={chunk.LogicalLength}.");
             RequireConnection(connectionId).Send(new RtBaselineChunk { Value = chunk }, Channels.Reliable);
         }
 
@@ -229,6 +263,10 @@ namespace DingoGameObjectsCMS.Mirror
             int connectionId,
             RuntimeCheckpointChunk chunk)
         {
+            Trace(
+                $"SEND CheckpointChunk connection={connectionId}, session={chunk.SessionId}, "
+                + $"group='{chunk.CheckpointGroupId}', section={chunk.SectionIndex + 1}/{chunk.SectionCount}, "
+                + $"page={chunk.PageIndex + 1}/{chunk.PageCount}, payload={chunk.Payload?.Length ?? 0}.");
             RequireConnection(connectionId).Send(
                 new RtCheckpointChunk { Value = chunk },
                 Channels.Reliable);
@@ -248,6 +286,10 @@ namespace DingoGameObjectsCMS.Mirror
             if (!RuntimeReliableDeltaTransportBudget.Fits(transportEnvelope))
                 throw new InvalidOperationException("RtStoreDelta exceeded its reliable transport budget after enqueue.");
 
+            Trace(
+                $"SEND Delta connection={connectionId}, session={delta.SessionId}, store={delta.Store}, "
+                + $"baseline={delta.BaselineId}, delivery={delta.DeliverySequence}, "
+                + $"revisions={delta.FromRevision}->{delta.ToRevision}, payload={delta.Payload?.Length ?? 0}.");
             RequireConnection(connectionId).Send(new RtStoreDelta
             {
                 SessionId = delta.SessionId,
@@ -263,6 +305,9 @@ namespace DingoGameObjectsCMS.Mirror
 
         private static void SendCommandResult(int connectionId, RuntimeCommandResult result)
         {
+            Trace(
+                $"SEND CommandResult connection={connectionId}, sequence={result.ClientSequence}, "
+                + $"reject={result.RejectCode}.");
             RequireConnection(connectionId).Send(new RtCommandResult
             {
                 ClientSequence = result.ClientSequence,
@@ -272,6 +317,10 @@ namespace DingoGameObjectsCMS.Mirror
 
         private static void SendStateStreamMessage(int connectionId, RtStateStreamFrameData value)
         {
+            Trace(
+                $"SEND StateStream connection={connectionId}, session={value.SessionId}, store={value.Store}, "
+                + $"type={value.StreamTypeId}, sequence={value.Sequence}, tick={value.SimulationTick}, "
+                + $"payload={value.Payload?.Length ?? 0}.");
             RequireConnection(connectionId).Send(new RtStateStreamFrame
             {
                 SessionId = value.SessionId,
@@ -287,6 +336,9 @@ namespace DingoGameObjectsCMS.Mirror
             int connectionId,
             RuntimeCommandJournalBatch batch)
         {
+            Trace(
+                $"SEND JournalBatch connection={connectionId}, session={batch.SessionId}, "
+                + $"fromCursor={batch.FromCursor}, entries={batch.Entries?.Count ?? 0}.");
             RequireConnection(connectionId).Send(
                 RuntimeCommandJournalWireCodec.ToWire(batch),
                 Channels.Reliable);
@@ -301,8 +353,15 @@ namespace DingoGameObjectsCMS.Mirror
 
         private static void DisconnectInvalidatedConnection(int connectionId)
         {
+            Trace($"Disconnecting invalidated protocol connection={connectionId}.");
             if (NetworkServer.connections.TryGetValue(connectionId, out var connection) && connection != null)
                 connection.Disconnect();
+        }
+
+        private static void Trace(string message)
+        {
+            Debug.Log(
+                $"[NETTRACE][RuntimeServer][t={Time.realtimeSinceStartupAsDouble:F3}] {message}");
         }
     }
 }
