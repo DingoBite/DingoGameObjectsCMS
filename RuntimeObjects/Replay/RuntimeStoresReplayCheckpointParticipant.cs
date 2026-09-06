@@ -1100,7 +1100,8 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
                         == RuntimeStore.STORE_ROOT_OBJECT_ID)
                     {
                         staged.CreateEntitySubtree(
-                            sourceObject.ObjectId);
+                            sourceObject.ObjectId,
+                            stagedById);
                     }
                 }
             }

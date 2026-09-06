@@ -10,6 +10,7 @@ using DingoGameObjectsCMS.Serialization;
 using Newtonsoft.Json.Linq;
 using NUnit.Framework;
 using SnakeAndMice.GameComponents.Combat.Components;
+using SnakeAndMice.GameComponents.Map.Components;
 using SnakeAndMice.GameComponents.RuntimePatches.Editor;
 using UnityEngine;
 using Object = UnityEngine.Object;
@@ -32,7 +33,10 @@ namespace DingoGameObjectsCMS.Tests.Editor
         {
             _registry = RuntimePatchEditorEnvironment.CreateRegistry();
             _cache = new GameAssetTemplateCache(_registry, RuntimeTemplatePatchCodecContext.Instance);
-            _baseAsset = CreateAsset(BASE_KEY, IdUtils.NewHash128FromGuid(), maximum: 100);
+            _baseAsset = CreateAsset(
+                BASE_KEY,
+                IdUtils.NewHash128FromGuid(),
+                heightInSubCells: 100);
             _baseBlueprint = _cache.GetOrCreate(new GameAssetReference(BASE_KEY), _baseAsset);
         }
 
@@ -49,7 +53,7 @@ namespace DingoGameObjectsCMS.Tests.Editor
         [Test]
         public void RegisteredDerivedAsset_IsResolvedByItsBaseAndOverrides()
         {
-            var overrides = Maximum(1);
+            var overrides = Height(1);
 
             var registered = RegisterDerived(overrides);
             var resolved = _cache.ResolveDerivedStrict(_baseBlueprint.Asset, overrides);
@@ -64,7 +68,9 @@ namespace DingoGameObjectsCMS.Tests.Editor
         public void UnregisteredOverrides_AreRejectedRatherThanComposedOnTheFly()
         {
             var exception = Assert.Throws<InvalidOperationException>(
-                () => _cache.ResolveDerivedStrict(_baseBlueprint.Asset, Maximum(1)));
+                () => _cache.ResolveDerivedStrict(
+                    _baseBlueprint.Asset,
+                    Height(1)));
 
             Assert.That(exception.Message, Does.Contain("is not registered in this session"));
         }
@@ -72,11 +78,11 @@ namespace DingoGameObjectsCMS.Tests.Editor
         [Test]
         public void RegisterDerived_RejectsAnAssetWhoseIdentityDoesNotMatchItsOverrides()
         {
-            var overrides = Maximum(1);
+            var overrides = Height(1);
             var impostor = CreateAsset(
                 GameAssetDerivedIdentity.CreateKey(_baseBlueprint.Asset, overrides, _registry.SchemaHash),
                 IdUtils.NewHash128FromGuid(),
-                maximum: 1);
+                heightInSubCells: 1);
 
             var exception = Assert.Throws<InvalidOperationException>(
                 () => _cache.RegisterDerived(_baseBlueprint.Asset, overrides, impostor));
@@ -87,13 +93,16 @@ namespace DingoGameObjectsCMS.Tests.Editor
         [Test]
         public void InstanceWithOverrides_MaterializesFromTheDerivedAsset()
         {
-            var overrides = Maximum(1);
+            var overrides = Height(1);
             var derived = RegisterDerived(overrides);
             var instance = Instance().WithOverrides(overrides);
 
             var runtimeObject = _cache.Materialize(instance, BuildLock(derived));
 
-            Assert.That(runtimeObject.TakeRO<HitPoints_GRC>().Maximum, Is.EqualTo(1), "overridden by the placement");
+            Assert.That(
+                runtimeObject.TakeRO<GridSpaceHeight_GRC>().HeightQ,
+                Is.EqualTo(GridSpaceQuantization.QuantizeSubCells(1f)),
+                "overridden by the placement");
             Assert.That(runtimeObject.Has<DamageImmunity_GRC>(), Is.True, "inherited from the base");
             Assert.That(runtimeObject.Key, Is.EqualTo(derived.Asset.ExactKey));
             Assert.That(runtimeObject.AssetGUID, Is.EqualTo(derived.Asset.AssetGuid));
@@ -104,7 +113,9 @@ namespace DingoGameObjectsCMS.Tests.Editor
         {
             var runtimeObject = _cache.Materialize(Instance(), BuildLock());
 
-            Assert.That(runtimeObject.TakeRO<HitPoints_GRC>().Maximum, Is.EqualTo(100));
+            Assert.That(
+                runtimeObject.TakeRO<GridSpaceHeight_GRC>().HeightQ,
+                Is.EqualTo(GridSpaceQuantization.QuantizeSubCells(100f)));
             Assert.That(runtimeObject.Key, Is.EqualTo(BASE_KEY));
         }
 
@@ -153,24 +164,33 @@ namespace DingoGameObjectsCMS.Tests.Editor
             return assetLock.Seal();
         }
 
-        private GameAsset CreateAsset(GameAssetKey key, Hash128 guid, int maximum)
+        private GameAsset CreateAsset(
+            GameAssetKey key,
+            Hash128 guid,
+            int heightInSubCells)
         {
             var asset = ScriptableObject.CreateInstance<GameAsset>();
             asset.ResetToDefault(key, guid);
             asset.SetComponents(new GameAssetComponent[]
             {
-                new HitPoints_GAC { Maximum = maximum },
+                new GridSpaceHeight_GAC
+                {
+                    HeightInSubCells = heightInSubCells,
+                },
                 new DamageImmunity_GAC(),
             });
             _owned.Add(asset);
             return asset;
         }
 
-        private static GameAssetOverrides Maximum(int value)
+        private static GameAssetOverrides Height(int value)
         {
             return new GameAssetOverrides
             {
-                OverrideFields = new Dictionary<string, JToken> { ["/HitPoints_GAC/Maximum"] = value },
+                OverrideFields = new Dictionary<string, JToken>
+                {
+                    ["/GridSpaceHeight_GAC/HeightInSubCells"] = value,
+                },
             };
         }
     }

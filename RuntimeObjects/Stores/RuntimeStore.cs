@@ -37,6 +37,8 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
 
     public class RuntimeStore : AppModelBase
     {
+        private IReadOnlyDictionary<FixedString32Bytes, RuntimeStore> _projectionStores;
+
         public const int UPDATE_ORDER = 1_000_000;
         public const long STORE_ROOT_OBJECT_ID = 0;
         public const long FIRST_USER_OBJECT_ID = STORE_ROOT_OBJECT_ID + 1;
@@ -630,6 +632,38 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
             }
 
             return runtimeObject;
+        }
+
+        public bool TryResolveProjectionStore(in RuntimeInstance instance, out RuntimeStore store)
+        {
+            if (_projectionStores == null)
+                return instance.TryResolveActiveStore(Realm, out store);
+
+            if (!_projectionStores.TryGetValue(instance.StoreId, out store)
+                || store.Realm != Realm
+                || !store.IsRuntimeInstanceActive(instance))
+            {
+                store = null;
+                return false;
+            }
+            return true;
+        }
+
+        public Entity CreateEntitySubtree(
+            long rootId,
+            IReadOnlyDictionary<FixedString32Bytes, RuntimeStore> projectionStores)
+        {
+            var previous = _projectionStores;
+            _projectionStores = projectionStores
+                                ?? throw new ArgumentNullException(nameof(projectionStores));
+            try
+            {
+                return CreateEntitySubtree(rootId);
+            }
+            finally
+            {
+                _projectionStores = previous;
+            }
         }
 
         public Entity CreateEntitySubtree(long rootId)

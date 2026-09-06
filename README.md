@@ -303,6 +303,14 @@ For ECS projection there are now two distinct layers:
 
 During initial ECB projection the root entity carries `RuntimeProjectionPending`. The final projection command removes the tag, so generic ECS consumers can explicitly exclude incomplete roots.
 
+Checkpoint staging projects each subtree with its restored store cohort.
+Projection hooks resolve cross-store references through
+`RuntimeStore.TryResolveProjectionStore`, which validates the staged epoch and
+never falls back to live stores outside that cohort. The scope is released even
+if projection fails; ordinary projection continues to resolve active stores.
+Preparing a checkpoint therefore does not publish its stores or expose a
+partially restored graph through `RS`.
+
 This is intentionally not a generic always-live two-way sync. Runtime data can stay authoritative in `RuntimeStore`, while high-frequency simulation can still move into DOTS when needed.
 
 ### Asset -> Runtime -> View

@@ -329,6 +329,9 @@ namespace DingoGameObjectsCMS.Tests.Editor
                 session.SessionId,
                 recovery);
             RuntimeClientReceiveResult result = default;
+            UnityEngine.TestTools.LogAssert.Expect(
+                LogType.Exception,
+                "InvalidOperationException: Expected project checkpoint commit preparation failure.");
             for (var i = 0; i < chunks.Count; i++)
             {
                 result = coordinator.ReceiveCheckpointChunk(

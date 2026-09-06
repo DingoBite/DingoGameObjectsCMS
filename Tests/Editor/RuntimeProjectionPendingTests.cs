@@ -1,3 +1,5 @@
+using System;
+using System.Collections.Generic;
 using DingoGameObjectsCMS.RuntimeObjects;
 using DingoGameObjectsCMS.RuntimeObjects.Objects;
 using DingoGameObjectsCMS.RuntimeObjects.Stores;
@@ -6,13 +8,36 @@ using DingoGameObjectsCMS.Stores;
 using DingoUnityExtensions;
 using NUnit.Framework;
 using Unity.Entities;
+using Unity.Collections;
 using UnityEngine;
+using Object = UnityEngine.Object;
 
 namespace DingoGameObjectsCMS.Tests.Editor
 {
     public class RuntimeProjectionPendingTestComponent :
         GameRuntimeComponent<RuntimeProjectionPendingTestComponent>
     {
+    }
+
+    public class RuntimeProjectionReferenceTestComponent : GameRuntimeComponent
+    {
+        public RuntimeInstance Target;
+        public RuntimeInstance Outside;
+        public RuntimeStore Resolved;
+        public bool OutsideRejected;
+        public bool FailProjection;
+
+        public override void SetupForEntity(
+            RuntimeStore store,
+            EntityCommandBuffer ecb,
+            GameRuntimeObject runtimeObject,
+            Entity entity)
+        {
+            Assert.That(store.TryResolveProjectionStore(Target, out Resolved), Is.True);
+            OutsideRejected = !store.TryResolveProjectionStore(Outside, out _);
+            if (FailProjection)
+                throw new InvalidOperationException("Expected projection failure.");
+        }
     }
 
     public class RuntimeProjectionPendingTests
@@ -93,6 +118,55 @@ namespace DingoGameObjectsCMS.Tests.Editor
                 _entityManager.GetComponentData<RuntimeGameAssetIdentity>(
                     entity),
                 Is.EqualTo(expected));
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public void StagedProjectionResolvesOnlyItsCohortAndAlwaysReleasesScope(bool failProjection)
+        {
+            var published = RuntimeStores.GetOrAddRuntimeStore("projection-target");
+            var outside = RuntimeStores.GetOrAddRuntimeStore("projection-outside");
+            var stagedTarget = RuntimeStores.PrepareRestoreStore(published.Id, published.Realm);
+            var stagedRoot = RuntimeStores.PrepareRestoreStore(_store.Id, _store.Realm);
+            try
+            {
+                var component = new RuntimeProjectionReferenceTestComponent
+                {
+                    Target = stagedTarget.Create().RuntimeInstance,
+                    Outside = outside.Create().RuntimeInstance,
+                    FailProjection = failProjection,
+                };
+                var root = stagedRoot.Create();
+                root.AddOrReplaceById(uint.MaxValue - 1u, component);
+                var cohort = new Dictionary<FixedString32Bytes, RuntimeStore>
+                {
+                    { stagedRoot.Id, stagedRoot },
+                    { stagedTarget.Id, stagedTarget },
+                };
+
+                if (failProjection)
+                {
+                    Assert.Throws<InvalidOperationException>(
+                        () => stagedRoot.CreateEntitySubtree(root.InstanceId, cohort));
+                }
+                else
+                {
+                    stagedRoot.CreateEntitySubtree(root.InstanceId, cohort);
+                }
+
+                Assert.That(component.Resolved, Is.SameAs(stagedTarget));
+                Assert.That(component.OutsideRejected, Is.True);
+                Assert.That(RuntimeStores.GetRuntimeStore(published.Id, published.Realm),
+                    Is.SameAs(published));
+                Assert.That(stagedRoot.TryResolveProjectionStore(component.Target, out _), Is.False);
+                Assert.That(stagedRoot.TryResolveProjectionStore(component.Outside, out var restored), Is.True);
+                Assert.That(restored, Is.SameAs(outside));
+            }
+            finally
+            {
+                stagedRoot.Retire();
+                stagedTarget.Retire();
+            }
         }
 
         private void PlaybackEditingCommands()
