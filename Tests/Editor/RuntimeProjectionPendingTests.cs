@@ -164,8 +164,10 @@ namespace DingoGameObjectsCMS.Tests.Editor
             }
             finally
             {
-                stagedRoot.Retire();
-                stagedTarget.Retire();
+                var retire = typeof(RuntimeStore).GetMethod("Retire",
+                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+                retire.Invoke(stagedRoot, null);
+                retire.Invoke(stagedTarget, null);
             }
         }
 

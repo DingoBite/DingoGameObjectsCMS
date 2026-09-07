@@ -4,6 +4,7 @@ using DingoGameObjectsCMS.RuntimeObjects.Commands;
 using DingoGameObjectsCMS.RuntimeObjects.Replay;
 using DingoGameObjectsCMS.RuntimeObjects.Stores;
 using DingoGameObjectsCMS.Stores;
+using Unity.Collections;
 using UnityEngine;
 
 namespace DingoGameObjectsCMS.Mirror.Protocol
@@ -163,6 +164,22 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                     + $"detail='{result.Detail}'.");
                 _output.Reject(result.RejectCode, result.Detail);
                 return result;
+            }
+
+            var replicaStoreIds = new FixedString32Bytes[_handshake.Manifest.Stores.Count];
+            for (var i = 0; i < replicaStoreIds.Length; i++)
+            {
+                replicaStoreIds[i] = _handshake.Manifest.Stores[i].StoreId;
+            }
+            try
+            {
+                RuntimeStores.BeginReplicaSession(replicaStoreIds);
+            }
+            catch (InvalidOperationException exception)
+            {
+                var failure = _handshake.ReceiveReject(RuntimeProtocolRejectCode.InvalidEnvelope, exception.Message);
+                _output.Reject(failure.RejectCode, failure.Detail);
+                return failure;
             }
 
             Trace(

@@ -393,6 +393,29 @@ namespace DingoGameObjectsCMS.Stores
             return store;
         }
 
+        // Generations belong to the remote authority. Local epochs survive a
+        // connection change so handles from the previous authority stay stale.
+        public static void BeginReplicaSession(IReadOnlyList<FixedString32Bytes> storeIds)
+        {
+            if (storeIds == null)
+                throw new ArgumentNullException(nameof(storeIds));
+
+            var seen = new HashSet<FixedString32Bytes>();
+            for (var i = 0; i < storeIds.Count; i++)
+            {
+                var id = storeIds[i];
+                if (id.Length == 0 || !seen.Add(id))
+                    throw new ArgumentException("Replica session store ids must be non-empty and unique.", nameof(storeIds));
+                if (_clientStoresById.ContainsKey(id))
+                    throw new InvalidOperationException($"Replica store '{id}' still has an active lifecycle owner; remove it before beginning another session.");
+            }
+
+            for (var i = 0; i < storeIds.Count; i++)
+            {
+                _clientStoreGenerationById.Remove(storeIds[i]);
+            }
+        }
+
         public static void PrepareReplicaStore(RuntimeStore store, uint authoritativeGeneration)
         {
             if (store == null)
@@ -601,10 +624,11 @@ namespace DingoGameObjectsCMS.Stores
 
             var generations = GetGenerationDict(StoreRealm.Client);
             var reservedGeneration = generations.GetValueOrDefault(store.Id);
-            if (reservedGeneration != store.StoreGeneration)
+            var reservedEpoch = GetEpochDict(StoreRealm.Client).GetValueOrDefault(store.Id);
+            if (reservedGeneration != store.StoreGeneration || reservedEpoch != store.Epoch)
             {
                 throw new InvalidOperationException(
-                    $"Replica store '{store.Id}' prepared generation {store.StoreGeneration}, but registry reservation is {reservedGeneration}.");
+                    $"Replica store '{store.Id}' prepared generation/epoch {store.StoreGeneration}/{store.Epoch}, but registry reservation is {reservedGeneration}/{reservedEpoch}.");
             }
 
             var dict = GetDict(StoreRealm.Client);
@@ -659,10 +683,11 @@ namespace DingoGameObjectsCMS.Stores
                     throw new InvalidOperationException($"Replica publication group contains duplicate store '{store.Id}'.");
 
                 var reservedGeneration = generations.GetValueOrDefault(store.Id);
-                if (reservedGeneration != store.StoreGeneration)
+                var reservedEpoch = GetEpochDict(StoreRealm.Client).GetValueOrDefault(store.Id);
+                if (reservedGeneration != store.StoreGeneration || reservedEpoch != store.Epoch)
                 {
                     throw new InvalidOperationException(
-                        $"Replica store '{store.Id}' prepared generation {store.StoreGeneration}, but registry reservation is {reservedGeneration}.");
+                        $"Replica store '{store.Id}' prepared generation/epoch {store.StoreGeneration}/{store.Epoch}, but registry reservation is {reservedGeneration}/{reservedEpoch}.");
                 }
 
                 dict.TryGetValue(store.Id, out var previousStore);

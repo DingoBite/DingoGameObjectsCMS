@@ -13,7 +13,6 @@ using DingoGameObjectsCMS.Serialization;
 using Newtonsoft.Json.Linq;
 using NUnit.Framework;
 using SnakeAndMice.GameComponents.Combat.Components;
-using SnakeAndMice.GameComponents.Map.Components;
 using SnakeAndMice.GameComponents.RuntimePatches.Editor;
 using UnityEngine;
 using Object = UnityEngine.Object;
@@ -60,10 +59,10 @@ namespace DingoGameObjectsCMS.Tests.Editor
         public void Build_RegistersTheVariantAnAuthoredPlacementAsksFor()
         {
             var assetLock = BuildLock(
-                Unit(heightInSubCells: 100),
+                Unit(maximum: 100),
                 Level(new DiscoveryFixture_GAC
                 {
-                    Direct = Placement(UNIT, Height(1)),
+                    Direct = Placement(UNIT, Maximum(1)),
                 }));
 
             var derived = DerivedEntries(assetLock).Single();
@@ -79,7 +78,7 @@ namespace DingoGameObjectsCMS.Tests.Editor
                 derived.ResolvedKey,
                 Is.EqualTo(GameAssetDerivedIdentity.CreateKey(
                     _templates.ResolveStrict(new GameAssetReference(UNIT), assetLock).Asset,
-                    Height(1),
+                    Maximum(1),
                     _registry.SchemaHash)),
                 "the entry is keyed by the identity both sides compute from the base and the override");
             Assert.That(
@@ -92,17 +91,17 @@ namespace DingoGameObjectsCMS.Tests.Editor
         public void DerivedLockEntry_MaterializesThePlacementWithSessionCatalogIndices()
         {
             var assetLock = BuildLock(
-                Unit(heightInSubCells: 100),
+                Unit(maximum: 100),
                 Level(new DiscoveryFixture_GAC
                 {
-                    Direct = Placement(UNIT, Height(1)),
+                    Direct = Placement(UNIT, Maximum(1)),
                 }));
 
             var runtimeObject = _templates.Materialize(Placement(LEVEL, assetLock), assetLock);
 
             Assert.That(
-                runtimeObject.TakeRO<GridSpaceHeight_GRC>().HeightQ,
-                Is.EqualTo(GridSpaceQuantization.QuantizeSubCells(1f)),
+                runtimeObject.TakeRO<HitPoints_GRC>().Maximum,
+                Is.EqualTo(1),
                 "overridden by the placement");
             Assert.That(runtimeObject.Has<DamageImmunity_GRC>(), Is.True, "inherited from the base");
             Assert.That(runtimeObject.Key, Is.EqualTo(DerivedEntries(assetLock).Single().ResolvedKey));
@@ -116,14 +115,14 @@ namespace DingoGameObjectsCMS.Tests.Editor
         public void Build_RegistersOneAssetPerDistinctVariant()
         {
             var assetLock = BuildLock(
-                Unit(heightInSubCells: 100),
+                Unit(maximum: 100),
                 Level(new DiscoveryFixture_GAC
                 {
-                    Direct = Placement(UNIT, Height(1)),
+                    Direct = Placement(UNIT, Maximum(1)),
                     Nested = new List<DiscoveryPlacement>
                     {
-                        new() { Instance = Placement(UNIT, Height(1)), Note = "same variant" },
-                        new() { Instance = Placement(UNIT, Height(2)), Note = "another variant" },
+                        new() { Instance = Placement(UNIT, Maximum(1)), Note = "same variant" },
+                        new() { Instance = Placement(UNIT, Maximum(2)), Note = "another variant" },
                     },
                 }));
 
@@ -136,12 +135,12 @@ namespace DingoGameObjectsCMS.Tests.Editor
         public void Build_RegistersVariantsIntroducedInsideADerivedAsset()
         {
             var assetLock = BuildLock(
-                Weapon(heightInSubCells: 10),
+                Weapon(maximum: 10),
                 Unit(
-                    heightInSubCells: 100,
+                    maximum: 100,
                     new DiscoveryFixture_GAC
                     {
-                        Direct = Placement(WEAPON, Height(5)),
+                        Direct = Placement(WEAPON, Maximum(5)),
                     }),
                 Level(new DiscoveryFixture_GAC
                 {
@@ -149,7 +148,7 @@ namespace DingoGameObjectsCMS.Tests.Editor
                     {
                         OverrideFields = new Dictionary<string, JToken>
                         {
-                            ["/DiscoveryFixture_GAC/Direct/Overrides/OverrideFields/~1GridSpaceHeight_GAC~1HeightInSubCells"] = 7,
+                            ["/DiscoveryFixture_GAC/Direct/Overrides/OverrideFields/~1HitPoints_GAC~1Maximum"] = 7,
                         },
                     }),
                 }));
@@ -162,9 +161,9 @@ namespace DingoGameObjectsCMS.Tests.Editor
             var unitVariant = DerivedEntries(assetLock).Single(entry => IsVariantOf(entry, UNIT));
             Assert.That(
                 _templates.Materialize(Placement(unitVariant.ResolvedKey, assetLock), assetLock)
-                    .TakeRO<GridSpaceHeight_GRC>()
-                    .HeightQ,
-                Is.EqualTo(GridSpaceQuantization.QuantizeSubCells(7f)),
+                    .TakeRO<HitPoints_GRC>()
+                    .Maximum,
+                Is.EqualTo(7),
                 "the rewritten inner placement resolves to its own registered variant");
         }
 
@@ -174,10 +173,10 @@ namespace DingoGameObjectsCMS.Tests.Editor
             var ghost = new GameAssetKey(MODULE, "unit", "ghost", "1.0.0");
 
             var exception = Assert.Throws<InvalidDataException>(() => BuildLock(
-                Unit(heightInSubCells: 100),
+                Unit(maximum: 100),
                 Level(new DiscoveryFixture_GAC
                 {
-                    Direct = Placement(ghost, Height(1)),
+                    Direct = Placement(ghost, Maximum(1)),
                 })));
 
             Assert.That(exception.Message, Does.Contain(ghost.ToString()));
@@ -216,26 +215,26 @@ namespace DingoGameObjectsCMS.Tests.Editor
                 .WithOverrides(overrides);
         }
 
-        private static GameAssetOverrides Height(int value)
+        private static GameAssetOverrides Maximum(int value)
         {
             return new GameAssetOverrides
             {
                 OverrideFields = new Dictionary<string, JToken>
                 {
-                    ["/GridSpaceHeight_GAC/HeightInSubCells"] = value,
+                    ["/HitPoints_GAC/Maximum"] = value,
                 },
             };
         }
 
         private GameAsset Unit(
-            int heightInSubCells,
+            int maximum,
             params GameAssetComponent[] extra)
         {
             var components = new List<GameAssetComponent>
             {
-                new GridSpaceHeight_GAC
+                new HitPoints_GAC
                 {
-                    HeightInSubCells = heightInSubCells,
+                    Maximum = maximum,
                 },
                 new DamageImmunity_GAC(),
             };
@@ -243,15 +242,15 @@ namespace DingoGameObjectsCMS.Tests.Editor
             return CreateAsset(UNIT, components);
         }
 
-        private GameAsset Weapon(int heightInSubCells)
+        private GameAsset Weapon(int maximum)
         {
             return CreateAsset(
                 WEAPON,
                 new List<GameAssetComponent>
                 {
-                    new GridSpaceHeight_GAC
+                    new HitPoints_GAC
                     {
-                        HeightInSubCells = heightInSubCells,
+                        Maximum = maximum,
                     },
                 });
         }
