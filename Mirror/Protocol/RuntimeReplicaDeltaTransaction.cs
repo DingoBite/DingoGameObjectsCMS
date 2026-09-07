@@ -46,10 +46,15 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                         delta.Store.StoreId,
                         delta.Store.StoreGeneration,
                         StoreRealm.Client,
-                        out active)
-                    || active.StoreRevision != delta.FromRevision)
+                        out active))
                 {
-                    return false;
+                    throw new InvalidOperationException($"No active replica for delta '{delta.Store}'.");
+                }
+                if (active.StoreRevision != delta.FromRevision)
+                {
+                    throw new InvalidOperationException(
+                        $"Replica '{delta.Store}' revision {active.StoreRevision} cannot apply delta "
+                        + $"from {delta.FromRevision} to {delta.ToRevision}.");
                 }
 
                 var plan = ValidateAndBuildPlan(active, delta, usePreparedRealm: false);

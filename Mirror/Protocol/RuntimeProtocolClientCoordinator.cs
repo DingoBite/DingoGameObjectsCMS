@@ -798,6 +798,10 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                     if (initial.ApplyToStaging || !_baselineGroupPublished)
                         return;
 
+                    UnityEngine.Debug.LogWarning($"Runtime replica resync: store={request.Store}, "
+                        + $"reason={request.Reason}, expectedDelivery={request.ExpectedDeliverySequence}. "
+                        + (request.Reason == RuntimeClientResyncReason.DeltaApplyFailed
+                            ? _deltaTransaction.LastFailure?.Message : string.Empty));
                     SendResync(new RtStoreResyncData(
                         request.SessionId,
                         request.Store,
