@@ -17,6 +17,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
 
         private readonly List<GameRuntimeCommand> _queue = new(capacity: 64);
         private readonly List<GameRuntimeCommand> _processing = new(capacity: 64);
+        private readonly List<object> _executionBlockers = new();
 
         private bool _scheduled;
         private bool _flushInProgress;
@@ -38,6 +39,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
         private RuntimeCommandOutboundDispatcher _outboundDispatcher;
 
         public int QueuedCount => _queue.Count;
+        public bool ExecutionBlocked => _executionBlockers.Count != 0;
         public IReadOnlyList<GameRuntimeCommand> QueuedCommands => _queue;
         public bool HasOutboundDispatcher => _outboundDispatcher != null;
         public RuntimeCommandsBusMode Mode => _mode;
@@ -192,6 +194,45 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
             _clearReplayStoreScopeRequested = false;
         }
 
+        public void BlockExecution(object owner)
+        {
+            if (owner == null)
+                throw new ArgumentNullException(nameof(owner));
+            if (_flushInProgress)
+                throw new InvalidOperationException("Runtime command execution cannot be blocked during Drain.");
+            if (FindExecutionBlocker(owner) < 0)
+                _executionBlockers.Add(owner);
+            CancelScheduledFlush();
+        }
+
+        public void UnblockExecution(object owner)
+        {
+            if (owner == null)
+                throw new ArgumentNullException(nameof(owner));
+            var index = FindExecutionBlocker(owner);
+            if (index < 0)
+                return;
+            _executionBlockers.RemoveAt(index);
+            if (!ExecutionBlocked && _queue.Count != 0)
+                ScheduleFlush();
+        }
+
+        private int FindExecutionBlocker(object owner)
+        {
+            for (var index = 0; index < _executionBlockers.Count; index++)
+            {
+                if (ReferenceEquals(_executionBlockers[index], owner))
+                    return index;
+            }
+            return -1;
+        }
+
+        private void RequireExecutionAvailable()
+        {
+            if (ExecutionBlocked)
+                throw new InvalidOperationException("Runtime command execution is blocked by an active boundary.");
+        }
+
         public void SetOutboundDispatcher(RuntimeCommandOutboundDispatcher outboundDispatcher)
         {
             _outboundDispatcher = outboundDispatcher ?? throw new ArgumentNullException(nameof(outboundDispatcher));
@@ -206,6 +247,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
         {
             if (command == null)
                 throw new ArgumentNullException(nameof(command));
+            RequireExecutionAvailable();
 
             switch (authority.StableRole)
             {
@@ -231,6 +273,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
             if (command == null)
                 return;
 
+            RequireExecutionAvailable();
             _queue.Add(command);
             ScheduleFlush();
         }
@@ -240,6 +283,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
             if (commands == null)
                 return;
 
+            RequireExecutionAvailable();
             foreach (var c in commands)
             {
                 if (c != null)
@@ -365,11 +409,13 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
                     "A recorded command cannot execute during command Drain.");
             }
 
+            RequireExecutionAvailable();
             ExecuteCommand(command);
         }
 
         public int Drain(long applyBeforeTick)
         {
+            RequireExecutionAvailable();
             if (applyBeforeTick < 0)
                 throw new ArgumentOutOfRangeException(nameof(applyBeforeTick));
             if (_flushInProgress)
@@ -391,6 +437,8 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
 
         private void ScheduleFlush()
         {
+            if (ExecutionBlocked)
+                return;
             if (_mode != RuntimeCommandsBusMode.AutomaticLateUpdate)
                 return;
             if (_flushInProgress)
@@ -413,6 +461,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
 
         private int DrainCore(long applyBeforeTick)
         {
+            RequireExecutionAvailable();
             var processedCount = 0;
             _flushInProgress = true;
             try
