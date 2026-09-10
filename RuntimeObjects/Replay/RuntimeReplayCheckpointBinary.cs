@@ -174,6 +174,22 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
             return _stream.ToCheckpointPages();
         }
 
+        public byte[] CalculateSha256()
+        {
+            ThrowIfDisposed();
+            _writer.Flush();
+            var position = _stream.Position;
+            try
+            {
+                _stream.Position = 0;
+                return RuntimeReplayHash.CalculateSha256(_stream, _stream.Length);
+            }
+            finally
+            {
+                _stream.Position = position;
+            }
+        }
+
         public void Dispose()
         {
             if (_disposed)

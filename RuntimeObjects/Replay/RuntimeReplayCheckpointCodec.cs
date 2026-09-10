@@ -22,15 +22,11 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
             string schemaHash,
             IReadOnlyList<RuntimeReplayCheckpointSection> sections)
         {
-            var bodyPages = EncodeBodyPages(
+            var overallHash = CalculateBodyHash(
                 completedTick,
                 cursor,
                 schemaHash,
-                sections,
-                out var bodyLength);
-            var overallHash = RuntimeReplayHash.CalculateSha256(
-                bodyPages,
-                bodyLength);
+                sections);
             var result = new RuntimeReplayCheckpointEnvelope(
                 completedTick,
                 cursor,
@@ -241,15 +237,11 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
                 previousId = section.SectionId;
             }
 
-            var bodyPages = EncodeBodyPages(
+            var expectedOverallHash = CalculateBodyHash(
                 value.CompletedTick,
                 value.Cursor,
                 value.SchemaHash,
-                value.Sections,
-                out var bodyLength);
-            var expectedOverallHash = RuntimeReplayHash.CalculateSha256(
-                bodyPages,
-                bodyLength);
+                value.Sections);
             if (!RuntimeReplayHash.FixedTimeEquals(
                     expectedOverallHash,
                     value.OverallHash))
@@ -284,13 +276,11 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
             }
         }
 
-        private static IReadOnlyList<RuntimeReplayCheckpointPage>
-            EncodeBodyPages(
+        private static byte[] CalculateBodyHash(
             long completedTick,
             ulong cursor,
             string schemaHash,
-            IReadOnlyList<RuntimeReplayCheckpointSection> sections,
-            out int payloadLength)
+            IReadOnlyList<RuntimeReplayCheckpointSection> sections)
         {
             if (completedTick < -1)
             {
@@ -318,8 +308,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
                 cursor,
                 schemaHash,
                 sections);
-            payloadLength = writer.Length;
-            return writer.ToPages();
+            return writer.CalculateSha256();
         }
 
         private static void WriteBody(
