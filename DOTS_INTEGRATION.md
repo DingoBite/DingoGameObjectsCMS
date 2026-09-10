@@ -516,6 +516,29 @@ project topology/materialization hook для динамического membersh
 prevalidation и применения строк. Буферы Entity-ссылок и renderer caches обычно
 derived и не сериализуются.
 
+Для одного синхронного прохода применения строк generated API предоставляет
+опциональный `PersistedEntityWriteContext(SystemBase lookupOwner)`. Конструктор
+завершает все tracked jobs мира и получает writable `ComponentLookup<T>` через
+переданную систему. Этот barrier инвалидирует ранее полученные native views,
+включая `DynamicBuffer<T>` и `ComponentLookup<T>` вызывающего кода. Buffers и
+lookup-based guards для строк нужно получать после подготовки контекста.
+Контекст передаётся последним аргументом
+`ReadPersistedEntityState(..., layoutCache, writeContext)` либо применяется через
+одноимённый метод самого контекста. Он меняет только запись значений и
+enablement компонентов; порядок чтения, presence/topology guards, buffer APIs
+и canonical bytes остаются теми же. Обычный вызов без контекста сохраняется.
+
+Создавать контекст следует после materialization и всех структурных изменений,
+а освобождать до следующего root resize, system update или запуска jobs.
+Во время прохода нельзя запускать jobs или менять структуру мира. Перед чтением
+каждой строки контекст проверяет disposal, тот же живой мир, его sequence,
+`EntityOrderVersion` и `GlobalSystemVersion`; изменения отклоняются до чтения
+байтов. Опциональный `PersistedEntityLayoutCache` по-прежнему проверяет текущую
+Entity и её archetype. Контекст не владеет миром или системой и не переносится
+между проходами: после инвалидирования нужен новый экземпляр. Обычные
+component/enablement writes и изменение содержимого существующих buffers
+допустимы внутри прохода.
+
 ## Системы — законы над сигнатурами
 
 ECS-система описывает правило, применяемое ко всем подходящим сигнатурам. Это не

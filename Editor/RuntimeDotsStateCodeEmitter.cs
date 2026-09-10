@@ -231,6 +231,7 @@ namespace DingoGameObjectsCMS.Editor
                 .ToArray();
 
             EmitPersistedEntityLayoutCache(builder, persisted);
+            EmitPersistedEntityWriteContext(builder, persisted);
             builder.AppendLine()
                 .AppendLine("        /// <summary>")
                 .AppendLine("        /// Cold checkpoint-barrier path only. Writes one entity row in fixed schema order.")
@@ -296,8 +297,14 @@ namespace DingoGameObjectsCMS.Editor
                 .AppendLine("            EntityManager entityManager,")
                 .AppendLine("            Entity entity,")
                 .AppendLine("            RuntimeReplayCheckpointReader reader,")
-                .AppendLine("            PersistedEntityLayoutCache layoutCache = null)")
+                .AppendLine("            PersistedEntityLayoutCache layoutCache = null,")
+                .AppendLine("            PersistedEntityWriteContext writeContext = null)")
                 .AppendLine("        {")
+                .AppendLine("            if (writeContext != null)")
+                .AppendLine("            {")
+                .AppendLine("                writeContext.ReadPersistedEntityState(entityManager, entity, reader, layoutCache);")
+                .AppendLine("                return;")
+                .AppendLine("            }")
                 .AppendLine("            var layout = layoutCache?.GetLayout(entityManager, entity);")
                 .AppendLine("            if (layout == null && !entityManager.Exists(entity))")
                 .AppendLine("                throw new ArgumentException(\"Cannot restore DOTS state for a missing entity.\", nameof(entity));")
@@ -386,6 +393,104 @@ namespace DingoGameObjectsCMS.Editor
                     .AppendLine(">(entity);");
             }
             builder.AppendLine("            }")
+                .AppendLine("        }");
+        }
+
+        private static void EmitPersistedEntityWriteContext(
+            StringBuilder builder,
+            RuntimeDotsStateGeneratedComponentDescriptor[] persisted)
+        {
+            var writable = persisted.Where(value =>
+                value.Schema.Kind == RuntimeDotsStateComponentKind.Component
+                && (!value.IsZeroSized || value.Schema.Enableable)).ToArray();
+            builder.AppendLine()
+                .AppendLine("        // One synchronous nonstructural row pass. No jobs may start while this context is in use.")
+                .AppendLine("        public class PersistedEntityWriteContext : IDisposable")
+                .AppendLine("        {")
+                .AppendLine("            private readonly EntityManager _entityManager;")
+                .AppendLine("            private readonly World _world;")
+                .AppendLine("            private readonly ulong _worldSequence;")
+                .AppendLine("            private readonly int _entityOrderVersion;")
+                .AppendLine("            private readonly uint _globalSystemVersion;")
+                .AppendLine("            private bool _disposed;");
+            foreach (var descriptor in writable)
+            {
+                builder.Append("            private ComponentLookup<")
+                    .Append(TypeName(descriptor.RuntimeType))
+                    .Append("> _component")
+                    .Append(descriptor.Schema.ComponentTypeId)
+                    .AppendLine(";");
+            }
+            builder.AppendLine()
+                .AppendLine("            public PersistedEntityWriteContext(SystemBase lookupOwner)")
+                .AppendLine("            {")
+                .AppendLine("                if (lookupOwner == null)")
+                .AppendLine("                    throw new ArgumentNullException(nameof(lookupOwner));")
+                .AppendLine("                _entityManager = lookupOwner.EntityManager;")
+                .AppendLine("                _world = _entityManager.World;")
+                .AppendLine("                if (!_world.IsCreated)")
+                .AppendLine("                    throw new InvalidOperationException(\"Cannot prepare DOTS state writes for a destroyed world.\");")
+                .AppendLine("                _entityManager.CompleteAllTrackedJobs();");
+            foreach (var descriptor in writable)
+            {
+                builder.Append("                _component")
+                    .Append(descriptor.Schema.ComponentTypeId)
+                    .Append(" = lookupOwner.GetComponentLookup<")
+                    .Append(TypeName(descriptor.RuntimeType))
+                    .AppendLine(">(false);");
+            }
+            builder.AppendLine("                _worldSequence = _entityManager.WorldUnmanaged.SequenceNumber;")
+                .AppendLine("                _entityOrderVersion = _entityManager.EntityOrderVersion;")
+                .AppendLine("                _globalSystemVersion = _entityManager.GlobalSystemVersion;")
+                .AppendLine("            }")
+                .AppendLine()
+                .AppendLine("            public void ReadPersistedEntityState(EntityManager entityManager, Entity entity,")
+                .AppendLine("                RuntimeReplayCheckpointReader reader, PersistedEntityLayoutCache layoutCache = null)")
+                .AppendLine("            {")
+                .AppendLine("                RequireMatches(entityManager);")
+                .AppendLine("                var layout = layoutCache?.GetLayout(entityManager, entity);")
+                .AppendLine("                if (layout == null && !entityManager.Exists(entity))")
+                .AppendLine("                    throw new ArgumentException(\"Cannot restore DOTS state for a missing entity.\", nameof(entity));")
+                .AppendLine("                if (reader == null)")
+                .AppendLine("                    throw new ArgumentNullException(nameof(reader));");
+            var rowBody = new StringBuilder();
+            foreach (var descriptor in persisted)
+            {
+                EmitReadEntityComponent(rowBody, descriptor, prevalidateOnly: false, useComponentLookups: true);
+            }
+            using (var lines = new System.IO.StringReader(rowBody.ToString()))
+            {
+                string line;
+                while ((line = lines.ReadLine()) != null)
+                {
+                    if (line.Length == 0)
+                    {
+                        builder.AppendLine();
+                    }
+                    else
+                    {
+                        builder.Append("    ").AppendLine(line);
+                    }
+                }
+            }
+            builder.AppendLine("            }")
+                .AppendLine()
+                .AppendLine("            private void RequireMatches(EntityManager entityManager)")
+                .AppendLine("            {")
+                .AppendLine("                if (_disposed)")
+                .AppendLine("                    throw new ObjectDisposedException(nameof(PersistedEntityWriteContext));")
+                .AppendLine("                if (!_world.IsCreated || !_entityManager.Equals(entityManager)")
+                .AppendLine("                    || _worldSequence != entityManager.WorldUnmanaged.SequenceNumber)")
+                .AppendLine("                    throw new InvalidOperationException(\"DOTS state write context belongs to another world or a destroyed world.\");")
+                .AppendLine("                if (_entityOrderVersion != entityManager.EntityOrderVersion")
+                .AppendLine("                    || _globalSystemVersion != entityManager.GlobalSystemVersion)")
+                .AppendLine("                    throw new InvalidOperationException(\"DOTS state write context cannot cross a structural change or system update.\");")
+                .AppendLine("            }")
+                .AppendLine()
+                .AppendLine("            public void Dispose()")
+                .AppendLine("            {")
+                .AppendLine("                _disposed = true;")
+                .AppendLine("            }")
                 .AppendLine("        }");
         }
 
@@ -577,7 +682,8 @@ namespace DingoGameObjectsCMS.Editor
         private static void EmitReadEntityComponent(
             StringBuilder builder,
             RuntimeDotsStateGeneratedComponentDescriptor descriptor,
-            bool prevalidateOnly)
+            bool prevalidateOnly,
+            bool useComponentLookups = false)
         {
             var id = descriptor.Schema.ComponentTypeId;
             var typeName = TypeName(descriptor.RuntimeType);
@@ -727,19 +833,34 @@ namespace DingoGameObjectsCMS.Editor
                         .Append(id)
                         .Append(" = Read_")
                         .Append(id)
-                        .AppendLine("(reader);")
-                        .Append("                entityManager.SetComponentData(entity, value")
-                        .Append(id)
-                        .AppendLine(");");
+                        .AppendLine("(reader);");
+                    if (useComponentLookups)
+                    {
+                        builder.Append("                _component").Append(id)
+                            .Append("[entity] = value").Append(id).AppendLine(";");
+                    }
+                    else
+                    {
+                        builder.Append("                entityManager.SetComponentData(entity, value")
+                            .Append(id).AppendLine(");");
+                    }
                 }
             }
             if (descriptor.Schema.Enableable && !prevalidateOnly)
             {
-                builder.Append("                entityManager.SetComponentEnabled<")
-                    .Append(typeName)
-                    .Append(">(entity, enabled")
-                    .Append(id)
-                    .AppendLine(");");
+                if (useComponentLookups && descriptor.Schema.Kind == RuntimeDotsStateComponentKind.Component)
+                {
+                    builder.Append("                _component").Append(id)
+                        .Append(".SetComponentEnabled(entity, enabled").Append(id).AppendLine(");");
+                }
+                else
+                {
+                    builder.Append("                entityManager.SetComponentEnabled<")
+                        .Append(typeName)
+                        .Append(">(entity, enabled")
+                        .Append(id)
+                        .AppendLine(");");
+                }
             }
             builder.AppendLine("            }");
         }

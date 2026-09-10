@@ -21,6 +21,23 @@ namespace DingoGameObjectsCMS.Tests.Editor
     {
     }
 
+    [RuntimeDotsPersisted]
+    public struct RuntimeDotsPersistedEnabledValueTestComponent : IComponentData, IEnableableComponent
+    {
+        public int Value;
+    }
+
+    [RuntimeDotsPersisted]
+    public struct RuntimeDotsPersistedEnableableTestBuffer : IBufferElementData, IEnableableComponent
+    {
+        public int Value;
+    }
+
+    [RuntimeDotsPersisted]
+    public struct RuntimeDotsPersistedPlainTag : IComponentData
+    {
+    }
+
     [RuntimeDotsDerived]
     public struct RuntimeDotsDerivedTestComponent : IComponentData
     {
@@ -443,7 +460,8 @@ namespace DingoGameObjectsCMS.Tests.Editor
             Assert.That(source, Does.Contain("entityManager.GetChunk(entity).Archetype"));
             Assert.That(source, Does.Contain("_worldSequence != entityManager.WorldUnmanaged.SequenceNumber"));
             Assert.That(CountOccurrences(source, "PersistedEntityLayoutCache layoutCache = null)"), Is.EqualTo(3));
-            Assert.That(CountOccurrences(source, "var layout = layoutCache?.GetLayout(entityManager, entity);"), Is.EqualTo(3));
+            Assert.That(CountOccurrences(source, "var layout = layoutCache?.GetLayout(entityManager, entity);"), Is.EqualTo(4));
+            Assert.That(source, Does.Contain("PersistedEntityWriteContext writeContext = null)"));
             Assert.That(source, Does.Contain("public readonly bool Present"));
             Assert.That(
                 source,
@@ -459,6 +477,74 @@ namespace DingoGameObjectsCMS.Tests.Editor
             Assert.That(source, Does.Not.Contain("AssemblyName"));
             Assert.That(source, Does.Not.Contain("ValueSignature"));
             Assert.That(source, Does.Not.Contain("Tombstone"));
+        }
+
+        [Test]
+        public void Emitter_PreparedWritesKeepTheSameRowProgramAndGuardNativeHandleLifetime()
+        {
+            var discovery = RuntimeDotsStateSchemaDiscovery.Discover(new[]
+            {
+                typeof(RuntimeDotsPersistedTestComponent), typeof(RuntimeDotsPersistedEnableableTag),
+                typeof(RuntimeDotsPersistedEnabledValueTestComponent), typeof(RuntimeDotsPersistedEnableableTestBuffer),
+                typeof(RuntimeDotsPersistedPlainTag), typeof(RuntimeDotsPersistedValidatedTestBuffer),
+            });
+            var manifest = RuntimeDotsStateSchemaReconciler.Reconcile(null,
+                discovery.Components.Select(value => value.Schema).ToArray(), codecVersion: 1);
+            RuntimeDotsStateSchemaGenerationCore.BindReconciledSchema(discovery.Components, manifest);
+            var source = RuntimeDotsStateCodeEmitter.Generate(manifest, discovery.Components,
+                new RuntimeDotsStateCodeEmissionProfile("Generated.Tests", "GeneratedRuntimeDotsStateSchema"));
+            var constructor = source.IndexOf("public PersistedEntityWriteContext(SystemBase lookupOwner)", StringComparison.Ordinal);
+            var barrier = source.IndexOf("_entityManager.CompleteAllTrackedJobs();", constructor, StringComparison.Ordinal);
+            var firstLookup = source.IndexOf(" = lookupOwner.GetComponentLookup<", constructor, StringComparison.Ordinal);
+            Assert.That(constructor, Is.GreaterThanOrEqualTo(0));
+            Assert.That(barrier, Is.GreaterThan(constructor));
+            Assert.That(firstLookup, Is.GreaterThan(barrier));
+            Assert.That(source, Does.Contain("_entityOrderVersion != entityManager.EntityOrderVersion"));
+            Assert.That(source, Does.Contain("_globalSystemVersion != entityManager.GlobalSystemVersion"));
+            Assert.That(source, Does.Contain("_worldSequence != entityManager.WorldUnmanaged.SequenceNumber"));
+            Assert.That(source, Does.Contain("throw new ObjectDisposedException(nameof(PersistedEntityWriteContext))"));
+            Assert.That(source, Does.Not.Contain("public ComponentLookup<"));
+            Assert.That(source, Does.Not.Contain("entityManager.GetComponentLookup<"));
+
+            var instance = source.IndexOf("public void ReadPersistedEntityState(", StringComparison.Ordinal);
+            var guard = source.IndexOf("RequireMatches(entityManager);", instance, StringComparison.Ordinal);
+            var preparedStart = source.IndexOf("var sourcePresent", instance, StringComparison.Ordinal);
+            var preparedEnd = source.IndexOf("private void RequireMatches(", preparedStart, StringComparison.Ordinal);
+            var ordinary = source.IndexOf("public static void ReadPersistedEntityState(", StringComparison.Ordinal);
+            var ordinaryStart = source.IndexOf("var sourcePresent", ordinary, StringComparison.Ordinal);
+            var ordinaryEnd = source.IndexOf("public static readonly RuntimeDotsStateComponentCodec", ordinaryStart, StringComparison.Ordinal);
+            Assert.That(guard, Is.GreaterThan(instance));
+            Assert.That(preparedStart, Is.GreaterThan(guard), "Context admission must precede reader consumption.");
+            var prepared = source.Substring(preparedStart, preparedEnd - preparedStart);
+            var original = source.Substring(ordinaryStart, ordinaryEnd - ordinaryStart);
+            foreach (var descriptor in discovery.Components)
+            {
+                var type = "global::" + descriptor.RuntimeType.FullName;
+                var id = descriptor.Schema.ComponentTypeId;
+                if (descriptor.Schema.Kind == RuntimeDotsStateComponentKind.Component
+                    && (!descriptor.IsZeroSized || descriptor.Schema.Enableable))
+                {
+                    Assert.That(source, Does.Contain("private ComponentLookup<" + type + "> _component" + id + ";"));
+                    if (!descriptor.IsZeroSized)
+                    {
+                        prepared = prepared.Replace("_component" + id + "[entity] = value" + id + ";",
+                            "entityManager.SetComponentData(entity, value" + id + ");");
+                    }
+                    if (descriptor.Schema.Enableable)
+                    {
+                        prepared = prepared.Replace("_component" + id + ".SetComponentEnabled(entity, enabled" + id + ");",
+                            "entityManager.SetComponentEnabled<" + type + ">(entity, enabled" + id + ");");
+                    }
+                }
+                else
+                {
+                    Assert.That(source, Does.Not.Contain("GetComponentLookup<" + type + ">"));
+                }
+            }
+            Func<string, string[]> statements = program => program.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(line => line.Trim()).Where(line => line.Length != 0).ToArray();
+            CollectionAssert.AreEqual(statements(original), statements(prepared),
+                "Presence, field decoding, buffer writes, guards and their order differ only in component write API.");
         }
 
         [Test]
