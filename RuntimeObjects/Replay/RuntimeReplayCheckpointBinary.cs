@@ -322,49 +322,62 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
         public byte ReadByte()
         {
             RequireAvailable(sizeof(byte));
-            return _reader.ReadByte();
+            return (byte)_stream.ReadByte();
         }
 
         public bool ReadBoolean()
         {
-            RequireAvailable(sizeof(byte));
-            return _reader.ReadBoolean();
+            return ReadByte() != 0;
         }
 
         public int ReadInt32()
         {
-            RequireAvailable(sizeof(int));
-            return _reader.ReadInt32();
+            return unchecked((int)ReadUInt32());
         }
 
         public uint ReadUInt32()
         {
             RequireAvailable(sizeof(uint));
+            if (_stream.TryReadContiguous(sizeof(uint), out var page, out var offset))
+            {
+                return (uint)page[offset]
+                       | ((uint)page[offset + 1] << 8)
+                       | ((uint)page[offset + 2] << 16)
+                       | ((uint)page[offset + 3] << 24);
+            }
             return _reader.ReadUInt32();
         }
 
         public long ReadInt64()
         {
-            RequireAvailable(sizeof(long));
-            return _reader.ReadInt64();
+            return unchecked((long)ReadUInt64());
         }
 
         public ulong ReadUInt64()
         {
             RequireAvailable(sizeof(ulong));
+            if (_stream.TryReadContiguous(sizeof(ulong), out var page, out var offset))
+            {
+                return (ulong)page[offset]
+                       | ((ulong)page[offset + 1] << 8)
+                       | ((ulong)page[offset + 2] << 16)
+                       | ((ulong)page[offset + 3] << 24)
+                       | ((ulong)page[offset + 4] << 32)
+                       | ((ulong)page[offset + 5] << 40)
+                       | ((ulong)page[offset + 6] << 48)
+                       | ((ulong)page[offset + 7] << 56);
+            }
             return _reader.ReadUInt64();
         }
 
         public float ReadSingle()
         {
-            RequireAvailable(sizeof(float));
-            return _reader.ReadSingle();
+            return BitConverter.Int32BitsToSingle(ReadInt32());
         }
 
         public double ReadDouble()
         {
-            RequireAvailable(sizeof(double));
-            return _reader.ReadDouble();
+            return BitConverter.Int64BitsToDouble(ReadInt64());
         }
 
         public Guid ReadGuid()
@@ -462,7 +475,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
         private void RequireAvailable(int byteCount)
         {
             ThrowIfDisposed();
-            if (byteCount < 0 || _stream.Length - _stream.Position < byteCount)
+            if (!_stream.HasAvailable(byteCount))
             {
                 throw new EndOfStreamException(
                     $"Replay checkpoint requires {byteCount} bytes at offset {_stream.Position}, "
@@ -705,6 +718,26 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
             var result = _pages[pageIndex][pageOffset];
             _position++;
             return result;
+        }
+
+        // The owning reader checks availability before consuming a primitive.
+        // A boundary miss leaves the cursor unchanged for BinaryReader's paged read.
+        public bool TryReadContiguous(int byteCount, out byte[] page, out int offset)
+        {
+            var pageIndex = checked((int)(_position / _pageBytes));
+            offset = checked((int)(_position % _pageBytes));
+            page = _pages[pageIndex];
+            if (page.Length - offset < byteCount)
+            {
+                return false;
+            }
+            _position += byteCount;
+            return true;
+        }
+
+        public bool HasAvailable(int byteCount)
+        {
+            return byteCount >= 0 && _length - _position >= byteCount;
         }
 
         public override void WriteByte(byte value)
