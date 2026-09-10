@@ -265,11 +265,11 @@ namespace DingoGameObjectsCMS.Tests.Editor
 
             Assert.That(
                 source,
-                Does.Contain("writer.WriteString(value.@Value.@StoreId.ToString());"));
+                Does.Contain("writer.WriteFixedString32Bytes(in value.@Value.@StoreId);"));
             Assert.That(
                 source,
                 Does.Contain(
-                    "value.@Value.@StoreId = new global::Unity.Collections.FixedString32Bytes(reader.ReadString(global::Unity.Collections.FixedString32Bytes.UTF8MaxLengthInBytes));"));
+                    "value.@Value.@StoreId = reader.ReadFixedString32Bytes();"));
         }
 
         [Test]
@@ -438,6 +438,13 @@ namespace DingoGameObjectsCMS.Tests.Editor
             Assert.That(source, Does.Contain("ReadPersistedEntityState("));
             Assert.That(source, Does.Contain("writer.WriteBoolean(present"));
             Assert.That(source, Does.Contain(" != targetPresent"));
+            Assert.That(source, Does.Contain("public class PersistedEntityLayoutCache : IDisposable"));
+            Assert.That(source, Does.Contain("Dictionary<EntityArchetype, PersistedEntityLayout>"));
+            Assert.That(source, Does.Contain("entityManager.GetChunk(entity).Archetype"));
+            Assert.That(source, Does.Contain("_worldSequence != entityManager.WorldUnmanaged.SequenceNumber"));
+            Assert.That(CountOccurrences(source, "PersistedEntityLayoutCache layoutCache = null)"), Is.EqualTo(3));
+            Assert.That(CountOccurrences(source, "var layout = layoutCache?.GetLayout(entityManager, entity);"), Is.EqualTo(3));
+            Assert.That(source, Does.Contain("public readonly bool Present"));
             Assert.That(
                 source,
                 Does.Contain(

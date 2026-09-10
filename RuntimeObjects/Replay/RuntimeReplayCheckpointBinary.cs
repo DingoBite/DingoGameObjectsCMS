@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Security.Cryptography;
 using System.Text;
+using Unity.Collections;
 
 namespace DingoGameObjectsCMS.RuntimeObjects.Replay
 {
@@ -15,6 +16,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
         private readonly RuntimeReplayPagedStream _stream;
         private readonly BinaryWriter _writer;
         private readonly int _maxBytes;
+        private byte[] _fixedStringBytes;
         private bool _disposed;
 
         public int Length => checked((int)_stream.Length);
@@ -122,6 +124,35 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
 
             WriteInt32(value.Length);
             WriteRawBytes(value);
+        }
+
+        public void WriteFixedString32Bytes(in FixedString32Bytes value)
+        {
+            var length = value.Length;
+            if (length == 0)
+            {
+                WriteInt32(0);
+                return;
+            }
+            var bytes = _fixedStringBytes ??= new byte[FixedString32Bytes.UTF8MaxLengthInBytes];
+            for (var index = 0; index < length; index++)
+            {
+                bytes[index] = value[index];
+            }
+            try
+            {
+                // Keep the strict wire encoding without a managed string on valid input.
+                UTF8.GetCharCount(bytes, 0, length);
+            }
+            catch (DecoderFallbackException)
+            {
+                // FixedString permits byte mutation. Preserve its previous ToString normalization.
+                WriteString(value.ToString());
+                return;
+            }
+            WriteInt32(length);
+            EnsureWritable(length);
+            _writer.Write(bytes, 0, length);
         }
 
         public int BeginLengthPrefixedBlock()
@@ -234,6 +265,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
 
         private readonly RuntimeReplayPagedStream _stream;
         private readonly BinaryReader _reader;
+        private byte[] _fixedStringBytes;
         private bool _disposed;
 
         public int Position => checked((int)_stream.Position);
@@ -360,6 +392,32 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
             }
             ValidateLength(byteCount, maxByteCount, "blob");
             return ReadRawBytes(byteCount);
+        }
+
+        public FixedString32Bytes ReadFixedString32Bytes()
+        {
+            var byteCount = ReadInt32();
+            // The old FixedString(string) conversion treats a null string as empty.
+            if (byteCount == -1 || byteCount == 0)
+            {
+                return default;
+            }
+            ValidateLength(byteCount, FixedString32Bytes.UTF8MaxLengthInBytes, "string");
+            RequireAvailable(byteCount);
+            var bytes = _fixedStringBytes ??= new byte[FixedString32Bytes.UTF8MaxLengthInBytes];
+            var read = _reader.Read(bytes, 0, byteCount);
+            if (read != byteCount)
+            {
+                throw new EndOfStreamException($"Replay checkpoint expected {byteCount} bytes, received {read}.");
+            }
+            UTF8.GetCharCount(bytes, 0, byteCount);
+            var value = default(FixedString32Bytes);
+            value.Length = byteCount;
+            for (var index = 0; index < byteCount; index++)
+            {
+                value[index] = bytes[index];
+            }
+            return value;
         }
 
         public byte[] ReadRawBytes(int byteCount)
@@ -635,6 +693,40 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
             return read - remaining;
         }
 
+        public override int ReadByte()
+        {
+            ThrowIfDisposed();
+            if (_position == _length)
+            {
+                return -1;
+            }
+            var pageIndex = checked((int)(_position / _pageBytes));
+            var pageOffset = checked((int)(_position % _pageBytes));
+            var result = _pages[pageIndex][pageOffset];
+            _position++;
+            return result;
+        }
+
+        public override void WriteByte(byte value)
+        {
+            ThrowIfDisposed();
+            if (!_writable)
+            {
+                throw new NotSupportedException("Replay page stream is read-only.");
+            }
+            if (_position >= _maxBytes)
+            {
+                throw new InvalidOperationException(
+                    $"Replay checkpoint payload exceeds the {_maxBytes}-byte writer limit.");
+            }
+            var pageIndex = checked((int)(_position / _pageBytes));
+            var pageOffset = checked((int)(_position % _pageBytes));
+            EnsurePage(pageIndex);
+            _pages[pageIndex][pageOffset] = value;
+            _position++;
+            _length = Math.Max(_length, _position);
+        }
+
         public override void Write(byte[] buffer, int offset, int count)
         {
             ThrowIfDisposed();
@@ -765,7 +857,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
                 throw new ArgumentNullException(nameof(payload));
             }
 
-            using var sha = SHA256.Create();
+            using var sha = RuntimeReplaySha256.Create();
             return sha.ComputeHash(payload);
         }
 
@@ -782,8 +874,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
                 throw new ArgumentOutOfRangeException(nameof(payloadLength));
             }
 
-            using var hash = IncrementalHash.CreateHash(
-                HashAlgorithmName.SHA256);
+            using var hash = RuntimeReplaySha256.Create();
             var remaining = payloadLength;
             var actualLength = 0;
             for (var i = 0; i < pages.Count; i++)
@@ -803,7 +894,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
                 var length = Math.Min(payload.Length, remaining);
                 if (length > 0)
                 {
-                    hash.AppendData(payload, 0, length);
+                    hash.TransformBlock(payload, 0, length, null, 0);
                 }
                 remaining -= length;
             }
@@ -813,7 +904,8 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
                     $"Checkpoint pages contain {actualLength} bytes, expected {payloadLength}.",
                     nameof(pages));
             }
-            return hash.GetHashAndReset();
+            hash.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
+            return hash.Hash;
         }
 
         public static byte[] CalculateSha256(Stream stream, long byteCount)
@@ -831,7 +923,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
                 throw new ArgumentOutOfRangeException(nameof(byteCount));
             }
 
-            using var incremental = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+            using var incremental = RuntimeReplaySha256.Create();
             var buffer = new byte[64 * 1024];
             var remaining = byteCount;
             while (remaining > 0)
@@ -844,10 +936,11 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
                         $"Replay hash source ended with {remaining} bytes remaining.");
                 }
 
-                incremental.AppendData(buffer, 0, read);
+                incremental.TransformBlock(buffer, 0, read, null, 0);
                 remaining -= read;
             }
-            return incremental.GetHashAndReset();
+            incremental.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
+            return incremental.Hash;
         }
 
         public static string ToHex(byte[] hash)

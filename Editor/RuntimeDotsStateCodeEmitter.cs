@@ -230,6 +230,7 @@ namespace DingoGameObjectsCMS.Editor
                 .OrderBy(value => value.Schema.ComponentTypeId)
                 .ToArray();
 
+            EmitPersistedEntityLayoutCache(builder, persisted);
             builder.AppendLine()
                 .AppendLine("        /// <summary>")
                 .AppendLine("        /// Cold checkpoint-barrier path only. Writes one entity row in fixed schema order.")
@@ -237,9 +238,11 @@ namespace DingoGameObjectsCMS.Editor
                 .AppendLine("        public static void WritePersistedEntityState(")
                 .AppendLine("            EntityManager entityManager,")
                 .AppendLine("            Entity entity,")
-                .AppendLine("            RuntimeReplayCheckpointWriter writer)")
+                .AppendLine("            RuntimeReplayCheckpointWriter writer,")
+                .AppendLine("            PersistedEntityLayoutCache layoutCache = null)")
                 .AppendLine("        {")
-                .AppendLine("            if (!entityManager.Exists(entity))")
+                .AppendLine("            var layout = layoutCache?.GetLayout(entityManager, entity);")
+                .AppendLine("            if (layout == null && !entityManager.Exists(entity))")
                 .AppendLine("                throw new ArgumentException(\"Cannot write DOTS state for a missing entity.\", nameof(entity));")
                 .AppendLine("            if (writer == null)")
                 .AppendLine("                throw new ArgumentNullException(nameof(writer));");
@@ -269,9 +272,11 @@ namespace DingoGameObjectsCMS.Editor
                 .AppendLine("        public static void PrevalidatePersistedEntityState(")
                 .AppendLine("            EntityManager entityManager,")
                 .AppendLine("            Entity entity,")
-                .AppendLine("            RuntimeReplayCheckpointReader reader)")
+                .AppendLine("            RuntimeReplayCheckpointReader reader,")
+                .AppendLine("            PersistedEntityLayoutCache layoutCache = null)")
                 .AppendLine("        {")
-                .AppendLine("            if (!entityManager.Exists(entity))")
+                .AppendLine("            var layout = layoutCache?.GetLayout(entityManager, entity);")
+                .AppendLine("            if (layout == null && !entityManager.Exists(entity))")
                 .AppendLine("                throw new ArgumentException(\"Cannot validate DOTS state for a missing entity.\", nameof(entity));")
                 .AppendLine("            if (reader == null)")
                 .AppendLine("                throw new ArgumentNullException(nameof(reader));");
@@ -290,9 +295,11 @@ namespace DingoGameObjectsCMS.Editor
                 .AppendLine("        public static void ReadPersistedEntityState(")
                 .AppendLine("            EntityManager entityManager,")
                 .AppendLine("            Entity entity,")
-                .AppendLine("            RuntimeReplayCheckpointReader reader)")
+                .AppendLine("            RuntimeReplayCheckpointReader reader,")
+                .AppendLine("            PersistedEntityLayoutCache layoutCache = null)")
                 .AppendLine("        {")
-                .AppendLine("            if (!entityManager.Exists(entity))")
+                .AppendLine("            var layout = layoutCache?.GetLayout(entityManager, entity);")
+                .AppendLine("            if (layout == null && !entityManager.Exists(entity))")
                 .AppendLine("                throw new ArgumentException(\"Cannot restore DOTS state for a missing entity.\", nameof(entity));")
                 .AppendLine("            if (reader == null)")
                 .AppendLine("                throw new ArgumentNullException(nameof(reader));");
@@ -304,6 +311,82 @@ namespace DingoGameObjectsCMS.Editor
                     prevalidateOnly: false);
             }
             builder.AppendLine("        }");
+        }
+
+        private static void EmitPersistedEntityLayoutCache(
+            StringBuilder builder,
+            RuntimeDotsStateGeneratedComponentDescriptor[] persisted)
+        {
+            builder.AppendLine()
+                .AppendLine("        // One synchronous checkpoint operation; caches membership, never values or native buffer views.")
+                .AppendLine("        public class PersistedEntityLayoutCache : IDisposable")
+                .AppendLine("        {")
+                .AppendLine("            private readonly EntityManager _entityManager;")
+                .AppendLine("            private readonly World _world;")
+                .AppendLine("            private readonly ulong _worldSequence;")
+                .AppendLine("            private readonly Dictionary<EntityArchetype, PersistedEntityLayout> _layouts = new();")
+                .AppendLine("            private bool _disposed;")
+                .AppendLine()
+                .AppendLine("            public int CachedArchetypeCount => _layouts.Count;")
+                .AppendLine()
+                .AppendLine("            public PersistedEntityLayoutCache(EntityManager entityManager)")
+                .AppendLine("            {")
+                .AppendLine("                _entityManager = entityManager;")
+                .AppendLine("                _world = entityManager.World;")
+                .AppendLine("                _worldSequence = entityManager.WorldUnmanaged.SequenceNumber;")
+                .AppendLine("            }")
+                .AppendLine()
+                .AppendLine("            public PersistedEntityLayout GetLayout(EntityManager entityManager, Entity entity)")
+                .AppendLine("            {")
+                .AppendLine("                if (_disposed)")
+                .AppendLine("                    throw new ObjectDisposedException(nameof(PersistedEntityLayoutCache));")
+                .AppendLine("                if (!_world.IsCreated || !_entityManager.Equals(entityManager)")
+                .AppendLine("                    || _worldSequence != entityManager.WorldUnmanaged.SequenceNumber)")
+                .AppendLine("                    throw new InvalidOperationException(\"DOTS state layout cache belongs to another world or a destroyed world.\");")
+                .AppendLine("                if (!entityManager.Exists(entity))")
+                .AppendLine("                    throw new ArgumentException(\"Cannot resolve DOTS state layout for a missing entity.\", nameof(entity));")
+                .AppendLine("                var archetype = entityManager.GetChunk(entity).Archetype;")
+                .AppendLine("                if (!_layouts.TryGetValue(archetype, out var layout))")
+                .AppendLine("                {")
+                .AppendLine("                    layout = new PersistedEntityLayout(entityManager, entity);")
+                .AppendLine("                    _layouts.Add(archetype, layout);")
+                .AppendLine("                }")
+                .AppendLine("                return layout;")
+                .AppendLine("            }")
+                .AppendLine()
+                .AppendLine("            public void Dispose()")
+                .AppendLine("            {")
+                .AppendLine("                _disposed = true;")
+                .AppendLine("                _layouts.Clear();")
+                .AppendLine("            }")
+                .AppendLine("        }")
+                .AppendLine()
+                .AppendLine("        public class PersistedEntityLayout")
+                .AppendLine("        {");
+            foreach (var descriptor in persisted)
+            {
+                builder.Append("            public readonly bool Present")
+                    .Append(descriptor.Schema.ComponentTypeId)
+                    .AppendLine(";");
+            }
+            builder.AppendLine()
+                .AppendLine("            public PersistedEntityLayout(EntityManager entityManager, Entity entity)")
+                .AppendLine("            {");
+            foreach (var descriptor in persisted)
+            {
+                var hasMethod = descriptor.Schema.Kind == RuntimeDotsStateComponentKind.Buffer
+                    ? "HasBuffer"
+                    : "HasComponent";
+                builder.Append("                Present")
+                    .Append(descriptor.Schema.ComponentTypeId)
+                    .Append(" = entityManager.")
+                    .Append(hasMethod)
+                    .Append('<')
+                    .Append(TypeName(descriptor.RuntimeType))
+                    .AppendLine(">(entity);");
+            }
+            builder.AppendLine("            }")
+                .AppendLine("        }");
         }
 
         private static void EmitWriteEntityComponent(
@@ -319,11 +402,13 @@ namespace DingoGameObjectsCMS.Editor
             builder.AppendLine()
                 .Append("            var present")
                 .Append(id)
-                .Append(" = entityManager.")
+                .Append(" = layout == null ? entityManager.")
                 .Append(hasMethod)
                 .Append('<')
                 .Append(typeName)
-                .AppendLine(">(entity);")
+                .Append(">(entity) : layout.Present")
+                .Append(id)
+                .AppendLine(";")
                 .Append("            writer.WriteBoolean(present")
                 .Append(id)
                 .AppendLine(");")
@@ -506,11 +591,13 @@ namespace DingoGameObjectsCMS.Editor
                 .AppendLine(" = reader.ReadBoolean();")
                 .Append("            var targetPresent")
                 .Append(id)
-                .Append(" = entityManager.")
+                .Append(" = layout == null ? entityManager.")
                 .Append(hasMethod)
                 .Append('<')
                 .Append(typeName)
-                .AppendLine(">(entity);")
+                .Append(">(entity) : layout.Present")
+                .Append(id)
+                .AppendLine(";")
                 .Append("            if (sourcePresent")
                 .Append(id)
                 .Append(" != targetPresent")
@@ -833,7 +920,7 @@ namespace DingoGameObjectsCMS.Editor
                 case RuntimeDotsStateGeneratedValueKind.Double:
                     return $"writer.WriteDouble({value});";
                 case RuntimeDotsStateGeneratedValueKind.FixedString32:
-                    return $"writer.WriteString({value}.ToString());";
+                    return $"writer.WriteFixedString32Bytes(in {value});";
                 case RuntimeDotsStateGeneratedValueKind.Enum:
                     return WriteEnumStatement(
                         descriptor.EnumUnderlyingType,
@@ -874,7 +961,7 @@ namespace DingoGameObjectsCMS.Editor
                 case RuntimeDotsStateGeneratedValueKind.Double:
                     return "reader.ReadDouble()";
                 case RuntimeDotsStateGeneratedValueKind.FixedString32:
-                    return "new global::Unity.Collections.FixedString32Bytes(reader.ReadString(global::Unity.Collections.FixedString32Bytes.UTF8MaxLengthInBytes))";
+                    return "reader.ReadFixedString32Bytes()";
                 case RuntimeDotsStateGeneratedValueKind.Enum:
                     return $"({TypeName(descriptor.RuntimeType)})({ReadUnderlyingExpression(descriptor.EnumUnderlyingType)})";
                 default:
