@@ -400,9 +400,13 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                 return Reject(connectionId, RuntimeProtocolRejectCode.InvalidStore, $"ACK references unknown store '{ack.Store}'.");
 
             var result = storeState.Replication.Acknowledge(ack.BaselineId, ack.DeliverySequence);
+            // Rebaselining can overtake an ACK already travelling from the client.
+            // The superseded baseline must not acknowledge the new queue or disconnect
+            // a valid peer; Acknowledge leaves replication state untouched in this case.
             if (result == RuntimeConnectionAckResult.Accepted
                 || result == RuntimeConnectionAckResult.Duplicate
-                || result == RuntimeConnectionAckResult.Stale)
+                || result == RuntimeConnectionAckResult.Stale
+                || result == RuntimeConnectionAckResult.StaleBaseline)
             {
                 _telemetry.ObserveConnectionStore(connectionId, storeState.Replication);
                 return RuntimeSessionHandshakeResult.Success();
