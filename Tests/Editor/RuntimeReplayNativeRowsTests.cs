@@ -19,6 +19,27 @@ namespace DingoGameObjectsCMS.Tests.Editor
     public class RuntimeReplayNativeRowsTests
     {
         [Test]
+        public void EnsureCapacityPreservesCapturedRowsAndDoesNotShrink()
+        {
+            using var rows = new RuntimeReplayNativeRows<long>();
+            rows.Records.Add(17);
+            rows.Records.Add(23);
+
+            rows.EnsureCapacity(257);
+            var capacity = rows.Records.Capacity;
+            Assert.That(capacity, Is.GreaterThanOrEqualTo(257));
+            Assert.That(rows.Records.Length, Is.EqualTo(2));
+            Assert.That(rows.Records[0], Is.EqualTo(17));
+            Assert.That(rows.Records[1], Is.EqualTo(23));
+
+            rows.EnsureCapacity(1);
+            Assert.That(rows.Records.Capacity, Is.EqualTo(capacity));
+            Assert.That(rows.Records.Length, Is.EqualTo(2));
+            Assert.That(rows.Records[0], Is.EqualTo(17));
+            Assert.That(rows.Records[1], Is.EqualTo(23));
+        }
+
+        [Test]
         public void ResetAndSmallerCaptureRetainAllocatedCapacity()
         {
             using var rows = new RuntimeReplayNativeRows<long>();

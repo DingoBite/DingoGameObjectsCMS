@@ -313,10 +313,12 @@ partially restored graph through `RS`.
 
 Hot checkpoint owners can use `RuntimeObjects.Replay.RuntimeReplayNativeRows<T>`
 for retained unmanaged rows. It owns one persistent `NativeList<T>` and provides
-capture preparation, capacity-preserving reset, reserve estimation and disposal.
+capture preparation, non-clearing capacity reservation, capacity-preserving reset,
+reserve estimation and disposal.
 Capture jobs may borrow its array or parallel writer without copying; they must
-finish before reset, preparation or disposal. This storage mechanism does not
-choose entity queries, state authority, validation policy or a cold wire format.
+finish before capacity changes, reset, preparation or disposal. This storage
+mechanism does not choose entity queries, state authority, validation policy or
+a cold wire format.
 
 This is intentionally not a generic always-live two-way sync. Runtime data can stay authoritative in `RuntimeStore`, while high-frequency simulation can still move into DOTS when needed.
 

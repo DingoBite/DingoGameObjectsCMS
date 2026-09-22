@@ -5,7 +5,7 @@ using Unity.Collections.LowLevel.Unsafe;
 namespace DingoGameObjectsCMS.RuntimeObjects.Replay
 {
     // The checkpoint owns the allocation. Jobs borrow its native views and must finish
-    // before the owner prepares another capture, resets, or disposes these rows.
+    // before the owner changes capacity, prepares another capture, resets, or disposes these rows.
     public class RuntimeReplayNativeRows<T> : IDisposable where T : unmanaged
     {
         public NativeList<T> Records;
@@ -20,6 +20,11 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
         public void PrepareCapture(int capacity)
         {
             Reset();
+            EnsureCapacity(capacity);
+        }
+
+        public void EnsureCapacity(int capacity)
+        {
             if (Records.Capacity < capacity)
             {
                 Records.Capacity = capacity;
