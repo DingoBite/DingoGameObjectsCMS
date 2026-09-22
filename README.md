@@ -311,6 +311,13 @@ if projection fails; ordinary projection continues to resolve active stores.
 Preparing a checkpoint therefore does not publish its stores or expose a
 partially restored graph through `RS`.
 
+Hot checkpoint owners can use `RuntimeObjects.Replay.RuntimeReplayNativeRows<T>`
+for retained unmanaged rows. It owns one persistent `NativeList<T>` and provides
+capture preparation, capacity-preserving reset, reserve estimation and disposal.
+Capture jobs may borrow its array or parallel writer without copying; they must
+finish before reset, preparation or disposal. This storage mechanism does not
+choose entity queries, state authority, validation policy or a cold wire format.
+
 This is intentionally not a generic always-live two-way sync. Runtime data can stay authoritative in `RuntimeStore`, while high-frequency simulation can still move into DOTS when needed.
 
 ### Asset -> Runtime -> View
@@ -534,7 +541,6 @@ This approach is especially strong when you care about several of the following:
 If reduced to one sentence:
 
 > `DingoGameObjectsCMS` turns `GameAsset` and `GameRuntimeObject` into a shared source of truth for runtime state, ECS integration, replication, modding, and persistence.
-
 
 
 
