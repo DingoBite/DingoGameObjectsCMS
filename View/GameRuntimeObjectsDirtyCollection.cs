@@ -23,7 +23,7 @@ namespace DingoGameObjectsCMS.View
         [SerializeField] private CollectionViewSpawnOptions _defaultSpawnOptions;
         [SerializeField] private SortTransformOrderOption _sortTransformOrder = SortTransformOrderOption.AsLast;
 
-        private Pool<GameRuntimeObjectOperationView> _pool;
+        private readonly Dictionary<GameRuntimeObjectOperationView, Pool<GameRuntimeObjectOperationView>> _poolsByPrefab = new();
         private readonly Dictionary<long, ActiveEntry> _activeEntries = new();
         private readonly List<long> _orderedKeys = new();
         private readonly List<long> _sourceKeys = new();
@@ -37,12 +37,14 @@ namespace DingoGameObjectsCMS.View
         private bool _fullRebuildPending;
         private bool _orderingPolicyInitialized;
         private bool _usesIncrementalParentOrdering;
+        private bool _poolInitialized;
 
         public RuntimeStore Store => _store;
         public RuntimeObjectCollectionScope Scope => _scope;
         public bool IsBound => _store != null;
         public ulong TotalReconcileCount { get; private set; }
         public ulong TotalFullSortCount { get; private set; }
+        protected virtual bool RequiresDefaultPrefab => true;
 
         public IEnumerable<GameRuntimeObjectOperationView> GetOrderedViews()
         {
@@ -78,9 +80,29 @@ namespace DingoGameObjectsCMS.View
             }
         }
 
+        public bool TryGetView(long key, out GameRuntimeObjectOperationView view)
+        {
+            view = null;
+            if (!_activeEntries.TryGetValue(key, out var activeEntry) || activeEntry.Container == null)
+                return false;
+
+            view = activeEntry.Container;
+            return true;
+        }
+
+        public bool TryGetView<TView>(long key, out TView view) where TView : GameRuntimeObjectOperationView
+        {
+            view = null;
+            if (!TryGetView(key, out var activeView) || activeView is not TView typedView)
+                return false;
+
+            view = typedView;
+            return true;
+        }
+
         public void ConfigureRuntime(GameObject parent, GameRuntimeObjectOperationView prefab)
         {
-            if (_pool != null || _store != null)
+            if (_poolInitialized || _store != null)
                 throw new InvalidOperationException($"{nameof(GameRuntimeObjectsDirtyCollection)} on '{name}' cannot be reconfigured after initialization.");
 
             _parent = parent != null
@@ -159,11 +181,34 @@ namespace DingoGameObjectsCMS.View
             ReleaseAll(_store, ResolveSpawnOptions(spawnOptions));
         }
 
+        // Call when an external anchor changes without changing the runtime object.
+        public void RefreshPlacement()
+        {
+            if (_store == null)
+                return;
+
+            var changed = false;
+            foreach (var pair in _activeEntries)
+            {
+                var activeEntry = pair.Value;
+                if (activeEntry.Container != null && PlaceEntry(pair.Key, activeEntry.Value, activeEntry.Container))
+                    changed = true;
+            }
+
+            if (changed)
+                ScheduleActiveOrderApply();
+        }
+
         protected virtual Pool<GameRuntimeObjectOperationView> Factory(GameRuntimeObjectOperationView prefab, GameObject parent) =>
             new(prefab, parent, _sortTransformOrder);
 
         protected virtual bool ShouldInclude(long key, GameRuntimeObject value) =>
             value != null && key != RuntimeStore.STORE_ROOT_OBJECT_ID;
+
+        // Prefab selection is fixed for each active entry until it is released or rebuilt.
+        protected virtual GameRuntimeObjectOperationView ResolvePrefab(long key, GameRuntimeObject value) => _prefab;
+
+        protected virtual Transform ResolveParent(long key, GameRuntimeObject value, GameRuntimeObjectOperationView valueContainer) => _parent != null ? _parent.transform : null;
 
         protected virtual int CompareKeys(long left, long right) => left.CompareTo(right);
 
@@ -182,7 +227,7 @@ namespace DingoGameObjectsCMS.View
         {
             var valueTransform = valueContainer.transform;
             var parent = valueTransform.parent;
-            if (parent == null || !parent.gameObject.activeInHierarchy)
+            if (parent == null || _parent == null || parent != _parent.transform || !parent.gameObject.activeInHierarchy)
                 return;
             if (valueTransform.GetSiblingIndex() == parent.childCount - 1)
                 return;
@@ -198,14 +243,20 @@ namespace DingoGameObjectsCMS.View
         private void EnsurePool()
         {
             EnsureOrderingPolicy();
-            if (_pool != null)
+            if (_poolInitialized)
                 return;
             if (_parent == null)
                 throw new InvalidOperationException($"{nameof(GameRuntimeObjectsDirtyCollection)} on '{name}' requires a parent.");
-            if (_prefab == null)
+            if (_prefab == null && RequiresDefaultPrefab)
                 throw new InvalidOperationException($"{nameof(GameRuntimeObjectsDirtyCollection)} on '{name}' requires a prefab.");
 
-            _pool = Factory(_prefab, _parent);
+            if (_prefab != null)
+            {
+                var pool = Factory(_prefab, _parent);
+                _poolsByPrefab.Add(_prefab, pool);
+            }
+
+            _poolInitialized = true;
         }
 
         private void ResetFromStore(CollectionViewSpawnOptions spawnOptions)
@@ -226,11 +277,10 @@ namespace DingoGameObjectsCMS.View
                 if (!TryTakeScopedValue(key, out var value))
                     continue;
 
-                UpsertEntry(key, GameRuntimeObjectOperation.Snapshot(_store, key, null, value), spawnOptions);
+                if (UpsertEntry(key, GameRuntimeObjectOperation.Snapshot(_store, key, null, value), spawnOptions))
+                    _orderedKeys.Add(key);
             }
 
-            _orderedKeys.Clear();
-            _orderedKeys.AddRange(_sourceKeys);
             _sourceKeys.Clear();
             CancelScheduledActiveOrderApply();
             ApplyActiveOrder();
@@ -276,12 +326,11 @@ namespace DingoGameObjectsCMS.View
                 }
                 if (!hasActiveEntry && isIncluded)
                 {
-                    UpsertEntry(
-                        dirty.Id,
-                        GameRuntimeObjectOperation.ComponentStructure(_store, dirty, null, value),
-                        spawnOptions);
-                    InsertOrderedKey(dirty.Id);
-                    _orderDirty = true;
+                    if (UpsertEntry(dirty.Id, GameRuntimeObjectOperation.Snapshot(_store, dirty.Id, null, value), spawnOptions))
+                    {
+                        InsertOrderedKey(dirty.Id);
+                        _orderDirty = true;
+                    }
                     continue;
                 }
                 if (!hasActiveEntry)
@@ -289,25 +338,48 @@ namespace DingoGameObjectsCMS.View
 
                 var operation = GameRuntimeObjectOperation.ComponentStructure(_store, dirty, activeEntry.Value, value);
                 activeEntry.Value = value;
+                if (PlaceEntry(dirty.Id, value, activeEntry.Container))
+                    ScheduleActiveOrderApply();
                 ApplyOperation(activeEntry.Container, operation);
             }
         }
 
         private void ApplyComponentChanges(NativeArray<ObjectComponentDirty> changes)
         {
-            if (_store == null || changes.Length == 0 || _activeEntries.Count == 0 || _fullRebuildPending)
+            if (_store == null || changes.Length == 0 || _fullRebuildPending)
                 return;
 
+            var spawnOptions = ResolveSpawnOptions(CollectionViewSpawnOptions.Default);
             for (var i = 0; i < changes.Length; i++)
             {
                 var dirty = changes[i];
-                if (!_activeEntries.TryGetValue(dirty.Id, out var activeEntry))
+                var hasActiveEntry = _activeEntries.TryGetValue(dirty.Id, out var activeEntry);
+                var isIncluded = TryTakeScopedValue(dirty.Id, out var value);
+
+                if (hasActiveEntry && !isIncluded)
+                {
+                    ReleaseKey(_store, dirty.Id, spawnOptions);
+                    _orderDirty = true;
                     continue;
-                if (!TryTakeScopedValue(dirty.Id, out var value))
+                }
+
+                if (!hasActiveEntry && isIncluded)
+                {
+                    if (UpsertEntry(dirty.Id, GameRuntimeObjectOperation.Snapshot(_store, dirty.Id, null, value), spawnOptions))
+                    {
+                        InsertOrderedKey(dirty.Id);
+                        _orderDirty = true;
+                    }
+                    continue;
+                }
+
+                if (!hasActiveEntry)
                     continue;
 
                 var operation = GameRuntimeObjectOperation.Component(_store, dirty, activeEntry.Value, value);
                 activeEntry.Value = value;
+                if (PlaceEntry(dirty.Id, value, activeEntry.Container))
+                    ScheduleActiveOrderApply();
                 ApplyOperation(activeEntry.Container, operation);
             }
         }
@@ -337,7 +409,8 @@ namespace DingoGameObjectsCMS.View
 
             var wasActive = _activeEntries.TryGetValue(dirty.Id, out var activeEntry);
             var previousValue = wasActive ? activeEntry.Value : null;
-            UpsertEntry(dirty.Id, GameRuntimeObjectOperation.Structure(_store, dirty, previousValue, value), spawnOptions);
+            if (!UpsertEntry(dirty.Id, GameRuntimeObjectOperation.Structure(_store, dirty, previousValue, value), spawnOptions))
+                return false;
             if (!wasActive)
             {
                 InsertOrderedKey(dirty.Id);
@@ -407,27 +480,58 @@ namespace DingoGameObjectsCMS.View
             return ShouldInclude(id, value);
         }
 
-        private void UpsertEntry(long key, GameRuntimeObjectOperation operation, CollectionViewSpawnOptions spawnOptions)
+        private bool UpsertEntry(long key, GameRuntimeObjectOperation operation, CollectionViewSpawnOptions spawnOptions)
         {
             if (_activeEntries.TryGetValue(key, out var activeEntry))
             {
                 activeEntry.Value = operation.Value;
+                if (PlaceEntry(key, operation.Value, activeEntry.Container))
+                    ScheduleActiveOrderApply();
                 ApplyOperation(activeEntry.Container, operation);
-                return;
+                return true;
             }
 
-            var valueContainer = _pool.PullElement();
+            var prefab = ResolvePrefab(key, operation.Value);
+            if (prefab == null)
+            {
+                Debug.LogError($"{nameof(GameRuntimeObjectsDirtyCollection)} on '{name}' could not resolve a prefab for runtime object {key}.", this);
+                return false;
+            }
+
+            if (!_poolsByPrefab.TryGetValue(prefab, out var pool))
+            {
+                pool = Factory(prefab, _parent);
+                _poolsByPrefab.Add(prefab, pool);
+            }
+
+            var valueContainer = pool.PullElement();
+            PlaceEntry(key, operation.Value, valueContainer);
             ApplyOperation(valueContainer, operation);
 
             var version = ++_entryVersion;
-            _activeEntries[key] = new ActiveEntry
+            var entry = new ActiveEntry
             {
                 Version = version,
                 Value = operation.Value,
                 Container = valueContainer,
+                Pool = pool,
             };
+            _activeEntries[key] = entry;
 
-            _ = FinalizePullAsync(key, version, operation.Value, valueContainer, spawnOptions);
+            _ = FinalizePullAsync(key, entry, spawnOptions);
+            return true;
+        }
+
+        private bool PlaceEntry(long key, GameRuntimeObject value, GameRuntimeObjectOperationView valueContainer)
+        {
+            var parent = ResolveParent(key, value, valueContainer);
+            if (parent == null)
+                parent = _parent.transform;
+            if (valueContainer.transform.parent == parent)
+                return false;
+
+            valueContainer.transform.SetParent(parent, false);
+            return true;
         }
 
         private void ApplyDirtyPublishCompleted(RuntimeStoreDirtyPublish publish)
@@ -579,32 +683,22 @@ namespace DingoGameObjectsCMS.View
             if (activeEntry.Container == null)
                 return;
 
-            ApplyOperation(activeEntry.Container, GameRuntimeObjectOperation.Release(store, key, activeEntry.Value));
-            BeginRelease(key, activeEntry.Value, activeEntry.Container, spawnOptions);
+            _ = ReleaseEntryAsync(store, key, activeEntry, spawnOptions);
         }
 
-        private void BeginRelease(long key, GameRuntimeObject value, GameRuntimeObjectOperationView valueContainer, CollectionViewSpawnOptions spawnOptions)
-        {
-            if (valueContainer == null)
-                return;
-
-            OnBeginRelease(key, value, valueContainer);
-            _ = ReleaseEntryAsync(key, value, valueContainer, spawnOptions);
-        }
-
-        private async UniTask FinalizePullAsync(long key, int version, GameRuntimeObject value, GameRuntimeObjectOperationView valueContainer, CollectionViewSpawnOptions spawnOptions)
+        private async UniTask FinalizePullAsync(long key, ActiveEntry entry, CollectionViewSpawnOptions spawnOptions)
         {
             try
             {
-                await OnAfterPullAsync(key, value, valueContainer, spawnOptions);
+                await OnAfterPullAsync(key, entry.Value, entry.Container, spawnOptions);
 
                 if (this == null)
                     return;
                 if (!_activeEntries.TryGetValue(key, out var activeEntry))
                     return;
-                if (activeEntry.Version != version)
+                if (activeEntry.Version != entry.Version)
                     return;
-                if (!ReferenceEquals(activeEntry.Container, valueContainer))
+                if (!ReferenceEquals(activeEntry.Container, entry.Container))
                     return;
 
                 ScheduleActiveOrderApply();
@@ -613,23 +707,34 @@ namespace DingoGameObjectsCMS.View
             {
                 Debug.LogException(e, this);
             }
+            finally
+            {
+                entry.PullCompleted.TrySetResult();
+            }
         }
 
-        private async UniTask ReleaseEntryAsync(long key, GameRuntimeObject value, GameRuntimeObjectOperationView valueContainer, CollectionViewSpawnOptions spawnOptions)
+        private async UniTask ReleaseEntryAsync(RuntimeStore store, long key, ActiveEntry entry, CollectionViewSpawnOptions spawnOptions)
         {
             try
             {
-                await OnBeforePushAsync(key, value, valueContainer, spawnOptions);
+                await entry.PullCompleted.Task;
+                if (this == null || entry.Container == null)
+                    return;
+                ApplyOperation(entry.Container, GameRuntimeObjectOperation.Release(store, key, entry.Value));
+                OnBeginRelease(key, entry.Value, entry.Container);
+                await OnBeforePushAsync(key, entry.Value, entry.Container, spawnOptions);
             }
             catch (Exception e)
             {
                 Debug.LogException(e, this);
             }
 
-            if (this == null || valueContainer == null)
+            if (this == null || entry.Container == null)
                 return;
 
-            _pool.PushElement(valueContainer);
+            if (_parent != null && entry.Container.transform.parent != _parent.transform)
+                entry.Container.transform.SetParent(_parent.transform, false);
+            entry.Pool.PushElement(entry.Container);
         }
 
         private void RemoveOrderedKey(long key)
@@ -646,6 +751,9 @@ namespace DingoGameObjectsCMS.View
             {
                 var key = _orderedKeys[i];
                 if (!_activeEntries.TryGetValue(key, out var activeEntry) || activeEntry.Container == null)
+                    continue;
+
+                if (activeEntry.Container.transform.parent != _parent.transform)
                     continue;
 
                 if (activeEntry.Container.transform.GetSiblingIndex() != siblingIndex)
@@ -699,6 +807,8 @@ namespace DingoGameObjectsCMS.View
             public int Version;
             public GameRuntimeObject Value;
             public GameRuntimeObjectOperationView Container;
+            public Pool<GameRuntimeObjectOperationView> Pool;
+            public readonly UniTaskCompletionSource PullCompleted = new();
         }
     }
 }
