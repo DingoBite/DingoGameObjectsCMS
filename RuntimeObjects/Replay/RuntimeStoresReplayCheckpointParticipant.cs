@@ -32,6 +32,8 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
         public StoreRealm Realm;
         public StoreNetDir NetDirection;
         public ulong CapturedRevision;
+        public bool HasRoot;
+        public byte[] RootPatchPayload;
         public readonly List<RuntimeStoresReplayObjectSnapshot> Objects = new();
     }
 
@@ -194,7 +196,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
         IRuntimeReplayCheckpointSchemaFingerprintContributor
     {
         public const uint SECTION_ID = 0x00010000u;
-        public const uint SECTION_VERSION = 1u;
+        public const uint SECTION_VERSION = 2u;
         public const int MAX_STORES = 1024;
         public const int MAX_OBJECTS_PER_STORE = 1_000_000;
         public const int MAX_PATCH_BYTES = 64 * 1024 * 1024;
@@ -519,6 +521,8 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
                     Realm = store.Realm,
                     NetDirection = RuntimeStores.GetNetDir(store.Id),
                     CapturedRevision = store.StoreRevision,
+                    HasRoot = store.TryTakeRO(RuntimeStore.STORE_ROOT_OBJECT_ID, out _),
+                    RootPatchPayload = CaptureRootPatch(store, persistentContext),
                 };
                 CaptureStoreObjects(
                     store,
@@ -536,7 +540,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
             RuntimePersistentPatchCodecContext persistentContext)
         {
             var roots = store.Parents.V.Values
-                .Where(runtimeObject => runtimeObject != null)
+                .Where(runtimeObject => runtimeObject != null && runtimeObject.InstanceId != RuntimeStore.STORE_ROOT_OBJECT_ID)
                 .OrderBy(runtimeObject => runtimeObject.InstanceId)
                 .ToArray();
             for (var i = 0; i < roots.Length; i++)
@@ -544,18 +548,54 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
                 CaptureObjectSubtree(
                     store,
                     roots[i],
-                    RuntimeStore.STORE_ROOT_OBJECT_ID,
+                    RuntimeStoreStructureChange.NO_PARENT_ID,
                     i,
                     target,
                     persistentContext);
             }
 
-            if (target.Objects.Count != store.All.V.Count)
+            if (store.TryTakeChildren(RuntimeStore.STORE_ROOT_OBJECT_ID, out var rootChildren))
+            {
+                for (var i = 0; i < rootChildren.Count; i++)
+                {
+                    if (!store.TryTakeRO(rootChildren[i], out var child) || child == null)
+                    {
+                        throw new InvalidOperationException($"RuntimeStore '{store.Id}' root references missing child {rootChildren[i]}.");
+                    }
+                    CaptureObjectSubtree(store, child, RuntimeStore.STORE_ROOT_OBJECT_ID, i, target, persistentContext);
+                }
+            }
+
+            var expectedCount = store.All.V.Count - (store.All.V.ContainsKey(RuntimeStore.STORE_ROOT_OBJECT_ID) ? 1 : 0);
+            if (target.Objects.Count != expectedCount)
             {
                 throw new InvalidOperationException(
                     $"RuntimeStore '{store.Id}' checkpoint traversed {target.Objects.Count} objects, "
-                    + $"but the store exposes {store.All.V.Count}.");
+                    + $"but the store exposes {expectedCount} user objects.");
             }
+        }
+
+        private byte[] CaptureRootPatch(RuntimeStore store, RuntimePersistentPatchCodecContext persistentContext)
+        {
+            var components = new Dictionary<uint, GameRuntimeComponent>();
+            if (store.TryTakeRO(RuntimeStore.STORE_ROOT_OBJECT_ID, out var root))
+            {
+                foreach (var component in root.Components)
+                {
+                    if (component == null || !RuntimeComponentTypeRegistry.TryGetId(component.GetType(), out var typeId) || !components.TryAdd(typeId, component))
+                    {
+                        throw new InvalidOperationException($"RuntimeStore '{store.Id}' root contains a null, unregistered, or duplicate runtime component.");
+                    }
+                }
+            }
+
+            var patch = new RuntimeObjectPatchEngine(_templates.CodecRegistry, persistentContext).BuildPatch(null, components);
+            var payload = _patchCodec.Encode(patch);
+            if (payload.Length > MAX_PATCH_BYTES)
+            {
+                throw new InvalidOperationException($"RuntimeStore '{store.Id}' root patch exceeds {MAX_PATCH_BYTES} bytes.");
+            }
+            return payload;
         }
 
         private void CaptureObjectSubtree(
@@ -664,7 +704,33 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
                         + $"maximum is {MAX_OBJECTS_PER_STORE}.");
                 }
 
+                ValidateRootPatch(store);
                 ValidateStoreObjects(store, globalGuids);
+            }
+        }
+
+        private void ValidateRootPatch(RuntimeStoresReplayStoreSnapshot store)
+        {
+            if (store.RootPatchPayload == null || store.RootPatchPayload.Length > MAX_PATCH_BYTES)
+            {
+                throw new InvalidOperationException($"Replay store '{store.StoreId}' has an invalid root patch payload.");
+            }
+
+            var patch = _patchCodec.Decode(store.RootPatchPayload);
+            if (!string.Equals(patch.SchemaHash, _templates.CodecRegistry.SchemaHash, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException($"Replay store '{store.StoreId}' root patch schema '{patch.SchemaHash}' does not match runtime schema '{_templates.CodecRegistry.SchemaHash}'.");
+            }
+            if (!store.HasRoot && !patch.IsEmpty)
+            {
+                throw new InvalidOperationException($"Replay store '{store.StoreId}' cannot have root components without a root object.");
+            }
+            foreach (var componentPatch in patch.Components)
+            {
+                if (componentPatch.Kind != ComponentPatchKind.Add || !_templates.CodecRegistry.TryGet(componentPatch.ComponentTypeId, out var codec) || !RuntimeComponentTypeRegistry.TryGetType(componentPatch.ComponentTypeId, out var type) || codec.ComponentRuntimeType != type)
+                {
+                    throw new InvalidOperationException($"Replay store '{store.StoreId}' root patch contains an unsupported component {componentPatch.ComponentTypeId}.");
+                }
             }
         }
 
@@ -693,11 +759,16 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
                 }
                 if (runtimeObject.ParentObjectId
                     != RuntimeStore.STORE_ROOT_OBJECT_ID
+                    && runtimeObject.ParentObjectId != RuntimeStoreStructureChange.NO_PARENT_ID
                     && !objectIds.Contains(runtimeObject.ParentObjectId))
                 {
                     throw new InvalidOperationException(
                         $"Replay object '{store.StoreId}/{runtimeObject.ObjectId}' "
                         + $"references parent {runtimeObject.ParentObjectId} that was not declared first.");
+                }
+                if (runtimeObject.ParentObjectId == RuntimeStore.STORE_ROOT_OBJECT_ID && !store.HasRoot)
+                {
+                    throw new InvalidOperationException($"Replay object '{store.StoreId}/{runtimeObject.ObjectId}' requires the missing store root.");
                 }
 
                 var expectedSiblingIndex =
@@ -925,6 +996,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
                     snapshot,
                     stagedById,
                     patchContext);
+                MaterializeStagedRoots(snapshot, stagedById, patchContext);
                 ProjectStagedStores(snapshot, stagedById);
                 for (var i = 0; i < snapshot.Stores.Count; i++)
                 {
@@ -1056,6 +1128,10 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
             {
                 var source = snapshot.Stores[storeIndex];
                 var staged = stagedById[source.StoreId];
+                if (source.HasRoot)
+                {
+                    staged.TakeRootRW();
+                }
                 for (var objectIndex = 0;
                      objectIndex < source.Objects.Count;
                      objectIndex++)
@@ -1073,10 +1149,39 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
                         _templates,
                         patchContext,
                         sourceObject.ParentObjectId
-                        == RuntimeStore.STORE_ROOT_OBJECT_ID
+                        == RuntimeStoreStructureChange.NO_PARENT_ID
                             ? null
                             : sourceObject.ParentObjectId,
                         sourceObject.SiblingIndex);
+                }
+            }
+        }
+
+        private void MaterializeStagedRoots(RuntimeStoresReplaySnapshot snapshot, IReadOnlyDictionary<FixedString32Bytes, RuntimeStore> stagedById, RuntimePersistentPatchCodecContext patchContext)
+        {
+            var patchEngine = new RuntimeObjectPatchEngine(_templates.CodecRegistry, patchContext);
+            for (var storeIndex = 0; storeIndex < snapshot.Stores.Count; storeIndex++)
+            {
+                var source = snapshot.Stores[storeIndex];
+                var patch = _patchCodec.Decode(source.RootPatchPayload);
+                if (patch.IsEmpty)
+                {
+                    continue;
+                }
+
+                var components = patchEngine.ApplyPatch(null, patch);
+                if (components.Count != patch.Components.Count)
+                {
+                    throw new InvalidOperationException($"Replay store '{source.StoreId}' root patch did not materialize every component.");
+                }
+                var root = stagedById[source.StoreId].TakeRootRW();
+                foreach (var pair in components.OrderBy(pair => pair.Key))
+                {
+                    if (pair.Value == null || pair.Value.GetType() != _templates.CodecRegistry.Get(pair.Key).ComponentRuntimeType)
+                    {
+                        throw new InvalidOperationException($"Replay store '{source.StoreId}' root patch materialized an invalid component {pair.Key}.");
+                    }
+                    root.AddOrReplaceById(pair.Key, pair.Value);
                 }
             }
         }
@@ -1096,8 +1201,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
                      objectIndex++)
                 {
                     var sourceObject = source.Objects[objectIndex];
-                    if (sourceObject.ParentObjectId
-                        == RuntimeStore.STORE_ROOT_OBJECT_ID)
+                    if (sourceObject.ParentObjectId == RuntimeStoreStructureChange.NO_PARENT_ID || sourceObject.ParentObjectId == RuntimeStore.STORE_ROOT_OBJECT_ID)
                     {
                         staged.CreateEntitySubtree(
                             sourceObject.ObjectId,
@@ -1144,6 +1248,8 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
                 {
                     writer.WriteUInt64(store.CapturedRevision);
                 }
+                writer.WriteBoolean(store.HasRoot);
+                writer.WriteBytes(store.RootPatchPayload);
                 writer.WriteInt32(store.Objects.Count);
                 for (var objectIndex = 0;
                      objectIndex < store.Objects.Count;
@@ -1190,6 +1296,8 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
                     Realm = (StoreRealm)reader.ReadByte(),
                     NetDirection = (StoreNetDir)reader.ReadByte(),
                     CapturedRevision = reader.ReadUInt64(),
+                    HasRoot = reader.ReadBoolean(),
+                    RootPatchPayload = reader.ReadBytes(MAX_PATCH_BYTES),
                 };
                 var objectCount = ReadCount(
                     reader,

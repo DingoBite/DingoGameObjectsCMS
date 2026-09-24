@@ -65,11 +65,26 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
 
             var nodes = new List<RuntimeProjectedStoreNode>();
             var order = 0L;
-            var roots = CollectTopLevel(store);
+            var roots = new List<long>(store.Parents.V.Keys);
+            roots.Sort();
             var rootSibling = 0;
             for (var i = 0; i < roots.Count; i++)
             {
                 var objectId = roots[i];
+                if (objectId == RuntimeStore.STORE_ROOT_OBJECT_ID)
+                {
+                    if (!store.TryTakeChildren(objectId, out var children))
+                        continue;
+                    var childSibling = 0;
+                    for (var childIndex = 0; childIndex < children.Count; childIndex++)
+                    {
+                        var childId = children[childIndex];
+                        if (!visibility(connectionId, store, childId))
+                            continue;
+                        AppendVisibleSubtree(store, connectionId, visibility, childId, RuntimeStore.STORE_ROOT_OBJECT_ID, childSibling++, depth: 1, nodes, ref order);
+                    }
+                    continue;
+                }
                 if (!visibility(connectionId, store, objectId))
                     continue;
 
@@ -86,31 +101,6 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             }
 
             return new RuntimeProjectedStoreSnapshot(Array.AsReadOnly(nodes.ToArray()));
-        }
-
-        private static List<long> CollectTopLevel(RuntimeStore store)
-        {
-            var result = new List<long>();
-            var roots = new List<long>(store.Parents.V.Keys);
-            roots.Sort();
-            for (var i = 0; i < roots.Count; i++)
-            {
-                var rootId = roots[i];
-                if (rootId != RuntimeStore.STORE_ROOT_OBJECT_ID)
-                {
-                    result.Add(rootId);
-                    continue;
-                }
-
-                if (!store.TryTakeChildren(rootId, out var storeRootChildren) || storeRootChildren == null)
-                    continue;
-                for (var childIndex = 0; childIndex < storeRootChildren.Count; childIndex++)
-                {
-                    result.Add(storeRootChildren[childIndex]);
-                }
-            }
-
-            return result;
         }
 
         private static void AppendVisibleSubtree(
@@ -258,6 +248,13 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             };
             var refs = new NetObjectRef[projectedTopology.Nodes.Count];
             shadow.Clear();
+            store.TryTakeRO(RuntimeStore.STORE_ROOT_OBJECT_ID, out var root);
+            projected.RootPatch = root == null ? new RuntimeObjectPatch(_context.PatchCodecs.SchemaHash) : RuntimeStoreBaselineBuilder.BuildNetworkRootPatch(root, _context.PatchCodecs, networkContext, _context.ReplicationPolicies);
+            shadow.Set(RuntimeStore.STORE_ROOT_OBJECT_ID, new RuntimeConnectionObjectShadow
+            {
+                ReliableComponents = root == null ? new Dictionary<uint, GameRuntimeComponent>() : SnapshotReliableComponents(root),
+                UnreliableComponentPresence = new HashSet<uint>(),
+            });
             for (var i = 0; i < projectedTopology.Nodes.Count; i++)
             {
                 var node = projectedTopology.Nodes[i];
@@ -317,6 +314,7 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             var networkContext = CreateRestrictedNetworkContext(connectionId, store, topology);
             var patchEngine = new RuntimeObjectPatchEngine(_context.PatchCodecs, networkContext);
             var desiredIds = new HashSet<long>();
+            desiredIds.Add(RuntimeStore.STORE_ROOT_OBJECT_ID);
             for (var i = 0; i < topology.Nodes.Count; i++)
             {
                 desiredIds.Add(topology.Nodes[i].ObjectId);
@@ -354,6 +352,27 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             }
 
             var dirtyIds = CollectDirtyObjectIds(revision);
+            if (dirtyIds.Contains(RuntimeStore.STORE_ROOT_OBJECT_ID))
+            {
+                if (!shadow.TryGet(RuntimeStore.STORE_ROOT_OBJECT_ID, out var rootShadow))
+                    throw new InvalidOperationException($"Store root is missing from connection {connectionId} shadow.");
+                if (!store.TryTakeRO(RuntimeStore.STORE_ROOT_OBJECT_ID, out var root))
+                    throw new InvalidOperationException($"Store root {store.Id} disappeared during revision {revision.StoreRevision}.");
+                var currentReliable = SnapshotReliableComponents(root);
+                var patch = patchEngine.BuildPatch(rootShadow.ReliableComponents, currentReliable);
+                if (SnapshotUnreliableComponentPresence(root).Count != 0)
+                    throw new InvalidOperationException($"Store root {store.Id} cannot replicate UnreliableState components.");
+                if (!patch.IsEmpty)
+                {
+                    operations.Add(new RuntimeStoreDeltaOperation
+                    {
+                        Kind = RuntimeStoreDeltaOperationKind.Patch,
+                        ObjectId = RuntimeStore.STORE_ROOT_OBJECT_ID,
+                        Patch = patch,
+                    });
+                }
+                rootShadow.ReliableComponents = currentReliable;
+            }
             for (var i = 0; i < topology.Nodes.Count; i++)
             {
                 var node = topology.Nodes[i];
@@ -474,6 +493,7 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             var networkContext = CreateRestrictedNetworkContext(connectionId, store, topology);
             var patchEngine = new RuntimeObjectPatchEngine(_context.PatchCodecs, networkContext);
             var desiredIds = new HashSet<long>();
+            desiredIds.Add(RuntimeStore.STORE_ROOT_OBJECT_ID);
             for (var i = 0; i < topology.Nodes.Count; i++)
             {
                 desiredIds.Add(topology.Nodes[i].ObjectId);
@@ -715,6 +735,8 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             RuntimeObjectPatchEngine patchEngine)
         {
             var empty = new Dictionary<uint, GameRuntimeComponent>();
+            if (store.TryTakeRO(RuntimeStore.STORE_ROOT_OBJECT_ID, out var root))
+                patchEngine.BuildPatch(empty, SnapshotReliableComponents(root));
             for (var i = 0; i < topology.Nodes.Count; i++)
             {
                 var objectId = topology.Nodes[i].ObjectId;

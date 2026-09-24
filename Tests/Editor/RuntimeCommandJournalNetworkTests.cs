@@ -122,7 +122,7 @@ namespace DingoGameObjectsCMS.Tests.Editor
             var expected = CreateDescriptor(RuntimeProtocol.VERSION);
             var actual = CreateDescriptor((ushort)(RuntimeProtocol.VERSION + 1));
 
-            Assert.That(RuntimeProtocol.VERSION, Is.EqualTo(3));
+            Assert.That(RuntimeProtocol.VERSION, Is.EqualTo(4));
             Assert.That(
                 RuntimeSessionDescriptorValidator.Validate(expected, actual),
                 Is.EqualTo(RuntimeProtocolRejectCode.ProtocolVersionMismatch));
@@ -1572,6 +1572,7 @@ namespace DingoGameObjectsCMS.Tests.Editor
                             Store = store,
                             BaselineId = baselineId,
                             StoreRevision = 0,
+                            RootPatch = new RuntimeObjectPatch(fixture.PatchCodecs.SchemaHash),
                         });
             var chunks = RuntimeBaselineChunker.Split(
                 sessionId,

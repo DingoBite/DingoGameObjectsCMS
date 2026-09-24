@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using DingoGameObjectsCMS.RuntimeObjects.Overrides;
+using DingoGameObjectsCMS.RuntimeObjects.Stores;
 using UnityEngine;
 
 namespace DingoGameObjectsCMS.Mirror.Protocol
@@ -227,12 +228,12 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             for (var i = 0; i < value.Operations.Count; i++)
             {
                 var operation = value.Operations[i] ?? throw new InvalidOperationException($"Store delta operation {i} is null.");
-                if (operation.ObjectId <= 0)
+                if (operation.ObjectId < RuntimeStore.STORE_ROOT_OBJECT_ID || (operation.ObjectId == RuntimeStore.STORE_ROOT_OBJECT_ID && (value.Kind != RuntimeStoreDeltaKind.Mutation || operation.Kind != RuntimeStoreDeltaOperationKind.Patch)))
                     throw new InvalidOperationException($"Store delta operation {i} has invalid object id {operation.ObjectId}.");
                 switch (operation.Kind)
                 {
                     case RuntimeStoreDeltaOperationKind.Spawn:
-                        if (!operation.InstanceGuid.isValid || operation.AssetNetId == 0 || operation.SiblingIndex < 0)
+                        if (!operation.InstanceGuid.isValid || operation.AssetNetId == 0 || operation.ParentObjectId < -1 || operation.SiblingIndex < 0)
                             throw new InvalidOperationException($"Store delta spawn {operation.ObjectId} is incomplete.");
                         break;
                     case RuntimeStoreDeltaOperationKind.Remove:
@@ -246,7 +247,7 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                             throw new InvalidOperationException($"Store delta reparent {operation.ObjectId} has invalid parent/index.");
                         break;
                     case RuntimeStoreDeltaOperationKind.Move:
-                        if (operation.ParentObjectId <= 0 || operation.SiblingIndex < 0)
+                        if (operation.ParentObjectId < RuntimeStore.STORE_ROOT_OBJECT_ID || operation.SiblingIndex < 0)
                             throw new InvalidOperationException($"Store delta move {operation.ObjectId} has invalid parent/index.");
                         break;
                     case RuntimeStoreDeltaOperationKind.Patch:

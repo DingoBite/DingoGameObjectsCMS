@@ -35,7 +35,30 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                     templateCache,
                     assetLock,
                     networkPatchContext,
-                    replicationPolicies));
+                    replicationPolicies),
+                root => root == null ? new RuntimeObjectPatch(templateCache.CodecRegistry.SchemaHash) : BuildNetworkRootPatch(root, templateCache.CodecRegistry, networkPatchContext, replicationPolicies));
+        }
+
+        public static RuntimeObjectPatch BuildNetworkRootPatch(GameRuntimeObject root, RuntimePatchCodecRegistry patchCodecs, RuntimePatchCodecContext networkPatchContext, RuntimeReplicationPolicyRegistry replicationPolicies)
+        {
+            if (root == null || root.InstanceId != RuntimeStore.STORE_ROOT_OBJECT_ID)
+                throw new ArgumentException("Network root patch requires the store root object.", nameof(root));
+            if (patchCodecs == null || networkPatchContext == null)
+                throw new InvalidOperationException("Network root patch requires runtime patch codecs and context.");
+            if (replicationPolicies == null || !replicationPolicies.IsSealed)
+                throw new InvalidOperationException("A sealed replication policy registry is required to project the store root.");
+
+            var components = new Dictionary<uint, GameRuntimeComponent>();
+            foreach (var component in root.Components)
+            {
+                if (component == null || !RuntimeComponentTypeRegistry.TryGetId(component.GetType(), out var typeId) || !components.TryAdd(typeId, component))
+                    throw new InvalidOperationException($"Store root {root.StoreId} contains a null, unregistered, or duplicate runtime component.");
+                if (replicationPolicies.GetRequired(typeId) == RuntimeReplicationPolicy.UnreliableState)
+                    throw new InvalidOperationException($"Store root {root.StoreId} cannot carry unreliable component {typeId}; root has no state-stream identity.");
+            }
+
+            var patchEngine = new RuntimeObjectPatchEngine(patchCodecs, networkPatchContext);
+            return patchEngine.BuildProjectedPatch(Array.Empty<uint>(), components, _ => null, typeId => RuntimeComponentVisibilityProjection.GetPatchProjectionMode(replicationPolicies, typeId));
         }
 
         public static RuntimeObjectPatch BuildNetworkOverrides(
@@ -68,7 +91,8 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             RuntimeStore store,
             RuntimeSessionAssetCatalog assetCatalog,
             ulong baselineId,
-            Func<GameRuntimeObject, RuntimeObjectPatch> buildOverrides)
+            Func<GameRuntimeObject, RuntimeObjectPatch> buildOverrides,
+            Func<GameRuntimeObject, RuntimeObjectPatch> buildRootPatch)
         {
             if (store == null)
                 throw new ArgumentNullException(nameof(store));
@@ -82,41 +106,37 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                 throw new ArgumentOutOfRangeException(nameof(baselineId), "Baseline id must be non-zero.");
             if (buildOverrides == null)
                 throw new ArgumentNullException(nameof(buildOverrides));
+            if (buildRootPatch == null)
+                throw new ArgumentNullException(nameof(buildRootPatch));
 
+            store.TryTakeRO(RuntimeStore.STORE_ROOT_OBJECT_ID, out var root);
             var result = new RuntimeStoreBaselinePayload
             {
                 Store = new NetStoreRef(store.Id, store.StoreGeneration),
                 BaselineId = baselineId,
                 StoreRevision = store.StoreRevision,
+                RootPatch = buildRootPatch(root),
             };
 
-            var topLevel = CollectTopLevel(store);
-            for (var i = 0; i < topLevel.Count; i++)
-                AppendSubtree(store, assetCatalog, buildOverrides, result.Spawns, topLevel[i], -1, i);
-
-            RuntimeStoreBaselineCodec.Validate(result);
-            return result;
-        }
-
-        private static List<long> CollectTopLevel(RuntimeStore store)
-        {
-            var result = new List<long>();
             var roots = new List<long>(store.Parents.V.Keys);
             roots.Sort();
+            var parentlessSiblingIndex = 0;
             for (var i = 0; i < roots.Count; i++)
             {
                 var rootId = roots[i];
                 if (rootId != RuntimeStore.STORE_ROOT_OBJECT_ID)
                 {
-                    result.Add(rootId);
+                    AppendSubtree(store, assetCatalog, buildOverrides, result.Spawns, rootId, RuntimeStoreStructureChange.NO_PARENT_ID, parentlessSiblingIndex++);
                     continue;
                 }
 
-                if (!store.TryTakeChildren(rootId, out var storeRootChildren) || storeRootChildren == null)
+                if (!store.TryTakeChildren(rootId, out var children) || children == null)
                     continue;
-                for (var childIndex = 0; childIndex < storeRootChildren.Count; childIndex++)
-                    result.Add(storeRootChildren[childIndex]);
+                for (var childIndex = 0; childIndex < children.Count; childIndex++)
+                    AppendSubtree(store, assetCatalog, buildOverrides, result.Spawns, children[childIndex], RuntimeStore.STORE_ROOT_OBJECT_ID, childIndex);
             }
+
+            RuntimeStoreBaselineCodec.Validate(result);
             return result;
         }
 

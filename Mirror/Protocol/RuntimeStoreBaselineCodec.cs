@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using DingoGameObjectsCMS.RuntimeObjects.Overrides;
+using DingoGameObjectsCMS.RuntimeObjects.Stores;
 using UnityEngine;
 
 namespace DingoGameObjectsCMS.Mirror.Protocol
@@ -11,6 +12,7 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
         public NetStoreRef Store;
         public ulong BaselineId;
         public ulong StoreRevision;
+        public RuntimeObjectPatch RootPatch;
         public List<RuntimeStoreBaselineSpawn> Spawns = new();
     }
 
@@ -28,7 +30,7 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
     public sealed class RuntimeStoreBaselineCodec
     {
         public const uint FORMAT_MAGIC = 0x32425347;
-        public const uint FORMAT_VERSION = 1;
+        public const uint FORMAT_VERSION = 2;
         public const int MAX_OBJECTS = 262_144;
 
         private readonly RuntimePatchCodecRegistry _patchRegistry;
@@ -50,6 +52,9 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             writer.WriteUInt32(value.Store.StoreGeneration);
             writer.WriteUInt64(value.BaselineId);
             writer.WriteUInt64(value.StoreRevision);
+            var rootPatchOffset = writer.BeginLengthPrefixedBlock();
+            _patchCodec.WriteTo(writer, value.RootPatch);
+            writer.EndLengthPrefixedBlock(rootPatchOffset);
             writer.WriteInt32(value.Spawns.Count);
             for (var i = 0; i < value.Spawns.Count; i++)
             {
@@ -93,6 +98,10 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                 BaselineId = reader.ReadUInt64(),
                 StoreRevision = reader.ReadUInt64(),
             };
+            var rootPatchReader = reader.ReadBytesReader(RuntimeObjectPatchNetworkCodec.MAX_PAYLOAD_BYTES, "baseline root patch");
+            if (rootPatchReader == null)
+                throw new FormatException("Baseline root patch is null.");
+            result.RootPatch = _patchCodec.Decode(rootPatchReader);
             var count = reader.ReadInt32();
             if (count < 0 || count > MAX_OBJECTS)
                 throw new FormatException($"Invalid baseline object count {count}; expected 0..{MAX_OBJECTS}.");
@@ -127,6 +136,8 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                 throw new InvalidOperationException($"Baseline has invalid store reference '{value.Store}'.");
             if (value.BaselineId == 0)
                 throw new InvalidOperationException("Baseline id must be non-zero.");
+            if (value.RootPatch == null || value.RootPatch.Representation != RuntimeObjectPatchRepresentation.RuntimeBinary || value.RootPatch.Components == null)
+                throw new InvalidOperationException("Baseline requires a runtime-binary root patch.");
             if (value.Spawns == null)
                 throw new InvalidOperationException("Baseline spawn collection is null.");
             if (value.Spawns.Count > MAX_OBJECTS)
@@ -144,7 +155,7 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                     throw new InvalidOperationException($"Baseline object {spawn.ObjectId} has invalid or duplicate instance guid {spawn.InstanceGuid}.");
                 if (spawn.AssetNetId == 0)
                     throw new InvalidOperationException($"Baseline object {spawn.ObjectId} has invalid AssetNetId 0.");
-                if (spawn.ParentObjectId != -1 && !objectIds.Contains(spawn.ParentObjectId))
+                if (spawn.ParentObjectId != RuntimeStoreStructureChange.NO_PARENT_ID && spawn.ParentObjectId != RuntimeStore.STORE_ROOT_OBJECT_ID && !objectIds.Contains(spawn.ParentObjectId))
                     throw new InvalidOperationException($"Baseline object {spawn.ObjectId} appears before missing parent {spawn.ParentObjectId}.");
                 if (spawn.SiblingIndex < 0)
                     throw new InvalidOperationException($"Baseline object {spawn.ObjectId} has negative sibling index {spawn.SiblingIndex}.");

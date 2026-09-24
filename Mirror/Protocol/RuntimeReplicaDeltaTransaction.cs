@@ -184,6 +184,14 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                         if (!store.TryTakeRO(operation.ObjectId, out var existing))
                             throw new InvalidOperationException($"Replica delta patches missing object {operation.ObjectId}.");
                         _inboundPatchValidator.ValidateDelta(operation.Patch);
+                        if (operation.ObjectId == RuntimeStore.STORE_ROOT_OBJECT_ID)
+                        {
+                            foreach (var component in operation.Patch.Components)
+                            {
+                                if (_context.ReplicationPolicies.GetRequired(component.ComponentTypeId) == RuntimeReplicationPolicy.UnreliableState)
+                                    throw new InvalidOperationException($"Store root cannot receive unreliable component {component.ComponentTypeId} without a state-stream identity.");
+                            }
+                        }
                         var current = SnapshotComponents(existing);
                         plan.ComponentTargets.Add(
                             operation.ObjectId,
@@ -463,27 +471,17 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                 var result = new MutableTopology();
                 foreach (var pair in store.All.V)
                 {
-                    if (pair.Key != RuntimeStore.STORE_ROOT_OBJECT_ID)
-                        result._parentById.Add(pair.Key, RuntimeStoreStructureChange.NO_PARENT_ID);
+                    result._parentById.Add(pair.Key, RuntimeStoreStructureChange.NO_PARENT_ID);
                 }
                 foreach (var pair in store.All.V)
                 {
                     if (!store.TryTakeChildren(pair.Key, out var children) || children.Count == 0)
                         continue;
-                    if (pair.Key == RuntimeStore.STORE_ROOT_OBJECT_ID)
-                    {
-                        for (var i = 0; i < children.Count; i++)
-                        {
-                            result._parentById[children[i]] = RuntimeStoreStructureChange.NO_PARENT_ID;
-                        }
-                        continue;
-                    }
                     var copy = new List<long>(children);
                     result._childrenByParent[pair.Key] = copy;
                     for (var i = 0; i < copy.Count; i++)
                     {
-                        if (copy[i] != RuntimeStore.STORE_ROOT_OBJECT_ID)
-                            result._parentById[copy[i]] = pair.Key;
+                        result._parentById[copy[i]] = pair.Key;
                     }
                 }
                 return result;
@@ -500,7 +498,7 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
 
             public void Remove(long objectId, bool subtree)
             {
-                Require(objectId);
+                RequireMutable(objectId);
                 if (_childrenByParent.TryGetValue(objectId, out var children) && children.Count > 0)
                 {
                     var copy = new List<long>(children);
@@ -522,7 +520,7 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
 
             public void Reparent(long objectId, long parentId, int index)
             {
-                Require(objectId);
+                RequireMutable(objectId);
                 if (parentId == RuntimeStoreStructureChange.NO_PARENT_ID)
                 {
                     Detach(objectId);
@@ -549,7 +547,7 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
 
             public void Move(long objectId, long parentId, int index)
             {
-                Require(objectId);
+                RequireMutable(objectId);
                 if (!_parentById.TryGetValue(objectId, out var currentParent) || currentParent != parentId)
                     throw new InvalidOperationException($"Replica delta move parent mismatch for object {objectId}.");
                 if (!_childrenByParent.TryGetValue(parentId, out var children))
@@ -575,6 +573,13 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             {
                 if (!Contains(objectId))
                     throw new InvalidOperationException($"Replica delta references missing object {objectId}.");
+            }
+
+            private void RequireMutable(long objectId)
+            {
+                if (objectId == RuntimeStore.STORE_ROOT_OBJECT_ID)
+                    throw new InvalidOperationException("Replica delta cannot structurally modify the store root.");
+                Require(objectId);
             }
         }
     }

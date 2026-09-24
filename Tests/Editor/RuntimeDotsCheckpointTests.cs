@@ -1,5 +1,9 @@
 using System;
+using System.Collections.Generic;
 using DingoGameObjectsCMS.AssetLibrary;
+using DingoGameObjectsCMS.AssetObjects;
+using DingoGameObjectsCMS.Mirror.Protocol;
+using DingoGameObjectsCMS.RuntimeObjects;
 using DingoGameObjectsCMS.RuntimeObjects.Commands;
 using DingoGameObjectsCMS.RuntimeObjects.Overrides;
 using DingoGameObjectsCMS.RuntimeObjects.Replay;
@@ -13,6 +17,37 @@ using UnityEngine;
 
 namespace DingoGameObjectsCMS.Tests.Editor
 {
+    public class RuntimeCheckpointNetworkOwnerCodec : RuntimeComponentPatchCodec<NetworkOwner_GRC>
+    {
+        public override uint FieldCount => 1u;
+
+        public RuntimeCheckpointNetworkOwnerCodec(uint componentTypeId) : base(componentTypeId) { }
+
+        protected override NetworkOwner_GRC CloneTyped(NetworkOwner_GRC value) => new() { ConnectionId = value.ConnectionId };
+
+        protected override void WriteCanonicalTyped(CanonicalPatchBinaryWriter writer, NetworkOwner_GRC value, RuntimePatchCodecContext context) => writer.WriteInt32(value.ConnectionId);
+
+        protected override NetworkOwner_GRC ReadCanonicalTyped(CanonicalPatchBinaryReader reader, RuntimePatchCodecContext context) => new() { ConnectionId = reader.ReadInt32() };
+
+        protected override void CollectFieldPatchesTyped(NetworkOwner_GRC baseline, NetworkOwner_GRC current, List<FieldPatch> fields, RuntimePatchCodecContext context)
+        {
+            if (baseline.ConnectionId == current.ConnectionId)
+            {
+                return;
+            }
+            using var writer = new CanonicalPatchBinaryWriter();
+            writer.WriteInt32(current.ConnectionId);
+            fields.Add(new FieldPatch(1u, FieldPatchKind.Set, writer.ToArray()));
+        }
+
+        protected override void ApplyFieldPatchTyped(NetworkOwner_GRC target, FieldPatch fieldPatch, RuntimePatchCodecContext context)
+        {
+            var reader = new CanonicalPatchBinaryReader(fieldPatch.Payload);
+            target.ConnectionId = reader.ReadInt32();
+            reader.RequireEnd();
+        }
+    }
+
     public class RuntimeDotsCheckpointTestParticipant :
         IRuntimeReplayCheckpointParticipant
     {
@@ -176,6 +211,7 @@ namespace DingoGameObjectsCMS.Tests.Editor
             var storeId = new FixedString32Bytes("map");
             var activeBefore =
                 RuntimeStores.GetOrAddRuntimeStore(storeId);
+            Assert.That(activeBefore.TryTakeRO(RuntimeStore.STORE_ROOT_OBJECT_ID, out _), Is.False);
             var participant = new RuntimeDotsCheckpointTestParticipant
             {
                 Value = 10,
@@ -215,6 +251,98 @@ namespace DingoGameObjectsCMS.Tests.Editor
                 Is.EqualTo(generation));
             Assert.That(activeAfter.StoreRevision, Is.EqualTo(revision));
             Assert.That(activeAfter.Retired, Is.False);
+            Assert.That(activeAfter.TryTakeRO(RuntimeStore.STORE_ROOT_OBJECT_ID, out _), Is.False);
+        }
+
+        [Test]
+        public void StoreRootPatch_RoundTripsWithoutAnAssetOrigin_AndChangesFingerprint()
+        {
+            if (!RuntimeComponentTypeRegistry.TryGetId(typeof(NetworkOwner_GRC), out var componentTypeId))
+            {
+                Assert.Ignore("The compiled runtime component registry is not initialized for NetworkOwner_GRC.");
+            }
+
+            var storeId = new FixedString32Bytes("map");
+            var store = RuntimeStores.GetOrAddRuntimeStore(storeId);
+            store.TakeRootRW().AddOrReplace(new NetworkOwner_GRC { ConnectionId = 73 });
+            store.FlushToQuiescence();
+
+            var codecs = new RuntimePatchCodecRegistry("root-checkpoint-test");
+            codecs.Register(new RuntimeCheckpointNetworkOwnerCodec(componentTypeId));
+            var participant = new RuntimeStoresReplayCheckpointParticipant(_world, StoreRealm.Server, new GameAssetLibraryLock().Seal(), new GameAssetTemplateCache(codecs, RuntimeTemplatePatchCodecContext.Instance), new RuntimeReplayStoreScope("map"));
+            var registry = CreateRegistry(participant);
+            var checkpoint = registry.Capture(12L, 0UL);
+            var before = registry.CaptureFingerprint(12L);
+
+            store.TakeRootRW().TakeRW<NetworkOwner_GRC>().ConnectionId = 99;
+            store.FlushToQuiescence();
+            var after = registry.CaptureFingerprint(12L);
+            Assert.That(after.OverallHash, Is.Not.EqualTo(before.OverallHash));
+
+            registry.Restore(checkpoint);
+
+            var restored = RuntimeStores.GetRuntimeStore(storeId, StoreRealm.Server);
+            Assert.That(restored.TakeRootRO().TakeRO<NetworkOwner_GRC>().ConnectionId, Is.EqualTo(73));
+            Assert.That(restored.TakeRootRO().Origin.InstanceGuid.isValid, Is.False);
+        }
+
+        [Test]
+        public void EmptyExistingStoreRoot_RoundTripsAndChangesFingerprint()
+        {
+            var storeId = new FixedString32Bytes("map");
+            var store = RuntimeStores.GetOrAddRuntimeStore(storeId);
+            var registry = CreateRegistry(CreateStoreParticipant("map"));
+            var withoutRoot = registry.CaptureFingerprint(12L);
+
+            store.TakeRootRW();
+            store.FlushToQuiescence();
+            var checkpoint = registry.Capture(12L, 0UL);
+            var withRoot = registry.CaptureFingerprint(12L);
+            Assert.That(withRoot.OverallHash, Is.Not.EqualTo(withoutRoot.OverallHash));
+
+            registry.Restore(checkpoint);
+
+            var restored = RuntimeStores.GetRuntimeStore(storeId, StoreRealm.Server);
+            Assert.That(restored.TryTakeRO(RuntimeStore.STORE_ROOT_OBJECT_ID, out var root), Is.True);
+            Assert.That(root.Components, Is.Empty);
+            Assert.That(root.Origin.InstanceGuid.isValid, Is.False);
+        }
+
+        [Test]
+        public void StoreRootChild_RetainsParentZeroDistinctFromUnparentedObjects()
+        {
+            var asset = ScriptableObject.CreateInstance<GameAsset>();
+            try
+            {
+                var assetKey = new GameAssetKey("test", "runtime", "root_child", "1.0.0");
+                asset.ResetToDefault(assetKey, Hash128.Compute("checkpoint-root-child-asset"));
+                var codecs = new RuntimePatchCodecRegistry("root-child-checkpoint-test");
+                var templates = new GameAssetTemplateCache(codecs, RuntimeTemplatePatchCodecContext.Instance);
+                var blueprint = templates.GetOrCreate(new GameAssetReference(assetKey), asset);
+                var assetLock = new GameAssetLibraryLock();
+                assetLock.Set(assetKey, new GameAssetLibraryLockEntry(assetKey, asset.GUID, blueprint.Asset.MaterializedContentHash, asset));
+                assetLock.Seal();
+
+                var storeId = new FixedString32Bytes("map");
+                var store = RuntimeStores.GetOrAddRuntimeStore(storeId);
+                store.TakeRootRW();
+                var child = store.Spawn(new GameAssetInstance(Hash128.Compute("checkpoint-root-child"), new GameAssetReference(assetKey), null), assetLock, templates, parentId: RuntimeStore.STORE_ROOT_OBJECT_ID);
+                var parentless = store.Spawn(new GameAssetInstance(Hash128.Compute("checkpoint-parentless"), new GameAssetReference(assetKey), null), assetLock, templates);
+                store.FlushToQuiescence();
+
+                var participant = new RuntimeStoresReplayCheckpointParticipant(_world, StoreRealm.Server, assetLock, templates, new RuntimeReplayStoreScope("map"));
+                var registry = CreateRegistry(participant);
+                registry.Restore(registry.Capture(12L, 0UL));
+
+                var restored = RuntimeStores.GetRuntimeStore(storeId, StoreRealm.Server);
+                Assert.That(restored.TryTakeParentRO(child.InstanceId, out var root), Is.True);
+                Assert.That(root.InstanceId, Is.EqualTo(RuntimeStore.STORE_ROOT_OBJECT_ID));
+                Assert.That(restored.TryTakeParentRO(parentless.InstanceId, out _), Is.False);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(asset);
+            }
         }
 
         [Test]
@@ -240,6 +368,7 @@ namespace DingoGameObjectsCMS.Tests.Editor
             {
                 var staged = stage.TakeStore(storeId);
                 Assert.That(staged, Is.Not.SameAs(active));
+                Assert.That(staged.TryTakeRO(RuntimeStore.STORE_ROOT_OBJECT_ID, out _), Is.False);
                 Assert.That(
                     RuntimeStores.GetRuntimeStore(
                         storeId,
