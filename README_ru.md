@@ -16,6 +16,8 @@
 
 Это не просто “CMS для ScriptableObject”, а унифицированная модель игры, где внешний content catalog, runtime model, ECS bridge, replication и modding используют один и тот же язык данных.
 
+Для prefab и объектов сцены GA можно генерировать из Unity-компонентов через [авторинг GameObject → GameAsset](AssetObjects/Authoring/README.md). MonoBehaviour-компоненты формируют GAC, а редактор сохраняет результат как канонический документ в модуле DingoCMS. Размещение объекта и изменяемое игровое состояние при этом остаются данными экземпляра и RuntimeStore.
+
 Опциональный высоконагруженный DOTS-профиль описан в [Интеграции DOTS + RuntimeStore](DOTS_INTEGRATION.md).
 
 ## Почему это решение полезно

@@ -16,6 +16,8 @@ The core idea is simple:
 
 This is not just a "ScriptableObject CMS". It is a unified game model where the external content catalog, runtime model, ECS bridge, replication, and modding all speak the same data language.
 
+Unity-authored prefabs and scene objects can generate those canonical GA documents through the reusable [GameObject → GameAsset authoring](AssetObjects/Authoring/README.md) workflow. Their MonoBehaviour contributors supply GAC data; the editor writes the resulting document to the mounted DingoCMS module. The JSON package remains the runtime content source, while placement and mutable state remain instance/runtime data.
+
 For the opt-in high-cardinality DOTS profile, see [DOTS + RuntimeStore Integration](DOTS_INTEGRATION.md).
 
 ## Why this solution is valuable
