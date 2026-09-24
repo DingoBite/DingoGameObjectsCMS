@@ -119,7 +119,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
                 throw new ArgumentNullException(nameof(value));
             if (context == null)
                 throw new ArgumentNullException(nameof(context));
-            var writer = new CanonicalPatchBinaryWriter();
+            using var writer = new CanonicalPatchBinaryWriter();
             WriteCanonical(writer, value, context);
             return writer.ToArray();
         }

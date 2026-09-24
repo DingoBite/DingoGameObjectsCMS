@@ -20,6 +20,13 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
 
         public byte[] Encode(RuntimeObjectPatch patch)
         {
+            using var writer = new CanonicalPatchBinaryWriter();
+            WriteTo(writer, patch);
+            return writer.ToArray();
+        }
+
+        public void WriteTo(CanonicalPatchBinaryWriter writer, RuntimeObjectPatch patch)
+        {
             if (patch == null)
                 throw new ArgumentNullException(nameof(patch));
             if (!string.Equals(patch.SchemaHash, _registry.SchemaHash, StringComparison.Ordinal))
@@ -28,27 +35,29 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
                 throw new InvalidOperationException($"Network patch codec cannot encode representation {patch.Representation}.");
 
             var components = NormalizeComponents(patch.Components);
-            var writer = new CanonicalPatchBinaryWriter();
+            var start = writer.Length;
             writer.WriteUInt32(FORMAT_MAGIC);
             writer.WriteUInt32(FORMAT_VERSION);
             writer.WriteInt32(components.Count);
             for (var i = 0; i < components.Count; i++)
                 WriteComponent(writer, components[i]);
 
-            var payload = writer.ToArray();
-            if (payload.Length > MAX_PAYLOAD_BYTES)
-                throw new InvalidOperationException($"Runtime object patch is {payload.Length} bytes; maximum is {MAX_PAYLOAD_BYTES} bytes.");
-            return payload;
+            if (writer.Length - start > MAX_PAYLOAD_BYTES)
+                throw new InvalidOperationException($"Runtime object patch is {writer.Length - start} bytes; maximum is {MAX_PAYLOAD_BYTES} bytes.");
         }
 
         public RuntimeObjectPatch Decode(byte[] payload)
         {
             if (payload == null)
                 throw new ArgumentNullException(nameof(payload));
-            if (payload.Length > MAX_PAYLOAD_BYTES)
-                throw new FormatException($"Runtime object patch is {payload.Length} bytes; maximum is {MAX_PAYLOAD_BYTES} bytes.");
+            return Decode(new CanonicalPatchBinaryReader(payload));
+        }
 
-            var reader = new CanonicalPatchBinaryReader(payload);
+        public RuntimeObjectPatch Decode(CanonicalPatchBinaryReader reader)
+        {
+            if (reader.Length > MAX_PAYLOAD_BYTES)
+                throw new FormatException($"Runtime object patch is {reader.Length} bytes; maximum is {MAX_PAYLOAD_BYTES} bytes.");
+
             var magic = reader.ReadUInt32();
             if (magic != FORMAT_MAGIC)
                 throw new FormatException($"Runtime object network patch magic 0x{magic:x8} does not match 0x{FORMAT_MAGIC:x8}.");

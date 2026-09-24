@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Security.Cryptography;
 using System.Text;
+using Unity.Collections;
 
 namespace DingoGameObjectsCMS.RuntimeObjects.Replay
 {
@@ -43,7 +44,15 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
                 RuntimeReplayCheckpointCodec.PAGE_BYTES,
                 maxBytes,
                 initialCapacity);
-            _writer = new BinaryWriter(_stream, UTF8, leaveOpen: true);
+            try
+            {
+                _writer = new BinaryWriter(_stream, UTF8, leaveOpen: true);
+            }
+            catch
+            {
+                _stream.Dispose();
+                throw;
+            }
         }
 
         public void WriteByte(byte value)
@@ -174,6 +183,13 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
             return _stream.ToCheckpointPages();
         }
 
+        public byte[] CalculateSha256()
+        {
+            ThrowIfDisposed();
+            _writer.Flush();
+            return _stream.CalculateSha256();
+        }
+
         public void Dispose()
         {
             if (_disposed)
@@ -182,8 +198,14 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
             }
 
             _disposed = true;
-            _writer.Dispose();
-            _stream.Dispose();
+            try
+            {
+                _writer.Dispose();
+            }
+            finally
+            {
+                _stream.Dispose();
+            }
         }
 
         private void EnsureWritable(int byteCount)
@@ -242,10 +264,16 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
                     $"Replay checkpoint payload is {payload.Length} bytes; maximum is {maxBytes}.");
             }
 
-            _stream = new RuntimeReplayPagedStream(
-                RuntimeReplayCheckpointPageUtils.Split(payload),
-                payload.Length);
-            _reader = new BinaryReader(_stream, UTF8, leaveOpen: true);
+            _stream = new RuntimeReplayPagedStream(payload);
+            try
+            {
+                _reader = new BinaryReader(_stream, UTF8, leaveOpen: true);
+            }
+            catch
+            {
+                _stream.Dispose();
+                throw;
+            }
         }
 
         public RuntimeReplayCheckpointReader(
@@ -268,7 +296,15 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
             }
 
             _stream = new RuntimeReplayPagedStream(pages, payloadLength);
-            _reader = new BinaryReader(_stream, UTF8, leaveOpen: true);
+            try
+            {
+                _reader = new BinaryReader(_stream, UTF8, leaveOpen: true);
+            }
+            catch
+            {
+                _stream.Dispose();
+                throw;
+            }
         }
 
         public byte ReadByte()
@@ -381,8 +417,14 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
             }
 
             _disposed = true;
-            _reader.Dispose();
-            _stream.Dispose();
+            try
+            {
+                _reader.Dispose();
+            }
+            finally
+            {
+                _stream.Dispose();
+            }
         }
 
         private void RequireAvailable(int byteCount)
@@ -420,7 +462,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
 
     class RuntimeReplayPagedStream : Stream
     {
-        private readonly List<byte[]> _pages;
+        private readonly List<NativeArray<byte>> _pages;
         private readonly int _pageBytes;
         private readonly int _maxBytes;
         private readonly bool _writable;
@@ -475,9 +517,31 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
             _pageBytes = pageBytes;
             _maxBytes = maxBytes;
             _writable = true;
-            _pages = new List<byte[]>(Math.Max(
+            _pages = new List<NativeArray<byte>>(Math.Max(
                 1,
                 (initialCapacity + pageBytes - 1) / pageBytes));
+        }
+
+        public RuntimeReplayPagedStream(byte[] payload)
+        {
+            _pageBytes = RuntimeReplayCheckpointCodec.PAGE_BYTES;
+            _maxBytes = payload.Length;
+            _writable = false;
+            _length = payload.Length;
+            _pages = new List<NativeArray<byte>>((payload.Length + _pageBytes - 1) / _pageBytes);
+            try
+            {
+                for (var offset = 0; offset < payload.Length; offset += _pageBytes)
+                {
+                    var length = Math.Min(_pageBytes, payload.Length - offset);
+                    AddCopiedPage(payload, offset, length);
+                }
+            }
+            catch
+            {
+                DisposePages();
+                throw;
+            }
         }
 
         public RuntimeReplayPagedStream(
@@ -503,44 +567,53 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
             _maxBytes = payloadLength;
             _writable = false;
             _length = payloadLength;
-            _pages = new List<byte[]>(pages.Count);
-            var actualLength = 0;
-            for (var i = 0; i < pages.Count; i++)
+            _pages = new List<NativeArray<byte>>(pages.Count);
+            try
             {
-                var page = pages[i]
-                           ?? throw new ArgumentException(
-                               $"Checkpoint page {i} is null.",
-                               nameof(pages));
-                if (page.PageIndex != i)
+                var actualLength = 0;
+                for (var i = 0; i < pages.Count; i++)
+                {
+                    var page = pages[i]
+                               ?? throw new ArgumentException(
+                                   $"Checkpoint page {i} is null.",
+                                   nameof(pages));
+                    if (page.PageIndex != i)
+                    {
+                        throw new ArgumentException(
+                            $"Checkpoint page {i} reports index {page.PageIndex}.",
+                            nameof(pages));
+                    }
+                    if (i + 1 < pages.Count
+                        && page.PayloadLength != _pageBytes)
+                    {
+                        throw new ArgumentException(
+                            $"Checkpoint page {i} is not a full intermediate page.",
+                            nameof(pages));
+                    }
+                    actualLength = checked(actualLength + page.PayloadLength);
+                    if (page.PayloadLength > 0)
+                    {
+                        AddCopiedPage(page.UnsafePayload, 0, page.PayloadLength);
+                    }
+                }
+                if (actualLength != payloadLength)
                 {
                     throw new ArgumentException(
-                        $"Checkpoint page {i} reports index {page.PageIndex}.",
-                        nameof(pages));
+                        $"Checkpoint pages contain {actualLength} bytes, expected {payloadLength}.",
+                        nameof(payloadLength));
                 }
-                if (i + 1 < pages.Count
-                    && page.PayloadLength != _pageBytes)
+                var expectedPageCount = Math.Max(1, (payloadLength + _pageBytes - 1) / _pageBytes);
+                if (pages.Count != expectedPageCount)
                 {
                     throw new ArgumentException(
-                        $"Checkpoint page {i} is not a full intermediate page.",
+                        $"Checkpoint payload requires {expectedPageCount} pages, received {pages.Count}.",
                         nameof(pages));
                 }
-                actualLength = checked(actualLength + page.PayloadLength);
-                _pages.Add(page.UnsafePayload);
             }
-            if (actualLength != payloadLength)
+            catch
             {
-                throw new ArgumentException(
-                    $"Checkpoint pages contain {actualLength} bytes, expected {payloadLength}.",
-                    nameof(payloadLength));
-            }
-            var expectedPageCount = Math.Max(
-                1,
-                (payloadLength + _pageBytes - 1) / _pageBytes);
-            if (pages.Count != expectedPageCount)
-            {
-                throw new ArgumentException(
-                    $"Checkpoint payload requires {expectedPageCount} pages, received {pages.Count}.",
-                    nameof(pages));
+                DisposePages();
+                throw;
             }
         }
 
@@ -554,7 +627,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
                 var length = Math.Min(_pages[i].Length, result.Length - offset);
                 if (length > 0)
                 {
-                    Buffer.BlockCopy(_pages[i], 0, result, offset, length);
+                    NativeArray<byte>.Copy(_pages[i], 0, result, offset, length);
                 }
                 offset += length;
             }
@@ -579,22 +652,38 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
                 {
                     length = 0;
                 }
-                var payload = new byte[length];
-                if (length > 0)
-                {
-                    Buffer.BlockCopy(_pages[i], 0, payload, 0, length);
-                }
-                result[i] = new RuntimeReplayCheckpointPage(i, payload);
+                result[i] = new RuntimeReplayCheckpointPage(i, length > 0 ? _pages[i] : default, length);
             }
             return Array.AsReadOnly(result);
+        }
+
+        public byte[] CalculateSha256()
+        {
+            ThrowIfDisposed();
+            using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+            var remaining = _length;
+            for (var i = 0; remaining > 0; i++)
+            {
+                var length = (int)Math.Min(_pageBytes, remaining);
+                hash.AppendData(_pages[i].AsReadOnlySpan().Slice(0, length));
+                remaining -= length;
+            }
+            return hash.GetHashAndReset();
         }
 
         public override int Read(byte[] buffer, int offset, int count)
         {
             ThrowIfDisposed();
             ValidateBuffer(buffer, offset, count);
-            var remaining = (int)Math.Min(count, _length - _position);
+            return Read(buffer.AsSpan(offset, count));
+        }
+
+        public override int Read(Span<byte> buffer)
+        {
+            ThrowIfDisposed();
+            var remaining = (int)Math.Min(buffer.Length, _length - _position);
             var read = remaining;
+            var offset = 0;
             while (remaining > 0)
             {
                 var pageIndex = checked((int)(_position / _pageBytes));
@@ -606,12 +695,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
                 {
                     break;
                 }
-                Buffer.BlockCopy(
-                    _pages[pageIndex],
-                    pageOffset,
-                    buffer,
-                    offset,
-                    length);
+                _pages[pageIndex].AsReadOnlySpan().Slice(pageOffset, length).CopyTo(buffer.Slice(offset, length));
                 offset += length;
                 remaining -= length;
                 _position += length;
@@ -640,12 +724,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
                 var pageOffset = checked((int)(_position % _pageBytes));
                 EnsurePage(pageIndex);
                 var length = Math.Min(remaining, _pageBytes - pageOffset);
-                Buffer.BlockCopy(
-                    buffer,
-                    offset,
-                    _pages[pageIndex],
-                    pageOffset,
-                    length);
+                NativeArray<byte>.Copy(buffer, offset, _pages[pageIndex], pageOffset, length);
                 offset += length;
                 remaining -= length;
                 _position += length;
@@ -698,7 +777,14 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
 
         protected override void Dispose(bool disposing)
         {
-            _disposed = true;
+            if (!_disposed)
+            {
+                _disposed = true;
+                if (disposing)
+                {
+                    DisposePages();
+                }
+            }
             base.Dispose(disposing);
         }
 
@@ -706,8 +792,41 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
         {
             while (_pages.Count <= pageIndex)
             {
-                _pages.Add(new byte[_pageBytes]);
+                var page = new NativeArray<byte>(_pageBytes, Allocator.Persistent, NativeArrayOptions.ClearMemory);
+                try
+                {
+                    _pages.Add(page);
+                }
+                catch
+                {
+                    page.Dispose();
+                    throw;
+                }
             }
+        }
+
+        private void AddCopiedPage(byte[] source, int sourceOffset, int length)
+        {
+            var page = new NativeArray<byte>(length, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
+            try
+            {
+                NativeArray<byte>.Copy(source, sourceOffset, page, 0, length);
+                _pages.Add(page);
+            }
+            catch
+            {
+                page.Dispose();
+                throw;
+            }
+        }
+
+        private void DisposePages()
+        {
+            for (var i = 0; i < _pages.Count; i++)
+            {
+                _pages[i].Dispose();
+            }
+            _pages.Clear();
         }
 
         private static void ValidateBuffer(
@@ -816,19 +935,21 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
             }
 
             using var incremental = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
-            var buffer = new byte[64 * 1024];
+            using var buffer = new NativeList<byte>(64 * 1024, Allocator.Temp);
+            buffer.ResizeUninitialized(64 * 1024);
+            var span = buffer.AsSpan();
             var remaining = byteCount;
             while (remaining > 0)
             {
-                var requested = (int)Math.Min(buffer.Length, remaining);
-                var read = stream.Read(buffer, 0, requested);
+                var requested = (int)Math.Min(span.Length, remaining);
+                var read = stream.Read(span.Slice(0, requested));
                 if (read <= 0)
                 {
                     throw new EndOfStreamException(
                         $"Replay hash source ended with {remaining} bytes remaining.");
                 }
 
-                incremental.AppendData(buffer, 0, read);
+                incremental.AppendData(span.Slice(0, read));
                 remaining -= read;
             }
             return incremental.GetHashAndReset();

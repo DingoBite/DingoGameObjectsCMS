@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using Unity.Collections;
 using Unity.Entities;
 
 namespace DingoGameObjectsCMS.RuntimeObjects.Replay
@@ -69,6 +70,13 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
             int pageIndex,
             byte[] payload,
             byte[] payloadHash = null)
+            : this(pageIndex, payload, payloadHash, false)
+        {
+        }
+
+        public RuntimeReplayCheckpointPage(int pageIndex, NativeArray<byte> source, int length) : this(pageIndex, CopyNativePayload(source, length), null, true) { }
+
+        private RuntimeReplayCheckpointPage(int pageIndex, byte[] payload, byte[] payloadHash, bool ownsPayload)
         {
             if (pageIndex < 0)
             {
@@ -98,8 +106,23 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
 
             PageIndex = pageIndex;
             PayloadLength = payload.Length;
-            _payload = (byte[])payload.Clone();
-            _payloadHash = (byte[])hash.Clone();
+            _payload = ownsPayload ? payload : (byte[])payload.Clone();
+            _payloadHash = ownsPayload && payloadHash == null ? expectedHash : (byte[])hash.Clone();
+        }
+
+        private static byte[] CopyNativePayload(NativeArray<byte> source, int length)
+        {
+            if (length < 0 || length > RuntimeReplayCheckpointCodec.PAGE_BYTES || length > 0 && (!source.IsCreated || length > source.Length))
+            {
+                throw new ArgumentOutOfRangeException(nameof(length));
+            }
+
+            var payload = new byte[length];
+            if (length > 0)
+            {
+                NativeArray<byte>.Copy(source, 0, payload, 0, length);
+            }
+            return payload;
         }
     }
 

@@ -31,15 +31,22 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
         public readonly ulong StoreRevision;
 
         public int PayloadBytes => _payload.Length;
+        internal byte[] PayloadForChunking => _payload;
 
-        public RuntimeActiveBaselineTransfer(NetStoreRef store, ulong baselineId, ulong deliverySequence, ulong storeRevision, byte[] payload)
+        public RuntimeActiveBaselineTransfer(NetStoreRef store, ulong baselineId, ulong deliverySequence, ulong storeRevision, byte[] payload) : this(store, baselineId, deliverySequence, storeRevision, payload, false)
+        {
+        }
+
+        private RuntimeActiveBaselineTransfer(NetStoreRef store, ulong baselineId, ulong deliverySequence, ulong storeRevision, byte[] payload, bool takeOwnership)
         {
             Store = store;
             BaselineId = baselineId;
             DeliverySequence = deliverySequence;
             StoreRevision = storeRevision;
-            _payload = payload == null || payload.Length == 0 ? Array.Empty<byte>() : (byte[])payload.Clone();
+            _payload = payload == null || payload.Length == 0 ? Array.Empty<byte>() : takeOwnership ? payload : (byte[])payload.Clone();
         }
+
+        internal static RuntimeActiveBaselineTransfer FromOwnedPayload(NetStoreRef store, ulong baselineId, ulong deliverySequence, ulong storeRevision, byte[] payload) => new(store, baselineId, deliverySequence, storeRevision, payload, true);
 
         public byte[] CopyPayload() => _payload.Length == 0 ? Array.Empty<byte>() : (byte[])_payload.Clone();
     }
@@ -128,6 +135,16 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
 
         public RuntimeActiveBaselineTransfer BeginBaseline(ulong baselineRevision, byte[] payload, IReadOnlyList<NetObjectRef> membership)
         {
+            return BeginBaselineCore(baselineRevision, payload, membership, false);
+        }
+
+        internal RuntimeActiveBaselineTransfer BeginBaselineOwned(ulong baselineRevision, byte[] payload, IReadOnlyList<NetObjectRef> membership)
+        {
+            return BeginBaselineCore(baselineRevision, payload, membership, true);
+        }
+
+        private RuntimeActiveBaselineTransfer BeginBaselineCore(ulong baselineRevision, byte[] payload, IReadOnlyList<NetObjectRef> membership, bool takeOwnership)
+        {
             if (baselineRevision != StoreRevision)
                 throw new InvalidOperationException($"Baseline revision {baselineRevision} does not match observed store revision {StoreRevision}.");
             if (payload != null && payload.Length > RuntimeProtocol.MAX_BASELINE_BYTES)
@@ -137,7 +154,9 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             var nextDeliverySequence = TakeNext(_deliverySequence, nameof(HighestDeliverySequence));
             var commit = RuntimeMembershipProjectionCommit.Baseline(nextDeliverySequence, baselineRevision, membership);
             ValidateBaselineMembership(commit.BaselineMembership);
-            var transfer = new RuntimeActiveBaselineTransfer(Store, nextBaselineId, nextDeliverySequence, baselineRevision, payload);
+            var transfer = takeOwnership
+                ? RuntimeActiveBaselineTransfer.FromOwnedPayload(Store, nextBaselineId, nextDeliverySequence, baselineRevision, payload)
+                : new RuntimeActiveBaselineTransfer(Store, nextBaselineId, nextDeliverySequence, baselineRevision, payload);
             var marker = new RuntimeReliableEnvelope
             {
                 Kind = RuntimeStoreDeltaKind.Mutation,
@@ -165,6 +184,16 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
 
         public RuntimeConnectionDeltaEnqueueResult TryEnqueueDelta(ulong fromRevision, ulong toRevision, byte[] payload, IReadOnlyList<NetObjectRef> enters, IReadOnlyList<NetObjectRef> leaves, out RuntimeReliableEnvelope envelope)
         {
+            return TryEnqueueDeltaCore(fromRevision, toRevision, payload, enters, leaves, false, out envelope);
+        }
+
+        internal RuntimeConnectionDeltaEnqueueResult TryEnqueueDeltaOwned(ulong fromRevision, ulong toRevision, byte[] payload, IReadOnlyList<NetObjectRef> enters, IReadOnlyList<NetObjectRef> leaves, out RuntimeReliableEnvelope envelope)
+        {
+            return TryEnqueueDeltaCore(fromRevision, toRevision, payload, enters, leaves, true, out envelope);
+        }
+
+        private RuntimeConnectionDeltaEnqueueResult TryEnqueueDeltaCore(ulong fromRevision, ulong toRevision, byte[] payload, IReadOnlyList<NetObjectRef> enters, IReadOnlyList<NetObjectRef> leaves, bool takeOwnership, out RuntimeReliableEnvelope envelope)
+        {
             envelope = null;
             if (toRevision <= fromRevision)
                 throw new ArgumentOutOfRangeException(nameof(toRevision), "Delta must advance the store revision.");
@@ -190,7 +219,7 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             }
 
             var nextDeliverySequence = TakeNext(_deliverySequence, nameof(HighestDeliverySequence));
-            var payloadCopy = payload == null || payload.Length == 0 ? Array.Empty<byte>() : (byte[])payload.Clone();
+            var queuedPayload = PreparePayload(payload, takeOwnership);
             var pendingEnvelope = new RuntimeReliableEnvelope
             {
                 Kind = RuntimeStoreDeltaKind.Mutation,
@@ -198,7 +227,7 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                 BaselineId = _baselineId,
                 FromRevision = fromRevision,
                 ToRevision = toRevision,
-                Payload = payloadCopy,
+                Payload = queuedPayload,
             };
             if (!_reliableQueue.TryEnqueue(pendingEnvelope))
             {
@@ -215,11 +244,17 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             return RuntimeConnectionDeltaEnqueueResult.Enqueued;
         }
 
-        public RuntimeConnectionDeltaEnqueueResult TryEnqueueInterestDelta(
-            byte[] payload,
-            IReadOnlyList<NetObjectRef> enters,
-            IReadOnlyList<NetObjectRef> leaves,
-            out RuntimeReliableEnvelope envelope)
+        public RuntimeConnectionDeltaEnqueueResult TryEnqueueInterestDelta(byte[] payload, IReadOnlyList<NetObjectRef> enters, IReadOnlyList<NetObjectRef> leaves, out RuntimeReliableEnvelope envelope)
+        {
+            return TryEnqueueInterestDeltaCore(payload, enters, leaves, false, out envelope);
+        }
+
+        internal RuntimeConnectionDeltaEnqueueResult TryEnqueueInterestDeltaOwned(byte[] payload, IReadOnlyList<NetObjectRef> enters, IReadOnlyList<NetObjectRef> leaves, out RuntimeReliableEnvelope envelope)
+        {
+            return TryEnqueueInterestDeltaCore(payload, enters, leaves, true, out envelope);
+        }
+
+        private RuntimeConnectionDeltaEnqueueResult TryEnqueueInterestDeltaCore(byte[] payload, IReadOnlyList<NetObjectRef> enters, IReadOnlyList<NetObjectRef> leaves, bool takeOwnership, out RuntimeReliableEnvelope envelope)
         {
             envelope = null;
             if (_baselineId == 0 || NeedsBaseline)
@@ -231,7 +266,7 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                 return RuntimeConnectionDeltaEnqueueResult.InvalidMembership;
 
             var nextDeliverySequence = TakeNext(_deliverySequence, nameof(HighestDeliverySequence));
-            var payloadCopy = payload == null || payload.Length == 0 ? Array.Empty<byte>() : (byte[])payload.Clone();
+            var queuedPayload = PreparePayload(payload, takeOwnership);
             var pendingEnvelope = new RuntimeReliableEnvelope
             {
                 Kind = RuntimeStoreDeltaKind.Interest,
@@ -239,7 +274,7 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                 BaselineId = _baselineId,
                 FromRevision = ProjectedRevision,
                 ToRevision = StoreRevision,
-                Payload = payloadCopy,
+                Payload = queuedPayload,
             };
             if (!_reliableQueue.TryEnqueue(pendingEnvelope))
             {
@@ -305,6 +340,8 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
         public bool IsProjected(NetObjectRef value) => _projectedMembership.Contains(value);
         public bool IsAcknowledged(NetObjectRef value) => _acknowledgedMembership.Contains(value);
         public bool TryGetPendingReliableEnvelope(ulong deliverySequence, out RuntimeReliableEnvelope envelope) => _reliableQueue.TryGet(deliverySequence, out envelope);
+
+        private static byte[] PreparePayload(byte[] payload, bool takeOwnership) => payload == null || payload.Length == 0 ? Array.Empty<byte>() : takeOwnership ? payload : (byte[])payload.Clone();
 
         private void ValidateBaselineMembership(IReadOnlyList<NetObjectRef> membership)
         {

@@ -43,7 +43,7 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
         public byte[] Encode(RuntimeStoreBaselinePayload value)
         {
             Validate(value);
-            var writer = new CanonicalPatchBinaryWriter();
+            using var writer = new CanonicalPatchBinaryWriter();
             writer.WriteUInt32(FORMAT_MAGIC);
             writer.WriteUInt32(FORMAT_VERSION);
             writer.WriteString(value.Store.StoreId.ToString());
@@ -59,13 +59,14 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                 writer.WriteInt64(spawn.ParentObjectId);
                 writer.WriteInt32(spawn.SiblingIndex);
                 writer.WriteUInt32(spawn.AssetNetId);
-                writer.WriteBytes(_patchCodec.Encode(spawn.Overrides ?? new RuntimeObjectPatch(_patchRegistry.SchemaHash)));
+                var patchOffset = writer.BeginLengthPrefixedBlock();
+                _patchCodec.WriteTo(writer, spawn.Overrides ?? new RuntimeObjectPatch(_patchRegistry.SchemaHash));
+                writer.EndLengthPrefixedBlock(patchOffset);
             }
 
-            var payload = writer.ToArray();
-            if (payload.Length > RuntimeProtocol.MAX_BASELINE_BYTES)
-                throw new InvalidOperationException($"Baseline payload is {payload.Length} bytes; maximum is {RuntimeProtocol.MAX_BASELINE_BYTES} bytes.");
-            return payload;
+            if (writer.Length > RuntimeProtocol.MAX_BASELINE_BYTES)
+                throw new InvalidOperationException($"Baseline payload is {writer.Length} bytes; maximum is {RuntimeProtocol.MAX_BASELINE_BYTES} bytes.");
+            return writer.ToArray();
         }
 
         public RuntimeStoreBaselinePayload Decode(byte[] payload)
@@ -106,10 +107,10 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                     SiblingIndex = reader.ReadInt32(),
                     AssetNetId = reader.ReadUInt32(),
                 };
-                var patchPayload = reader.ReadBytes();
-                if (patchPayload == null)
+                var patchReader = reader.ReadBytesReader(RuntimeObjectPatchNetworkCodec.MAX_PAYLOAD_BYTES, "baseline override patch");
+                if (patchReader == null)
                     throw new FormatException($"Baseline object {spawn.ObjectId} has a null override payload.");
-                spawn.Overrides = _patchCodec.Decode(patchPayload);
+                spawn.Overrides = _patchCodec.Decode(patchReader);
                 result.Spawns.Add(spawn);
             }
 

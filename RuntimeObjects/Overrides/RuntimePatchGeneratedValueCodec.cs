@@ -53,14 +53,10 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
                 return;
             }
 
-            var payload = EncodeRuntimeObjectPatch(patch);
-            if (payload.Length > MAX_NESTED_PATCH_BYTES)
-            {
-                throw new InvalidOperationException(
-                    $"Nested runtime object patch contains {payload.Length} bytes; maximum is {MAX_NESTED_PATCH_BYTES}.");
-            }
             writer.WriteByte(1);
-            writer.WriteBytes(payload);
+            var offset = writer.BeginLengthPrefixedBlock();
+            WritePatchBody(writer, patch);
+            writer.EndLengthPrefixedBlock(offset);
         }
 
         public static RuntimeObjectPatch ReadRuntimeObjectPatch(CanonicalPatchBinaryReader reader)
@@ -72,15 +68,19 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
                 return null;
             if (presence != 1)
                 throw new FormatException($"Invalid nested runtime object patch presence marker {presence}.");
-            var payload = reader.ReadBytes(MAX_NESTED_PATCH_BYTES, "nested runtime object patch");
-            if (payload == null)
+            var body = reader.ReadBytesReader(MAX_NESTED_PATCH_BYTES, "nested runtime object patch");
+            if (body == null)
                 throw new FormatException("Present nested runtime object patch cannot have a null payload.");
-            return DecodeRuntimeObjectPatch(payload);
+            return ReadPatchBody(body);
         }
 
         public static RuntimeObjectPatch CloneRuntimeObjectPatch(RuntimeObjectPatch patch)
         {
-            return patch == null ? null : DecodeRuntimeObjectPatch(EncodeRuntimeObjectPatch(patch));
+            if (patch == null)
+                return null;
+            using var writer = new CanonicalPatchBinaryWriter();
+            WritePatchBody(writer, patch);
+            return ReadPatchBody(new CanonicalPatchBinaryReader(writer.AsArray()));
         }
 
         public static bool RuntimeObjectPatchesEqual(RuntimeObjectPatch first, RuntimeObjectPatch second)
@@ -89,41 +89,20 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
                 return true;
             if (first == null || second == null)
                 return false;
-            var firstBytes = EncodeRuntimeObjectPatch(first);
-            var secondBytes = EncodeRuntimeObjectPatch(second);
-            if (firstBytes.Length != secondBytes.Length)
-                return false;
-            for (var i = 0; i < firstBytes.Length; i++)
-            {
-                if (firstBytes[i] != secondBytes[i])
-                    return false;
-            }
-            return true;
+            using var firstWriter = new CanonicalPatchBinaryWriter();
+            using var secondWriter = new CanonicalPatchBinaryWriter();
+            WritePatchBody(firstWriter, first);
+            WritePatchBody(secondWriter, second);
+            return firstWriter.AsReadOnlySpan().SequenceEqual(secondWriter.AsReadOnlySpan());
         }
 
         public static byte[] EncodeRuntimeObjectPatch(RuntimeObjectPatch patch)
         {
             if (patch == null)
                 throw new ArgumentNullException(nameof(patch));
-            var result = patch.Representation switch
-            {
-                RuntimeObjectPatchRepresentation.RuntimeBinary =>
-                    Wrap(
-                        RuntimeObjectPatchRepresentation.RuntimeBinary,
-                        new RuntimeObjectPatchBinaryCodec().Encode(patch)),
-                RuntimeObjectPatchRepresentation.AuthoringCanonicalJson =>
-                    Wrap(
-                        RuntimeObjectPatchRepresentation.AuthoringCanonicalJson,
-                        EncodeAuthoringPatch(patch)),
-                _ => throw new InvalidOperationException(
-                    $"Nested runtime object patch has unsupported representation {patch.Representation}."),
-            };
-            if (result.Length > MAX_NESTED_PATCH_BYTES)
-            {
-                throw new InvalidOperationException(
-                    $"Nested runtime object patch contains {result.Length} bytes; maximum is {MAX_NESTED_PATCH_BYTES}.");
-            }
-            return result;
+            using var writer = new CanonicalPatchBinaryWriter();
+            WritePatchBody(writer, patch);
+            return writer.ToArray();
         }
 
         public static RuntimeObjectPatch DecodeRuntimeObjectPatch(byte[] payload)
@@ -135,9 +114,17 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
                 throw new FormatException(
                     $"Nested runtime object patch contains {payload.Length} bytes; maximum is {MAX_NESTED_PATCH_BYTES}.");
             }
-            var reader = new CanonicalPatchBinaryReader(payload);
+            return ReadPatchBody(new CanonicalPatchBinaryReader(payload));
+        }
+
+        private static RuntimeObjectPatch ReadPatchBody(CanonicalPatchBinaryReader reader)
+        {
+            if (reader.Length > MAX_NESTED_PATCH_BYTES)
+            {
+                throw new FormatException($"Nested runtime object patch contains {reader.Length} bytes; maximum is {MAX_NESTED_PATCH_BYTES}.");
+            }
             var representation = (RuntimeObjectPatchRepresentation)reader.ReadByte();
-            var inner = reader.ReadBytes(MAX_NESTED_PATCH_BYTES, "nested runtime object patch body");
+            var inner = reader.ReadBytesReader(MAX_NESTED_PATCH_BYTES, "nested runtime object patch body");
             if (inner == null)
                 throw new FormatException("Nested runtime object patch body cannot be null.");
             reader.RequireEnd();
@@ -146,24 +133,38 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
                 RuntimeObjectPatchRepresentation.RuntimeBinary =>
                     new RuntimeObjectPatchBinaryCodec().Decode(inner),
                 RuntimeObjectPatchRepresentation.AuthoringCanonicalJson =>
-                    DecodeAuthoringPatch(inner),
+                    ReadAuthoringPatch(inner),
                 _ => throw new FormatException(
                     $"Nested runtime object patch has unsupported representation {representation}."),
             };
         }
 
-        private static byte[] Wrap(RuntimeObjectPatchRepresentation representation, byte[] payload)
+        private static void WritePatchBody(CanonicalPatchBinaryWriter writer, RuntimeObjectPatch patch)
         {
-            var writer = new CanonicalPatchBinaryWriter(payload.Length + 8);
-            writer.WriteByte((byte)representation);
-            writer.WriteBytes(payload);
-            return writer.ToArray();
+            var start = writer.Length;
+            writer.WriteByte((byte)patch.Representation);
+            var offset = writer.BeginLengthPrefixedBlock();
+            switch (patch.Representation)
+            {
+                case RuntimeObjectPatchRepresentation.RuntimeBinary:
+                    new RuntimeObjectPatchBinaryCodec().WriteTo(writer, patch);
+                    break;
+                case RuntimeObjectPatchRepresentation.AuthoringCanonicalJson:
+                    WriteAuthoringPatch(writer, patch);
+                    break;
+                default:
+                    throw new InvalidOperationException($"Nested runtime object patch has unsupported representation {patch.Representation}.");
+            }
+            writer.EndLengthPrefixedBlock(offset);
+            if (writer.Length - start > MAX_NESTED_PATCH_BYTES)
+            {
+                throw new InvalidOperationException($"Nested runtime object patch contains {writer.Length - start} bytes; maximum is {MAX_NESTED_PATCH_BYTES}.");
+            }
         }
 
-        private static byte[] EncodeAuthoringPatch(RuntimeObjectPatch patch)
+        private static void WriteAuthoringPatch(CanonicalPatchBinaryWriter writer, RuntimeObjectPatch patch)
         {
             var canonical = RuntimeObjectPatchAuthoringCodec.ClonePatch(patch);
-            var writer = new CanonicalPatchBinaryWriter();
             writer.WriteUInt32(AUTHORING_PATCH_MAGIC);
             writer.WriteUInt32(AUTHORING_PATCH_VERSION);
             writer.WriteString(canonical.SchemaHash);
@@ -185,12 +186,10 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
                     writer.WriteString(field.CanonicalJson);
                 }
             }
-            return writer.ToArray();
         }
 
-        private static RuntimeObjectPatch DecodeAuthoringPatch(byte[] payload)
+        private static RuntimeObjectPatch ReadAuthoringPatch(CanonicalPatchBinaryReader reader)
         {
-            var reader = new CanonicalPatchBinaryReader(payload);
             var magic = reader.ReadUInt32();
             if (magic != AUTHORING_PATCH_MAGIC)
             {

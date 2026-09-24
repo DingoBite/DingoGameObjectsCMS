@@ -131,6 +131,7 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
         public readonly ulong ToRevision;
 
         public byte[] Payload => _payload.Length == 0 ? Array.Empty<byte>() : (byte[])_payload.Clone();
+        internal ReadOnlyMemory<byte> PayloadForDecode => _payload;
         public int PayloadBytes => _payload.Length;
 
         public RuntimeClientDeltaEnvelope(

@@ -64,7 +64,7 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
         public byte[] Encode(RuntimeStoreDeltaPayload value)
         {
             Validate(value);
-            var writer = new CanonicalPatchBinaryWriter();
+            using var writer = new CanonicalPatchBinaryWriter();
             writer.WriteUInt32(FORMAT_MAGIC);
             writer.WriteUInt32(FORMAT_VERSION);
             writer.WriteByte((byte)value.Kind);
@@ -78,16 +78,20 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             for (var i = 0; i < value.Operations.Count; i++)
                 WriteOperation(writer, value.Operations[i]);
 
-            var payload = writer.ToArray();
-            if (payload.Length > MAX_PAYLOAD_BYTES)
-                throw new InvalidOperationException($"Store delta is {payload.Length} bytes; maximum is {MAX_PAYLOAD_BYTES} bytes.");
-            return payload;
+            if (writer.Length > MAX_PAYLOAD_BYTES)
+                throw new InvalidOperationException($"Store delta is {writer.Length} bytes; maximum is {MAX_PAYLOAD_BYTES} bytes.");
+            return writer.ToArray();
         }
 
         public RuntimeStoreDeltaPayload Decode(byte[] payload)
         {
             if (payload == null)
                 throw new ArgumentNullException(nameof(payload));
+            return Decode((ReadOnlyMemory<byte>)payload);
+        }
+
+        public RuntimeStoreDeltaPayload Decode(ReadOnlyMemory<byte> payload)
+        {
             if (payload.Length > MAX_PAYLOAD_BYTES)
                 throw new FormatException($"Store delta is {payload.Length} bytes; maximum is {MAX_PAYLOAD_BYTES} bytes.");
 
@@ -133,7 +137,7 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                     writer.WriteInt64(operation.ParentObjectId);
                     writer.WriteInt32(operation.SiblingIndex);
                     writer.WriteUInt32(operation.AssetNetId);
-                    writer.WriteBytes(_patchCodec.Encode(operation.Patch ?? new RuntimeObjectPatch(_patchRegistry.SchemaHash)));
+                    WritePatch(writer, operation.Patch ?? new RuntimeObjectPatch(_patchRegistry.SchemaHash));
                     return;
                 case RuntimeStoreDeltaOperationKind.Remove:
                     writer.WriteByte(operation.RemoveSubtree);
@@ -144,7 +148,7 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                     writer.WriteInt32(operation.SiblingIndex);
                     return;
                 case RuntimeStoreDeltaOperationKind.Patch:
-                    writer.WriteBytes(_patchCodec.Encode(operation.Patch));
+                    WritePatch(writer, operation.Patch);
                     return;
                 default:
                     throw new InvalidOperationException($"Unsupported store delta operation kind {operation.Kind}.");
@@ -185,10 +189,17 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
 
         private RuntimeObjectPatch DecodePatch(CanonicalPatchBinaryReader reader, long objectId)
         {
-            var payload = reader.ReadBytes();
-            if (payload == null)
+            var patchReader = reader.ReadBytesReader(RuntimeObjectPatchNetworkCodec.MAX_PAYLOAD_BYTES, "store delta patch");
+            if (patchReader == null)
                 throw new FormatException($"Store delta object {objectId} has a null patch payload.");
-            return _patchCodec.Decode(payload);
+            return _patchCodec.Decode(patchReader);
+        }
+
+        private void WritePatch(CanonicalPatchBinaryWriter writer, RuntimeObjectPatch patch)
+        {
+            var offset = writer.BeginLengthPrefixedBlock();
+            _patchCodec.WriteTo(writer, patch);
+            writer.EndLengthPrefixedBlock(offset);
         }
 
         private static void Validate(RuntimeStoreDeltaPayload value)

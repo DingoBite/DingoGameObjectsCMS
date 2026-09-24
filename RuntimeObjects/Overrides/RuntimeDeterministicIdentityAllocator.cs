@@ -1,6 +1,8 @@
 using System;
+using System.Buffers.Binary;
 using System.Security.Cryptography;
 using System.Text;
+using Unity.Collections;
 using UnityEngine;
 
 namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
@@ -19,23 +21,21 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
         }
     }
 
-    public class RuntimeDeterministicIdentityAllocator
+    public class RuntimeDeterministicIdentityAllocator : IDisposable
     {
         private static readonly UTF8Encoding UTF8 = new(false, true);
         private static readonly char[] HEX = "0123456789abcdef".ToCharArray();
 
         private readonly int _seed;
         private readonly string _scope;
-        private readonly byte[] _prefix;
+        private readonly int _prefixLength;
+        private readonly SHA256 _sha;
+        private NativeList<byte> _payload;
         private ulong _nextSequence;
 
-        public RuntimeDeterministicIdentityState State =>
-            new(_seed, _scope, _nextSequence);
+        public RuntimeDeterministicIdentityState State => new(_seed, _scope, _nextSequence);
 
-        public RuntimeDeterministicIdentityAllocator(
-            int seed,
-            string scope,
-            ulong nextSequence = 0)
+        public RuntimeDeterministicIdentityAllocator(int seed, string scope, ulong nextSequence = 0)
         {
             if (string.IsNullOrWhiteSpace(scope))
                 throw new ArgumentException("A deterministic identity scope is required.", nameof(scope));
@@ -43,7 +43,13 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
             _seed = seed;
             _scope = scope;
             _nextSequence = nextSequence;
-            _prefix = BuildPrefix(seed, scope);
+            _prefixLength = sizeof(int) + UTF8.GetByteCount(scope);
+            _sha = SHA256.Create();
+            _payload = new NativeList<byte>(_prefixLength + sizeof(ulong), Allocator.Persistent);
+            _payload.ResizeUninitialized(_prefixLength + sizeof(ulong));
+            var payload = _payload.AsSpan();
+            BinaryPrimitives.WriteInt32LittleEndian(payload, seed);
+            UTF8.GetBytes(scope.AsSpan(), payload.Slice(sizeof(int), _prefixLength - sizeof(int)));
         }
 
         public Hash128 Next()
@@ -52,20 +58,11 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
                 throw new InvalidOperationException("The deterministic runtime identity sequence is exhausted.");
 
             var sequence = _nextSequence++;
-            var payload = new byte[_prefix.Length + sizeof(ulong)];
-            Buffer.BlockCopy(_prefix, 0, payload, 0, _prefix.Length);
-            for (var i = 0; i < sizeof(ulong); i++)
-            {
-                payload[_prefix.Length + i] = (byte)(sequence >> (i * 8));
-            }
+            BinaryPrimitives.WriteUInt64LittleEndian(_payload.AsSpan().Slice(_prefixLength, sizeof(ulong)), sequence);
+            Span<byte> digest = stackalloc byte[32];
+            _sha.TryComputeHash(_payload.AsReadOnlySpan(), digest, out _);
 
-            byte[] digest;
-            using (var sha = SHA256.Create())
-            {
-                digest = sha.ComputeHash(payload);
-            }
-
-            var text = new char[32];
+            Span<char> text = stackalloc char[32];
             for (var i = 0; i < 16; i++)
             {
                 text[i * 2] = HEX[digest[i] >> 4];
@@ -75,16 +72,13 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
             return Hash128.Parse(new string(text));
         }
 
-        private static byte[] BuildPrefix(int seed, string scope)
+        public void Dispose()
         {
-            var scopeBytes = UTF8.GetBytes(scope);
-            var prefix = new byte[sizeof(int) + scopeBytes.Length];
-            prefix[0] = (byte)seed;
-            prefix[1] = (byte)(seed >> 8);
-            prefix[2] = (byte)(seed >> 16);
-            prefix[3] = (byte)(seed >> 24);
-            Buffer.BlockCopy(scopeBytes, 0, prefix, sizeof(int), scopeBytes.Length);
-            return prefix;
+            if (_payload.IsCreated)
+            {
+                _payload.Dispose();
+            }
+            _sha.Dispose();
         }
     }
 
@@ -98,12 +92,12 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
             _allocator?.State
             ?? throw new InvalidOperationException("No deterministic runtime identity session is active.");
 
-        public static void BeginDeterministicSession(
-            int seed,
-            string scope,
-            ulong nextSequence = 0)
+        public static void BeginDeterministicSession(int seed, string scope, ulong nextSequence = 0)
         {
-            _allocator = new RuntimeDeterministicIdentityAllocator(seed, scope, nextSequence);
+            var next = new RuntimeDeterministicIdentityAllocator(seed, scope, nextSequence);
+            var previous = _allocator;
+            _allocator = next;
+            previous?.Dispose();
         }
 
         public static void Restore(in RuntimeDeterministicIdentityState state)
@@ -113,7 +107,9 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
 
         public static void EndDeterministicSession()
         {
+            var previous = _allocator;
             _allocator = null;
+            previous?.Dispose();
         }
 
         public static Hash128 Next()

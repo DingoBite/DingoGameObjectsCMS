@@ -22,23 +22,40 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
             string schemaHash,
             IReadOnlyList<RuntimeReplayCheckpointSection> sections)
         {
-            var bodyPages = EncodeBodyPages(
+            if (completedTick < -1)
+            {
+                throw new ArgumentOutOfRangeException(nameof(completedTick));
+            }
+            if (!RuntimeReplayHash.IsSha256Hex(schemaHash))
+            {
+                throw new ArgumentException(
+                    "Checkpoint schema hash must be a SHA-256 hex string.",
+                    nameof(schemaHash));
+            }
+            if (sections == null || sections.Count > MAX_SECTIONS)
+            {
+                throw new ArgumentException(
+                    $"Checkpoint must contain 0..{MAX_SECTIONS} sections.",
+                    nameof(sections));
+            }
+
+            var sectionCopy = new RuntimeReplayCheckpointSection[sections.Count];
+            for (var i = 0; i < sectionCopy.Length; i++)
+            {
+                sectionCopy[i] = sections[i];
+            }
+            ValidateSections(sectionCopy);
+            var overallHash = EncodeBodyHash(
                 completedTick,
                 cursor,
                 schemaHash,
-                sections,
-                out var bodyLength);
-            var overallHash = RuntimeReplayHash.CalculateSha256(
-                bodyPages,
-                bodyLength);
-            var result = new RuntimeReplayCheckpointEnvelope(
+                sectionCopy);
+            return new RuntimeReplayCheckpointEnvelope(
                 completedTick,
                 cursor,
                 schemaHash,
-                sections,
+                sectionCopy,
                 overallHash);
-            Validate(result);
-            return result;
         }
 
         public static byte[] Encode(RuntimeReplayCheckpointEnvelope value)
@@ -68,11 +85,10 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
                     $"Checkpoint envelope is {payload.Length} bytes; maximum is {MAX_ENVELOPE_BYTES}.");
             }
 
-            return DecodePages(
-                RuntimeReplayCheckpointPageUtils.Split(
-                    payload,
-                    MAX_ENVELOPE_BYTES),
-                payload.Length);
+            using var reader = new RuntimeReplayCheckpointReader(
+                payload,
+                MAX_ENVELOPE_BYTES);
+            return DecodeFromReader(reader);
         }
 
         public static RuntimeReplayCheckpointEnvelope DecodePages(
@@ -93,6 +109,11 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
                 pages,
                 payloadLength,
                 MAX_ENVELOPE_BYTES);
+            return DecodeFromReader(reader);
+        }
+
+        private static RuntimeReplayCheckpointEnvelope DecodeFromReader(RuntimeReplayCheckpointReader reader)
+        {
             var magic = reader.ReadUInt32();
             if (magic != FORMAT_MAGIC)
             {
@@ -197,10 +218,27 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
             }
             RuntimeReplayHash.RequireSha256(value.OverallHash, nameof(value.OverallHash));
 
-            uint previousId = 0;
-            for (var i = 0; i < value.Sections.Count; i++)
+            ValidateSections(value.Sections);
+            var expectedOverallHash = EncodeBodyHash(
+                value.CompletedTick,
+                value.Cursor,
+                value.SchemaHash,
+                value.Sections);
+            if (!RuntimeReplayHash.FixedTimeEquals(
+                    expectedOverallHash,
+                    value.OverallHash))
             {
-                var section = value.Sections[i]
+                throw new InvalidOperationException(
+                    "Checkpoint overall hash mismatch.");
+            }
+        }
+
+        private static void ValidateSections(IReadOnlyList<RuntimeReplayCheckpointSection> sections)
+        {
+            uint previousId = 0;
+            for (var i = 0; i < sections.Count; i++)
+            {
+                var section = sections[i]
                               ?? throw new InvalidOperationException(
                                   $"Checkpoint section {i} is null.");
                 if (section.SectionVersion == 0)
@@ -240,23 +278,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
                 }
                 previousId = section.SectionId;
             }
-
-            var bodyPages = EncodeBodyPages(
-                value.CompletedTick,
-                value.Cursor,
-                value.SchemaHash,
-                value.Sections,
-                out var bodyLength);
-            var expectedOverallHash = RuntimeReplayHash.CalculateSha256(
-                bodyPages,
-                bodyLength);
-            if (!RuntimeReplayHash.FixedTimeEquals(
-                    expectedOverallHash,
-                    value.OverallHash))
-            {
-                throw new InvalidOperationException(
-                    "Checkpoint overall hash mismatch.");
-            }
         }
 
         private static RuntimeReplayCheckpointWriter EncodeToWriter(
@@ -284,31 +305,12 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
             }
         }
 
-        private static IReadOnlyList<RuntimeReplayCheckpointPage>
-            EncodeBodyPages(
+        private static byte[] EncodeBodyHash(
             long completedTick,
             ulong cursor,
             string schemaHash,
-            IReadOnlyList<RuntimeReplayCheckpointSection> sections,
-            out int payloadLength)
+            IReadOnlyList<RuntimeReplayCheckpointSection> sections)
         {
-            if (completedTick < -1)
-            {
-                throw new ArgumentOutOfRangeException(nameof(completedTick));
-            }
-            if (!RuntimeReplayHash.IsSha256Hex(schemaHash))
-            {
-                throw new ArgumentException(
-                    "Checkpoint schema hash must be a SHA-256 hex string.",
-                    nameof(schemaHash));
-            }
-            if (sections == null || sections.Count > MAX_SECTIONS)
-            {
-                throw new ArgumentException(
-                    $"Checkpoint must contain 0..{MAX_SECTIONS} sections.",
-                    nameof(sections));
-            }
-
             using var writer = new RuntimeReplayCheckpointWriter(
                 initialCapacity: PAGE_BYTES,
                 maxBytes: MAX_ENVELOPE_BYTES - RuntimeReplayHash.SHA256_BYTES);
@@ -318,8 +320,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
                 cursor,
                 schemaHash,
                 sections);
-            payloadLength = writer.Length;
-            return writer.ToPages();
+            return writer.CalculateSha256();
         }
 
         private static void WriteBody(

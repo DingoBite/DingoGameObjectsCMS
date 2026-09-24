@@ -40,7 +40,7 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             var commitStarted = false;
             try
             {
-                var delta = _deltaCodec.Decode(envelope.Payload);
+                var delta = _deltaCodec.Decode(envelope.PayloadForDecode);
                 ValidateEnvelope(delta, envelope);
                 if (!RuntimeStores.TryGetRuntimeStore(
                         delta.Store.StoreId,
@@ -84,7 +84,7 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                 if (!_stagingRealms.ContainsPreparedStore(preparedStore))
                     throw new InvalidOperationException($"RuntimeStore '{preparedStore.Id}' is not an active prepared replica realm.");
 
-                var delta = _deltaCodec.Decode(envelope.Payload);
+                var delta = _deltaCodec.Decode(envelope.PayloadForDecode);
                 ValidateEnvelope(delta, envelope);
                 var preparedReference = new NetStoreRef(preparedStore.Id, preparedStore.StoreGeneration);
                 if (delta.Store != preparedReference || preparedStore.StoreRevision != delta.FromRevision)

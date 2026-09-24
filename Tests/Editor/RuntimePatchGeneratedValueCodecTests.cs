@@ -147,13 +147,13 @@ namespace DingoGameObjectsCMS.Tests.Editor
         [Test]
         public void CollectionAndHashReaders_RejectNonCanonicalOrOversizedInput()
         {
-            var listWriter = new CanonicalPatchBinaryWriter();
+            using var listWriter = new CanonicalPatchBinaryWriter();
             listWriter.WriteInt32(RuntimePatchGeneratedValueCodec.MAX_COLLECTION_ELEMENTS + 1);
             Assert.Throws<FormatException>(() =>
                 RuntimePatchGeneratedValueCodec.ReadCollectionCount(
                     new CanonicalPatchBinaryReader(listWriter.ToArray())));
 
-            var hashWriter = new CanonicalPatchBinaryWriter();
+            using var hashWriter = new CanonicalPatchBinaryWriter();
             hashWriter.WriteString("ABCDEF0123456789abcdef0123456789");
             Assert.Throws<FormatException>(() =>
                 RuntimePatchGeneratedValueCodec.ReadHash128(

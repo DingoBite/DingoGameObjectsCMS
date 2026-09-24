@@ -412,7 +412,7 @@ namespace DingoGameObjectsCMS.Editor
             builder.Line("payload = null;");
             builder.Line("return false;");
             builder.Close();
-            builder.Line("var writer = new CanonicalPatchBinaryWriter();");
+            builder.Line("using var writer = new CanonicalPatchBinaryWriter();");
             builder.Line("WriteCanonicalTyped(writer, current, context);");
             builder.Line("payload = writer.ToArray();");
             builder.Line("return true;");
@@ -463,7 +463,7 @@ namespace DingoGameObjectsCMS.Editor
             builder.Line();
             builder.Open(
                 $"private static byte[] EncodeField_{id}({fieldType} value, RuntimePatchCodecContext context)");
-            builder.Line("var writer = new CanonicalPatchBinaryWriter();");
+            builder.Line("using var writer = new CanonicalPatchBinaryWriter();");
             builder.Line($"WriteField_{id}(writer, value, context);");
             builder.Line("return writer.ToArray();");
             builder.Close();

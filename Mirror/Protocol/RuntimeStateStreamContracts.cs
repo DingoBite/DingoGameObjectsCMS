@@ -1,7 +1,9 @@
 using System;
+using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
+using Unity.Collections;
 
 namespace DingoGameObjectsCMS.Mirror.Protocol
 {
@@ -76,10 +78,9 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
         public bool IsStop => (Flags & RuntimeStateStreamSampleFlags.Stop) != 0;
         public bool IsDespawn => (Flags & RuntimeStateStreamSampleFlags.Despawn) != 0;
 
-        public RuntimePackedStateStreamSample(
-            RuntimeStateStreamKey key,
-            RuntimeStateStreamSampleFlags flags,
-            byte[] packedState)
+        public RuntimePackedStateStreamSample(RuntimeStateStreamKey key, RuntimeStateStreamSampleFlags flags, byte[] packedState) : this(key, flags, packedState, false) { }
+
+        internal RuntimePackedStateStreamSample(RuntimeStateStreamKey key, RuntimeStateStreamSampleFlags flags, byte[] packedState, bool takeOwnership)
         {
             if (!key.IsValid)
                 throw new ArgumentException("Packed state sample requires a valid key.", nameof(key));
@@ -101,7 +102,7 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
 
             Key = key;
             Flags = flags;
-            PackedState = (byte[])packedState.Clone();
+            PackedState = takeOwnership ? packedState : (byte[])packedState.Clone();
         }
     }
 
@@ -138,14 +139,9 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                     : RuntimeStateStreamFrameFlags.None,
                 samples) { }
 
-        public RuntimeStateStreamFrame(
-            NetStoreRef store,
-            uint streamTypeId,
-            uint sequence,
-            uint simulationTick,
-            uint reconciliationId,
-            RuntimeStateStreamFrameFlags flags,
-            IReadOnlyList<RuntimePackedStateStreamSample> samples)
+        public RuntimeStateStreamFrame(NetStoreRef store, uint streamTypeId, uint sequence, uint simulationTick, uint reconciliationId, RuntimeStateStreamFrameFlags flags, IReadOnlyList<RuntimePackedStateStreamSample> samples) : this(store, streamTypeId, sequence, simulationTick, reconciliationId, flags, samples, false) { }
+
+        internal RuntimeStateStreamFrame(NetStoreRef store, uint streamTypeId, uint sequence, uint simulationTick, uint reconciliationId, RuntimeStateStreamFrameFlags flags, IReadOnlyList<RuntimePackedStateStreamSample> samples, bool takeOwnership)
         {
             if (!store.IsValid)
                 throw new ArgumentException("State stream frame requires a valid store reference.", nameof(store));
@@ -182,10 +178,18 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                     $"State stream frame sample count {samples.Count} is invalid; only an empty Begin|End reconciliation may contain zero samples.");
             }
 
-            var copy = new RuntimePackedStateStreamSample[samples.Count];
-            for (var i = 0; i < samples.Count; i++)
+            RuntimePackedStateStreamSample[] copy;
+            if (takeOwnership && samples is RuntimePackedStateStreamSample[] owned)
             {
-                copy[i] = new RuntimePackedStateStreamSample(samples[i].Key, samples[i].Flags, samples[i].PackedState);
+                copy = owned;
+            }
+            else
+            {
+                copy = new RuntimePackedStateStreamSample[samples.Count];
+                for (var i = 0; i < samples.Count; i++)
+                {
+                    copy[i] = new RuntimePackedStateStreamSample(samples[i].Key, samples[i].Flags, samples[i].PackedState);
+                }
             }
             Array.Sort(copy, (first, second) => first.Key.Value.CompareTo(second.Key.Value));
             var exactPayloadBytes = RuntimeStateStreamFrameCodec.CalculateHeaderSize(store);
@@ -338,47 +342,42 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             if (frame == null)
                 throw new ArgumentNullException(nameof(frame));
 
-            var samples = new List<RuntimePackedStateStreamSample>(frame.Samples.Count);
-            for (var i = 0; i < frame.Samples.Count; i++)
+            var samples = frame.Samples;
+            var storeId = frame.Store.StoreId.ToString();
+            var payloadLength = checked(FRAME_FIXED_BYTES + Encoding.UTF8.GetByteCount(storeId));
+            for (var i = 0; i < samples.Count; i++)
             {
-                samples.Add(frame.Samples[i]);
-            }
-            samples.Sort((first, second) => first.Key.Value.CompareTo(second.Key.Value));
-            for (var i = 1; i < samples.Count; i++)
-            {
-                if (samples[i - 1].Key == samples[i].Key)
+                if (i > 0 && samples[i - 1].Key == samples[i].Key)
                     throw new InvalidOperationException($"State stream frame contains duplicate key '{samples[i].Key}'.");
+                payloadLength = checked(payloadLength + CalculateSampleSize(samples[i]));
             }
+            if (payloadLength > RuntimeStateStreamProtocol.MAX_PAYLOAD_BYTES)
+                throw new InvalidOperationException($"State stream frame payload is {payloadLength} bytes; maximum is {RuntimeStateStreamProtocol.MAX_PAYLOAD_BYTES}.");
 
-            using var stream = new MemoryStream();
-            using var writer = new BinaryWriter(stream, Encoding.UTF8, true);
-            writer.Write(RuntimeStateStreamProtocol.FORMAT_MAGIC);
-            writer.Write(RuntimeStateStreamProtocol.FORMAT_VERSION);
-            WriteString(writer, frame.Store.StoreId.ToString());
-            writer.Write(frame.Store.StoreGeneration);
-            writer.Write(frame.StreamTypeId);
-            writer.Write(frame.Sequence);
-            writer.Write(frame.SimulationTick);
-            writer.Write(frame.ReconciliationId);
-            writer.Write((byte)frame.Flags);
-            writer.Write(samples.Count);
+            using var buffer = new NativeList<byte>(payloadLength, Allocator.Temp);
+            buffer.ResizeUninitialized(payloadLength);
+            var destination = buffer.AsSpan();
+            var position = 0;
+            WriteUInt32(destination, ref position, RuntimeStateStreamProtocol.FORMAT_MAGIC);
+            WriteUInt32(destination, ref position, RuntimeStateStreamProtocol.FORMAT_VERSION);
+            WriteString(destination, ref position, storeId);
+            WriteUInt32(destination, ref position, frame.Store.StoreGeneration);
+            WriteUInt32(destination, ref position, frame.StreamTypeId);
+            WriteUInt32(destination, ref position, frame.Sequence);
+            WriteUInt32(destination, ref position, frame.SimulationTick);
+            WriteUInt32(destination, ref position, frame.ReconciliationId);
+            WriteByte(destination, ref position, (byte)frame.Flags);
+            WriteInt32(destination, ref position, samples.Count);
             for (var i = 0; i < samples.Count; i++)
             {
                 var sample = samples[i];
-                ValidateSample(sample);
-                writer.Write(sample.Key.Value);
-                writer.Write((byte)sample.Flags);
-                writer.Write(sample.PackedState.Length);
-                writer.Write(sample.PackedState);
+                WriteInt64(destination, ref position, sample.Key.Value);
+                WriteByte(destination, ref position, (byte)sample.Flags);
+                WriteInt32(destination, ref position, sample.PackedState.Length);
+                sample.PackedState.AsSpan().CopyTo(destination.Slice(position, sample.PackedState.Length));
+                position += sample.PackedState.Length;
             }
-            writer.Flush();
-            var payload = stream.ToArray();
-            if (payload.Length > RuntimeStateStreamProtocol.MAX_PAYLOAD_BYTES)
-            {
-                throw new InvalidOperationException(
-                    $"State stream frame payload is {payload.Length} bytes; maximum is {RuntimeStateStreamProtocol.MAX_PAYLOAD_BYTES}.");
-            }
-            return payload;
+            return buffer.AsArray().ToArray();
         }
 
         public RuntimeStateStreamFrame Decode(byte[] payload)
@@ -393,24 +392,24 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
 
             try
             {
-                using var stream = new MemoryStream(payload, false);
-                using var reader = new BinaryReader(stream, Encoding.UTF8, true);
-                var magic = reader.ReadUInt32();
+                ReadOnlySpan<byte> source = payload;
+                var position = 0;
+                var magic = ReadUInt32(source, ref position);
                 if (magic != RuntimeStateStreamProtocol.FORMAT_MAGIC)
                     throw new FormatException($"State stream magic 0x{magic:x8} is invalid.");
-                var version = reader.ReadUInt32();
+                var version = ReadUInt32(source, ref position);
                 if (version != RuntimeStateStreamProtocol.FORMAT_VERSION)
                     throw new FormatException($"State stream version {version} is not supported.");
-                var storeId = ReadString(reader);
-                var store = new NetStoreRef(storeId, reader.ReadUInt32());
+                var storeId = ReadString(source, ref position);
+                var store = new NetStoreRef(storeId, ReadUInt32(source, ref position));
                 if (!store.IsValid)
                     throw new FormatException("State stream store reference is invalid.");
-                var streamTypeId = reader.ReadUInt32();
-                var sequence = reader.ReadUInt32();
-                var simulationTick = reader.ReadUInt32();
-                var reconciliationId = reader.ReadUInt32();
-                var frameFlags = (RuntimeStateStreamFrameFlags)reader.ReadByte();
-                var count = reader.ReadInt32();
+                var streamTypeId = ReadUInt32(source, ref position);
+                var sequence = ReadUInt32(source, ref position);
+                var simulationTick = ReadUInt32(source, ref position);
+                var reconciliationId = ReadUInt32(source, ref position);
+                var frameFlags = (RuntimeStateStreamFrameFlags)ReadByte(source, ref position);
+                var count = ReadInt32(source, ref position);
                 if (streamTypeId == 0 || sequence == 0)
                     throw new FormatException("State stream type id and sequence must be non-zero.");
                 if (count < 0
@@ -425,32 +424,25 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                 long previousKey = 0;
                 for (var i = 0; i < count; i++)
                 {
-                    var key = new RuntimeStateStreamKey(reader.ReadInt64());
+                    var key = new RuntimeStateStreamKey(ReadInt64(source, ref position));
                     if (i > 0 && key.Value <= previousKey)
                         throw new FormatException("State stream samples are not in canonical key order.");
-                    var flags = (RuntimeStateStreamSampleFlags)reader.ReadByte();
-                    var packedLength = reader.ReadInt32();
+                    var flags = (RuntimeStateStreamSampleFlags)ReadByte(source, ref position);
+                    var packedLength = ReadInt32(source, ref position);
                     var isDespawn = (flags & RuntimeStateStreamSampleFlags.Despawn) != 0;
                     if (packedLength < 0
                         || packedLength > RuntimeStateStreamProtocol.MAX_PACKED_SAMPLE_BYTES
                         || (isDespawn ? packedLength != 0 : packedLength == 0))
                         throw new FormatException($"State stream sample '{key}' packed size {packedLength} is invalid.");
-                    var packed = reader.ReadBytes(packedLength);
-                    if (packed.Length != packedLength)
-                        throw new EndOfStreamException("State stream sample payload is truncated.");
-                    samples[i] = new RuntimePackedStateStreamSample(key, flags, packed);
+                    var packedBytes = ReadRawBytes(source, ref position, packedLength);
+                    var packed = packedLength == 0 ? Array.Empty<byte>() : new byte[packedLength];
+                    packedBytes.CopyTo(packed);
+                    samples[i] = new RuntimePackedStateStreamSample(key, flags, packed, true);
                     previousKey = key.Value;
                 }
-                if (stream.Position != stream.Length)
+                if (position != source.Length)
                     throw new FormatException("State stream frame has trailing bytes.");
-                return new RuntimeStateStreamFrame(
-                    store,
-                    streamTypeId,
-                    sequence,
-                    simulationTick,
-                    reconciliationId,
-                    frameFlags,
-                    samples);
+                return new RuntimeStateStreamFrame(store, streamTypeId, sequence, simulationTick, reconciliationId, frameFlags, samples, true);
             }
             catch (Exception exception) when (exception is EndOfStreamException
                                               || exception is IOException
@@ -479,22 +471,72 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             }
         }
 
-        private static void WriteString(BinaryWriter writer, string value)
+        private static void WriteByte(Span<byte> destination, ref int position, byte value)
         {
-            var bytes = Encoding.UTF8.GetBytes(value ?? string.Empty);
-            writer.Write(bytes.Length);
-            writer.Write(bytes);
+            destination[position++] = value;
         }
 
-        private static string ReadString(BinaryReader reader)
+        private static void WriteInt32(Span<byte> destination, ref int position, int value)
         {
-            var length = reader.ReadInt32();
+            BinaryPrimitives.WriteInt32LittleEndian(destination.Slice(position, sizeof(int)), value);
+            position += sizeof(int);
+        }
+
+        private static void WriteUInt32(Span<byte> destination, ref int position, uint value)
+        {
+            BinaryPrimitives.WriteUInt32LittleEndian(destination.Slice(position, sizeof(uint)), value);
+            position += sizeof(uint);
+        }
+
+        private static void WriteInt64(Span<byte> destination, ref int position, long value)
+        {
+            BinaryPrimitives.WriteInt64LittleEndian(destination.Slice(position, sizeof(long)), value);
+            position += sizeof(long);
+        }
+
+        private static void WriteString(Span<byte> destination, ref int position, string value)
+        {
+            var length = Encoding.UTF8.GetByteCount(value);
+            WriteInt32(destination, ref position, length);
+            Encoding.UTF8.GetBytes(value.AsSpan(), destination.Slice(position, length));
+            position += length;
+        }
+
+        private static byte ReadByte(ReadOnlySpan<byte> source, ref int position)
+        {
+            return ReadRawBytes(source, ref position, sizeof(byte))[0];
+        }
+
+        private static int ReadInt32(ReadOnlySpan<byte> source, ref int position)
+        {
+            return BinaryPrimitives.ReadInt32LittleEndian(ReadRawBytes(source, ref position, sizeof(int)));
+        }
+
+        private static uint ReadUInt32(ReadOnlySpan<byte> source, ref int position)
+        {
+            return BinaryPrimitives.ReadUInt32LittleEndian(ReadRawBytes(source, ref position, sizeof(uint)));
+        }
+
+        private static long ReadInt64(ReadOnlySpan<byte> source, ref int position)
+        {
+            return BinaryPrimitives.ReadInt64LittleEndian(ReadRawBytes(source, ref position, sizeof(long)));
+        }
+
+        private static ReadOnlySpan<byte> ReadRawBytes(ReadOnlySpan<byte> source, ref int position, int count)
+        {
+            if (count < 0 || count > source.Length - position)
+                throw new EndOfStreamException("State stream payload is truncated.");
+            var result = source.Slice(position, count);
+            position += count;
+            return result;
+        }
+
+        private static string ReadString(ReadOnlySpan<byte> source, ref int position)
+        {
+            var length = ReadInt32(source, ref position);
             if (length <= 0 || length > 1024)
                 throw new FormatException($"State stream store id byte length {length} is invalid.");
-            var bytes = reader.ReadBytes(length);
-            if (bytes.Length != length)
-                throw new EndOfStreamException("State stream store id is truncated.");
-            return Encoding.UTF8.GetString(bytes);
+            return Encoding.UTF8.GetString(ReadRawBytes(source, ref position, length));
         }
     }
 }
