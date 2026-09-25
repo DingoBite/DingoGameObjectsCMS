@@ -11,15 +11,12 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
         public RuntimePatchCodecRegistry PatchCodecs { get; }
         public GameAssetTemplateCache Templates { get; }
         public GameAssetLibraryLock LibraryLock { get; }
-        public GameAssetSessionCatalog AssetCatalog =>
-            LibraryLock.AssetCatalog;
+        public GameAssetSessionCatalog AssetCatalog => LibraryLock.AssetCatalog;
         public IReadOnlyList<ModPackage> MountedModules { get; }
-
+        
         public string RuntimeSchemaHash => PatchCodecs.SchemaHash;
 
-        public GameAssetRuntimeEnvironment(
-            RuntimePatchCodecRegistry patchCodecs,
-            RuntimePatchCodecContext templateContext)
+        public GameAssetRuntimeEnvironment(RuntimePatchCodecRegistry patchCodecs, RuntimePatchCodecContext templateContext)
         {
             PatchCodecs = patchCodecs ?? throw new ArgumentNullException(nameof(patchCodecs));
             if (templateContext == null)
@@ -29,8 +26,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
 
             GameAssetLibraryManifest.EnsureInitialized();
             Templates = new GameAssetTemplateCache(PatchCodecs, templateContext);
-            MountedModules = GameAssetLibraryManifest
-                .CollectImmutableModPackages();
+            MountedModules = GameAssetLibraryManifest.CollectImmutableModPackages();
             LibraryLock = BuildConfiguredSessionSnapshot();
         }
 
@@ -38,17 +34,13 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
         {
             if (!GameAssetLibraryManifest.HasConfiguredSessionBasePackage)
             {
-                throw new InvalidOperationException(
-                    "A session base package must be configured explicitly before creating a dynamic GameAsset lock.");
+                throw new InvalidOperationException("A session base package must be configured explicitly before creating a dynamic GameAsset lock.");
             }
-            var sessionLock = GameAssetLibraryLockBuilder.Build(
-                Templates,
-                MountedModules);
+
+            var sessionLock = GameAssetLibraryLockBuilder.Build(Templates, MountedModules);
             if (sessionLock.Mods.Count == 0 || sessionLock.Entries.Count == 0)
             {
-                throw new InvalidOperationException(
-                    $"The configured session GameAsset package at '{GameAssetLibraryManifest.GetSessionBasePackageRoot()}' "
-                    + "contains no loadable manifest or assets.");
+                throw new InvalidOperationException($"The configured session GameAsset package at '{GameAssetLibraryManifest.GetSessionBasePackageRoot()}' " + "contains no loadable manifest or assets.");
             }
 
             return sessionLock;
