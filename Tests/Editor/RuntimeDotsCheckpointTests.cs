@@ -14,6 +14,7 @@ using NUnit.Framework;
 using Unity.Collections;
 using Unity.Entities;
 using UnityEngine;
+using Hash128 = UnityEngine.Hash128;
 
 namespace DingoGameObjectsCMS.Tests.Editor
 {
