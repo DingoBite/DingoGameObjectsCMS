@@ -110,6 +110,7 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
 
     public delegate RuntimeCommandRejectCode RuntimeCommandValidator<TCommand>(in TCommand command, in RuntimeCommandAuthority authority);
     public delegate void RuntimeCommandHandler<TCommand>(in TCommand command, in RuntimeCommandAuthority authority);
+    public delegate RuntimeCommandRejectCode RuntimeCommandResultHandler<TCommand>(in TCommand command, in RuntimeCommandAuthority authority);
 
     public sealed class RuntimeCommandRegistry
     {
@@ -124,7 +125,7 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
         {
             private readonly IRuntimeCommandCodec<TCommand> _codec;
             private readonly RuntimeCommandValidator<TCommand> _validator;
-            private readonly RuntimeCommandHandler<TCommand> _handler;
+            private readonly RuntimeCommandResultHandler<TCommand> _handler;
 
             public int PayloadLimit { get; }
             public RuntimeCommandRatePolicy RatePolicy { get; }
@@ -132,7 +133,7 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             public Registration(
                 IRuntimeCommandCodec<TCommand> codec,
                 RuntimeCommandValidator<TCommand> validator,
-                RuntimeCommandHandler<TCommand> handler,
+                RuntimeCommandResultHandler<TCommand> handler,
                 int payloadLimit,
                 RuntimeCommandRatePolicy ratePolicy)
             {
@@ -145,22 +146,39 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
 
             public RuntimeCommandRejectCode Dispatch(byte[] payload, in RuntimeCommandAuthority authority)
             {
-                if (!_codec.TryRead(payload, out var command))
+                TCommand command;
+                try
+                {
+                    if (!_codec.TryRead(payload, out command))
+                        return RuntimeCommandRejectCode.MalformedPayload;
+                }
+                catch (Exception error)
+                {
+                    UnityEngine.Debug.LogException(error);
                     return RuntimeCommandRejectCode.MalformedPayload;
-
-                var validation = _validator(command, authority);
-                if (validation != RuntimeCommandRejectCode.None)
-                    return validation == RuntimeCommandRejectCode.ValidationFailed
-                        ? validation
-                        : RuntimeCommandRejectCode.ValidationFailed;
+                }
 
                 try
                 {
-                    _handler(command, authority);
-                    return RuntimeCommandRejectCode.None;
+                    var validation = _validator(command, authority);
+                    if (validation != RuntimeCommandRejectCode.None)
+                        return validation == RuntimeCommandRejectCode.ValidationFailed
+                            ? validation
+                            : RuntimeCommandRejectCode.ValidationFailed;
                 }
-                catch
+                catch (Exception error)
                 {
+                    UnityEngine.Debug.LogException(error);
+                    return RuntimeCommandRejectCode.ValidationFailed;
+                }
+
+                try
+                {
+                    return _handler(command, authority);
+                }
+                catch (Exception error)
+                {
+                    UnityEngine.Debug.LogException(error);
                     return RuntimeCommandRejectCode.HandlerFailed;
                 }
             }
@@ -182,6 +200,23 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             IRuntimeCommandCodec<TCommand> codec,
             RuntimeCommandValidator<TCommand> validator,
             RuntimeCommandHandler<TCommand> handler,
+            int payloadLimit,
+            RuntimeCommandRatePolicy ratePolicy)
+        {
+            if (handler == null)
+                throw new ArgumentNullException(nameof(handler));
+            Register(commandTypeId, codec, validator, (in TCommand command, in RuntimeCommandAuthority authority) =>
+            {
+                handler(command, authority);
+                return RuntimeCommandRejectCode.None;
+            }, payloadLimit, ratePolicy);
+        }
+
+        public void Register<TCommand>(
+            uint commandTypeId,
+            IRuntimeCommandCodec<TCommand> codec,
+            RuntimeCommandValidator<TCommand> validator,
+            RuntimeCommandResultHandler<TCommand> handler,
             int payloadLimit,
             RuntimeCommandRatePolicy ratePolicy)
         {
