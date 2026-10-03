@@ -167,6 +167,58 @@ namespace DingoGameObjectsCMS.Tests.Editor
         }
 
         [Test]
+        public void ClientCoordinator_RetiredOwnerPreservesReplacementOutboundDispatcher()
+        {
+            var store = new NetStoreRef(new FixedString32Bytes("map"), 1);
+            var fixture = CreateProtocolFixture(store);
+            var bus = CreateBus();
+            var context = new RuntimeProtocolContext(
+                RuntimeSessionClientExpectation.FromServerTemplate(fixture.Manifest),
+                fixture.AssetCatalog, fixture.AssetLock, fixture.Templates, fixture.PatchCodecs,
+                fixture.Policies, _world, fixture.Streams, commandsBus: bus,
+                commandEncoder: (GameRuntimeCommand encodedCommand, in RuntimeExecutionState encodedAuthority, ulong sequence, out RuntimeCommandEnvelope envelope) =>
+                {
+                    envelope = new RuntimeCommandEnvelope
+                    {
+                        CommandTypeId = COMMAND_TYPE_ID,
+                        ClientSequence = sequence,
+                        ExpectedStoreGeneration = store.StoreGeneration,
+                        Payload = BitConverter.GetBytes(encodedCommand.Get<RuntimeCommandJournalNetworkTestCommand>().Value),
+                    };
+                    return true;
+                });
+            var retiredPackets = new List<RuntimeCommandEnvelope>();
+            var currentPackets = new List<RuntimeCommandEnvelope>();
+            using var retired = new RuntimeProtocolClientCoordinator(context,
+                new RuntimeProtocolClientOutput((_, _) => { }, _ => { }, (_, _) => { }, _ => { }, _ => { }, retiredPackets.Add), 41);
+            using var current = new RuntimeProtocolClientCoordinator(context,
+                new RuntimeProtocolClientOutput((_, _) => { }, _ => { }, (_, _) => { }, _ => { }, _ => { }, currentPackets.Add), 42);
+            var session = BeginClientSession(current, fixture, 43);
+            var baseline = SendBaseline(current, fixture, session.SessionId, store, 1, 1, null);
+            Assert.That(baseline.Kind, Is.EqualTo(RuntimeClientReceiveResultKind.BaselineApplied));
+            Assert.That(current.IsReplicaReady, Is.True);
+
+            retired.Dispose();
+            Assert.That(bus.HasOutboundDispatcher, Is.True);
+            var command = new GameRuntimeCommand();
+            command.AddOrReplace(new RuntimeCommandJournalNetworkTestCommand { Value = 42 });
+            var authority = new RuntimeExecutionState(RuntimeExecutionPhase.ClientReplicaReady, RuntimeExecutionRole.ClientReplica,
+                StoreRealm.Client, StoreRealm.Client, false, true);
+            bus.Dispatch(command, in authority);
+            retired.Dispose();
+            bus.Dispatch(command, in authority);
+            Assert.That(retiredPackets, Is.Empty);
+            Assert.That(currentPackets.Select(packet => packet.ClientSequence), Is.EqualTo(new ulong[] { 1, 2 }));
+            Assert.That(currentPackets.All(packet => packet.CommandTypeId == COMMAND_TYPE_ID
+                && packet.ExpectedStoreGeneration == store.StoreGeneration && BitConverter.ToInt32(packet.Payload, 0) == 42), Is.True);
+            Assert.That(bus.QueuedCount, Is.Zero);
+
+            current.Dispose();
+            Assert.That(bus.HasOutboundDispatcher, Is.False);
+            Assert.Throws<InvalidOperationException>(() => bus.Dispatch(command, in authority));
+        }
+
+        [Test]
         public void ClientCoordinator_RestoresCheckpointWhileStoresAreStagedBeforeJournal()
         {
             var store = new NetStoreRef(

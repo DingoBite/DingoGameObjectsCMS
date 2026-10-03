@@ -201,6 +201,18 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
 
     public static class RuntimeReplicationPolicyConfiguration
     {
+        public static void Append(List<RuntimeReplicationPolicyEntry> target, RuntimeReplicationPolicy policy, params Type[] componentTypes)
+        {
+            if (target == null)
+                throw new ArgumentNullException(nameof(target));
+            if (componentTypes == null)
+                throw new ArgumentNullException(nameof(componentTypes));
+            for (var i = 0; i < componentTypes.Length; i++)
+            {
+                target.Add(new RuntimeReplicationPolicyEntry(componentTypes[i], policy));
+            }
+        }
+
         public static void ValidateManifest(
             Manifest runtimeManifest,
             IReadOnlyList<RuntimeReplicationPolicyEntry> policyEntries)

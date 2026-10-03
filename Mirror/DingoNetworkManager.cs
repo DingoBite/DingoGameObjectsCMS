@@ -1,8 +1,10 @@
 #if MIRROR
 using System;
+using System.Collections.Generic;
 using DingoGameObjectsCMS.Mirror.Protocol;
 using DingoGameObjectsCMS.RuntimeObjects.Commands;
 using DingoGameObjectsCMS.Stores;
+using DingoProjectAppStructure.Core;
 using Mirror;
 using UnityEngine;
 
@@ -27,6 +29,8 @@ namespace DingoGameObjectsCMS.Mirror
 
         private RuntimeProtocolContextFactory _contextFactory;
         private Func<RuntimeCommandsBus> _commandsBusGetter;
+        private DingoRuntimeProtocolBinding _protocolBinding;
+        private bool _protocolRetiring;
 
         public override void Awake()
         {
@@ -37,14 +41,150 @@ namespace DingoGameObjectsCMS.Mirror
 
         public void SetProtocolContextFactory(RuntimeProtocolContextFactory contextFactory)
         {
-            _contextFactory = contextFactory ?? throw new ArgumentNullException(nameof(contextFactory));
+            if (contextFactory == null)
+            {
+                throw new ArgumentNullException(nameof(contextFactory));
+            }
+            RequireProtocolBindingAvailable();
+            if (_protocolBinding != null)
+            {
+                RetireRuntimeProtocol();
+            }
+            _contextFactory = contextFactory;
             Trace("Protocol context factory configured.");
         }
 
         public void SetRuntimeCommandsBusGetter(Func<RuntimeCommandsBus> commandsBusGetter)
         {
-            _commandsBusGetter = commandsBusGetter ?? throw new ArgumentNullException(nameof(commandsBusGetter));
+            if (commandsBusGetter == null)
+            {
+                throw new ArgumentNullException(nameof(commandsBusGetter));
+            }
+            RequireProtocolBindingAvailable();
+            if (_protocolBinding != null)
+            {
+                RetireRuntimeProtocol();
+            }
+            _commandsBusGetter = commandsBusGetter;
             Trace("RuntimeCommandsBus getter configured.");
+        }
+
+        public DingoRuntimeProtocolBinding BindRuntimeProtocol(RuntimeProtocolContextFactory contextFactory, Func<RuntimeCommandsBus> commandsBusGetter)
+        {
+            if (contextFactory == null)
+            {
+                throw new ArgumentNullException(nameof(contextFactory));
+            }
+            if (commandsBusGetter == null)
+            {
+                throw new ArgumentNullException(nameof(commandsBusGetter));
+            }
+            RequireProtocolBindingAvailable();
+            RetireRuntimeProtocol();
+            var binding = new DingoRuntimeProtocolBinding(this);
+            _contextFactory = contextFactory;
+            _commandsBusGetter = commandsBusGetter;
+            _protocolBinding = binding;
+            return binding;
+        }
+
+        public void UnbindRuntimeProtocol(DingoRuntimeProtocolBinding expectedBinding)
+        {
+            if (expectedBinding == null)
+            {
+                throw new ArgumentNullException(nameof(expectedBinding));
+            }
+            if (ReferenceEquals(_protocolBinding, expectedBinding))
+            {
+                RetireRuntimeProtocol();
+            }
+        }
+
+        public void RetireRuntimeProtocol()
+        {
+            if (_protocolRetiring)
+            {
+                return;
+            }
+            if (_protocolBinding == null && _contextFactory == null && _commandsBusGetter == null
+                && RtServer == null && RtClient == null
+                && (!ReferenceEquals(singleton, this) || (!NetworkServer.active && !NetworkClient.active && NetworkClient.connection == null)))
+            {
+                return;
+            }
+            _protocolRetiring = true;
+            _protocolBinding = null;
+            _contextFactory = null;
+            _commandsBusGetter = null;
+            var server = RtServer;
+            var client = RtClient;
+            var ownsMirrorSession = ReferenceEquals(singleton, this);
+            RtServer = null;
+            RtClient = null;
+            var failures = new List<Exception>();
+            try
+            {
+                if (server != null)
+                {
+                    server.ConnectionReady -= OnProtocolConnectionReady;
+                    server.ConnectionRemoved -= OnProtocolConnectionRemoved;
+                }
+                if (client != null)
+                {
+                    client.ReplicaReadyChanged -= RuntimeExecutionContext.SetReplicaReady;
+                }
+                if (ownsMirrorSession)
+                {
+                    AppRootDisposal.Attempt(() => RuntimeExecutionContext.SetReplicaReady(false), failures);
+                }
+                AppRootDisposal.Attempt(NotifyRuntimeRoleChanged, failures);
+                AppRootDisposal.Dispose(client, failures);
+                AppRootDisposal.Dispose(server, failures);
+                if (ownsMirrorSession || client != null)
+                {
+                    AppRootDisposal.Attempt(UnregisterClientHandlers, failures);
+                }
+                if (ownsMirrorSession || server != null)
+                {
+                    AppRootDisposal.Attempt(UnregisterServerHandlers, failures);
+                }
+
+                if (ownsMirrorSession && NetworkServer.active && NetworkClient.active)
+                {
+                    AppRootDisposal.Attempt(OnStopHost, failures);
+                }
+                if (ownsMirrorSession && (NetworkClient.active || NetworkClient.connection != null))
+                {
+                    AppRootDisposal.Attempt(StopClient, failures);
+                }
+                if (ownsMirrorSession && NetworkServer.active)
+                {
+                    AppRootDisposal.Attempt(StopServer, failures);
+                }
+                // Transport disconnect may be deferred; retired gameplay cannot wait for its callback.
+                if (ownsMirrorSession && (NetworkClient.active || NetworkClient.connection != null))
+                {
+                    AppRootDisposal.Attempt(NetworkClient.Shutdown, failures);
+                }
+                if (ownsMirrorSession && NetworkServer.active)
+                {
+                    AppRootDisposal.Attempt(NetworkServer.Shutdown, failures);
+                }
+                AppRootDisposal.Attempt(NotifyRuntimeRoleChanged, failures);
+            }
+            finally
+            {
+                _protocolRetiring = false;
+            }
+            AppRootDisposal.ThrowFailures(failures);
+        }
+
+        public override void OnDestroy()
+        {
+            var failures = new List<Exception>();
+            AppRootDisposal.Attempt(RetireRuntimeProtocol, failures);
+            AppRootDisposal.Attempt(() => base.OnDestroy(), failures);
+            AppRootDisposal.ThrowFailures(failures);
         }
 
         public override void OnStartServer()
@@ -59,9 +199,11 @@ namespace DingoGameObjectsCMS.Mirror
         public override void OnStopServer()
         {
             Trace($"OnStopServer begin. endpoint={RtServer != null}.");
-            DisposeServerEndpoint();
-            base.OnStopServer();
-            NotifyRuntimeRoleChanged();
+            var failures = new List<Exception>();
+            AppRootDisposal.Attempt(DisposeServerEndpoint, failures);
+            AppRootDisposal.Attempt(() => base.OnStopServer(), failures);
+            AppRootDisposal.Attempt(NotifyRuntimeRoleChanged, failures);
+            AppRootDisposal.ThrowFailures(failures);
             Trace($"OnStopServer complete. role={RuntimeRole}.");
         }
 
@@ -69,6 +211,7 @@ namespace DingoGameObjectsCMS.Mirror
         {
             Trace($"OnStartClient begin. server={NetworkServer.active}, client={NetworkClient.active}.");
             base.OnStartClient();
+            DisposeClientEndpoint();
             if (NetworkServer.active)
             {
                 NotifyRuntimeRoleChanged();
@@ -89,15 +232,12 @@ namespace DingoGameObjectsCMS.Mirror
         public override void OnStopClient()
         {
             Trace($"OnStopClient begin. endpoint={RtClient != null}, connected={NetworkClient.isConnected}.");
-            if (RtClient != null)
-            {
-                RtClient.ReplicaReadyChanged -= RuntimeExecutionContext.SetReplicaReady;
-                RtClient.Dispose();
-                RtClient = null;
-            }
-            RuntimeExecutionContext.SetReplicaReady(false);
-            base.OnStopClient();
-            NotifyRuntimeRoleChanged();
+            var failures = new List<Exception>();
+            AppRootDisposal.Attempt(DisposeClientEndpoint, failures);
+            AppRootDisposal.Attempt(() => RuntimeExecutionContext.SetReplicaReady(false), failures);
+            AppRootDisposal.Attempt(() => base.OnStopClient(), failures);
+            AppRootDisposal.Attempt(NotifyRuntimeRoleChanged, failures);
+            AppRootDisposal.ThrowFailures(failures);
             Trace($"OnStopClient complete. role={RuntimeRole}.");
         }
 
@@ -208,6 +348,14 @@ namespace DingoGameObjectsCMS.Mirror
                    ?? throw new InvalidOperationException($"Protocol context factory returned null for realm {realm}.");
         }
 
+        private void RequireProtocolBindingAvailable()
+        {
+            if (_protocolRetiring)
+            {
+                throw new InvalidOperationException("Runtime protocol cannot be rebound during retirement.");
+            }
+        }
+
         private void ReplaceServerEndpoint()
         {
             Trace("Replacing RuntimeStore server endpoint.");
@@ -227,10 +375,22 @@ namespace DingoGameObjectsCMS.Mirror
                 return;
 
             Trace("Disposing RuntimeStore server endpoint.");
-            server.Dispose();
+            RtServer = null;
             server.ConnectionReady -= OnProtocolConnectionReady;
             server.ConnectionRemoved -= OnProtocolConnectionRemoved;
-            RtServer = null;
+            server.Dispose();
+        }
+
+        private void DisposeClientEndpoint()
+        {
+            var client = RtClient;
+            if (client == null)
+            {
+                return;
+            }
+            RtClient = null;
+            client.ReplicaReadyChanged -= RuntimeExecutionContext.SetReplicaReady;
+            client.Dispose();
         }
 
         private RuntimeNetRole ResolveRuntimeRole()

@@ -42,6 +42,7 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
         private const int MAX_INITIAL_PUBLICATION_FAILURES = 3;
 
         private readonly RuntimeProtocolContext _context;
+        private readonly RuntimeCommandOutboundDispatcher _outboundDispatcher;
         private readonly RuntimeProtocolClientOutput _output;
         private readonly RuntimeSessionClientHandshake _handshake;
         private readonly RuntimeReplicaStagingRealms _stagingRealms;
@@ -120,7 +121,10 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                 }
             }
             if (context.CommandsBus != null)
-                context.CommandsBus.SetOutboundDispatcher(DispatchOutboundCommand);
+            {
+                _outboundDispatcher = DispatchOutboundCommand;
+                context.CommandsBus.SetOutboundDispatcher(_outboundDispatcher);
+            }
         }
 
         public RuntimeNetworkTelemetrySnapshot CaptureTelemetry(bool resetWindow = false)
@@ -539,7 +543,7 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                 return;
             _disposed = true;
             if (_context.CommandsBus != null)
-                _context.CommandsBus.ClearOutboundDispatcher();
+                _context.CommandsBus.ClearOutboundDispatcher(_outboundDispatcher);
             foreach (var pair in _initialStores)
             {
                 var stage = pair.Value.Stage;

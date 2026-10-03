@@ -405,6 +405,22 @@ Parent-first binary baselines and ordered reliable deltas are staged and
 published atomically. Delivery sequence, baseline id, store revision, ACK,
 bounded pending queues, and resync are independent protocol concepts.
 
+Gameplay composition owns a `DingoNetworkManager.BindRuntimeProtocol` binding.
+Its returned `DingoRuntimeProtocolBinding` is disposed before the checkpoint
+owners, stores and ECS World it borrows. Retirement clears the factory, command
+getter and both endpoint references first, attempts every endpoint cleanup, and
+stops the owning manager's Mirror session. A deferred transport disconnect is
+completed locally before borrowed gameplay dependencies can retire. Cleanup
+failures remain observable. Rebinding first retires the previous registration,
+endpoints and owning Mirror session; cleanup failure prevents publication of the
+replacement. Disposing an older binding preserves a replacement binding; the
+existing individual setters first retire an owned registration before selecting
+unowned configuration. Null replacements preserve the current owner. Either
+order of the two setters can then configure the complete unowned pair; cleanup
+failure prevents the replacement setter from publishing its delegate.
+Client coordinators likewise clear only their own outbound command dispatcher,
+so late disposal cannot disconnect a replacement coordinator from the bus.
+
 Replication data has three explicit classes:
 
 - `StructuralReliable`: object and GRC presence, hierarchy/order,

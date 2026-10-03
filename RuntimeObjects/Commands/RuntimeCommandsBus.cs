@@ -243,6 +243,18 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
             _outboundDispatcher = null;
         }
 
+        public void ClearOutboundDispatcher(RuntimeCommandOutboundDispatcher expectedDispatcher)
+        {
+            if (expectedDispatcher == null)
+            {
+                throw new ArgumentNullException(nameof(expectedDispatcher));
+            }
+            if (ReferenceEquals(_outboundDispatcher, expectedDispatcher))
+            {
+                _outboundDispatcher = null;
+            }
+        }
+
         public void Dispatch(GameRuntimeCommand command, in RuntimeExecutionState authority)
         {
             if (command == null)
