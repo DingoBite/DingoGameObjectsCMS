@@ -26,8 +26,8 @@ namespace DingoGameObjectsCMS.Editor
             Func<Type, bool> isInActiveScope)
         {
             GeneratedCodePath = Require(generatedCodePath, nameof(generatedCodePath));
-            GeneratedNamespace = Require(generatedNamespace, nameof(generatedNamespace));
-            GeneratedClassName = Require(generatedClassName, nameof(generatedClassName));
+            GeneratedNamespace = RuntimeGeneratedCodeNames.RequireNamespace(generatedNamespace, nameof(generatedNamespace));
+            GeneratedClassName = RuntimeGeneratedCodeNames.RequireIdentifier(generatedClassName, nameof(generatedClassName));
             PreviousManifestFactory = previousManifestFactory
                                       ?? throw new ArgumentNullException(
                                           nameof(previousManifestFactory));
@@ -216,7 +216,7 @@ namespace DingoGameObjectsCMS.Editor
         {
             return AppDomain.CurrentDomain.GetAssemblies()
                 .Where(IsPlayerRuntimeAssembly)
-                .SelectMany(TakeLoadableTypes)
+                .SelectMany(RuntimeGenerationTypeDiscovery.GetTypes)
                 .Where(IsRuntimeComponentType)
                 .Where(isInActiveScope)
                 .OrderBy(TypeSortKey, StringComparer.Ordinal)
@@ -247,18 +247,6 @@ namespace DingoGameObjectsCMS.Editor
                    && !name.EndsWith("-Editor", StringComparison.OrdinalIgnoreCase)
                    && !name.EndsWith(".Editor", StringComparison.OrdinalIgnoreCase)
                    && name.IndexOf("Test", StringComparison.OrdinalIgnoreCase) < 0;
-        }
-
-        private static IEnumerable<Type> TakeLoadableTypes(Assembly assembly)
-        {
-            try
-            {
-                return assembly.GetTypes();
-            }
-            catch (ReflectionTypeLoadException exception)
-            {
-                return exception.Types.Where(type => type != null);
-            }
         }
 
         private static bool ContainsNamespaceSegment(

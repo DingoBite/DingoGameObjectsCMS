@@ -56,6 +56,23 @@ namespace DingoGameObjectsCMS.Editor
         public static RuntimePatchSchemaGenerationResult GenerateAndWrite(
             RuntimePatchSchemaGenerationProfile profile)
         {
+            var outputs = GenerateOutputs(profile);
+            return new RuntimePatchSchemaGenerationResult
+            {
+                Manifest = outputs.Manifest,
+                GeneratedCodeChanged = WriteIfChanged(profile.GeneratedCodePath, outputs.GeneratedCode),
+            };
+        }
+
+        public static bool AreOutputsCurrent(RuntimePatchSchemaGenerationProfile profile)
+        {
+            var outputs = GenerateOutputs(profile);
+            return File.Exists(profile.GeneratedCodePath)
+                   && string.Equals(File.ReadAllText(profile.GeneratedCodePath), outputs.GeneratedCode, StringComparison.Ordinal);
+        }
+
+        private static (RuntimePatchSchemaManifest Manifest, string GeneratedCode) GenerateOutputs(RuntimePatchSchemaGenerationProfile profile)
+        {
             if (profile == null)
                 throw new ArgumentNullException(nameof(profile));
 
@@ -78,11 +95,7 @@ namespace DingoGameObjectsCMS.Editor
                 manifest,
                 discovery.Components,
                 profile.CodeEmission);
-            return new RuntimePatchSchemaGenerationResult
-            {
-                Manifest = manifest,
-                GeneratedCodeChanged = WriteIfChanged(profile.GeneratedCodePath, generatedCode),
-            };
+            return (manifest, generatedCode);
         }
 
         public static void BindReconciledSchema(

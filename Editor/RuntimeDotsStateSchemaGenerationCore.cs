@@ -16,6 +16,7 @@ namespace DingoGameObjectsCMS.Editor
         public readonly Func<RuntimeDotsStateSchemaManifest>
             PreviousManifestFactory;
         public readonly Func<Type, bool> RequiresClassification;
+        public readonly Action<RuntimeDotsStateSchemaManifest> ValidateManifest;
 
         public RuntimeDotsStateSchemaGenerationProfile(
             int codecVersion,
@@ -23,7 +24,8 @@ namespace DingoGameObjectsCMS.Editor
             string generatedNamespace,
             string generatedClassName,
             Func<RuntimeDotsStateSchemaManifest> previousManifestFactory,
-            Func<Type, bool> requiresClassification)
+            Func<Type, bool> requiresClassification,
+            Action<RuntimeDotsStateSchemaManifest> validateManifest = null)
         {
             if (codecVersion <= 0)
             {
@@ -43,6 +45,7 @@ namespace DingoGameObjectsCMS.Editor
             RequiresClassification = requiresClassification
                                      ?? throw new ArgumentNullException(
                                          nameof(requiresClassification));
+            ValidateManifest = validateManifest;
         }
 
         private static string RequirePath(
@@ -142,10 +145,53 @@ namespace DingoGameObjectsCMS.Editor
             if (manifest == null)
                 throw new InvalidOperationException(
                     "Compiled DOTS state manifest factory returned null.");
-            manifest.Components ??=
-                new List<RuntimeDotsStateComponentSchema>();
-            manifest.ReservedComponentTypeIds ??= new List<int>();
+            ValidateCompiledManifest(manifest);
             return manifest;
+        }
+
+        private static void ValidateCompiledManifest(RuntimeDotsStateSchemaManifest manifest)
+        {
+            if (manifest.Components == null || manifest.ReservedComponentTypeIds == null)
+            {
+                throw new InvalidOperationException("Compiled DOTS state manifest requires component and reserved-id collections.");
+            }
+            if (manifest.FormatVersion != RuntimeDotsStateSchemaReconciler.FORMAT_VERSION || manifest.CodecVersion <= 0)
+            {
+                throw new InvalidOperationException($"Compiled DOTS state manifest has unsupported format={manifest.FormatVersion} or codec={manifest.CodecVersion}.");
+            }
+
+            var reserved = new HashSet<int>();
+            foreach (var id in manifest.ReservedComponentTypeIds)
+            {
+                if (id < 0 || !reserved.Add(id))
+                {
+                    throw new InvalidOperationException($"Compiled DOTS state manifest has invalid or duplicate reserved id {id}.");
+                }
+            }
+            var activeIds = new HashSet<int>();
+            var activeTypes = new HashSet<Type>();
+            for (var i = 0; i < manifest.Components.Count; i++)
+            {
+                var component = manifest.Components[i];
+                if (component == null || component.RuntimeType == null)
+                {
+                    throw new InvalidOperationException($"Compiled DOTS state manifest active entry at index {i} requires RuntimeType = typeof(T).");
+                }
+                if (component.ComponentTypeId < 0 || !activeIds.Add(component.ComponentTypeId) || reserved.Contains(component.ComponentTypeId))
+                {
+                    throw new InvalidOperationException($"Compiled DOTS state manifest active id {component.ComponentTypeId} is invalid, duplicate, or reserved.");
+                }
+                if (!activeTypes.Add(component.RuntimeType))
+                {
+                    throw new InvalidOperationException($"Compiled DOTS state manifest repeats active type '{component.RuntimeType.FullName}'.");
+                }
+            }
+
+            var calculatedHash = RuntimeDotsStateSchemaReconciler.CalculateSchemaHash(manifest);
+            if (!string.Equals(manifest.SchemaHash, calculatedHash, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException($"Compiled DOTS state manifest hash mismatch. Compiled={manifest.SchemaHash}, calculated={calculatedHash}.");
+            }
         }
 
         public static bool WriteIfChanged(string path, string content)
@@ -189,10 +235,10 @@ namespace DingoGameObjectsCMS.Editor
                 throw new ArgumentNullException(nameof(profile));
             }
 
+            var existing = LoadExistingCompiledManifest(profile);
             var discovery = RuntimeDotsStateSchemaDiscovery.Discover(
                 CollectPlayerRuntimeTypes(),
                 profile.RequiresClassification);
-            var existing = LoadExistingCompiledManifest(profile);
             var discoveredSchemas = discovery.Components
                 .Select(component => component.Schema)
                 .ToArray();
@@ -200,6 +246,7 @@ namespace DingoGameObjectsCMS.Editor
                 existing,
                 discoveredSchemas,
                 profile.CodecVersion);
+            profile.ValidateManifest?.Invoke(manifest);
             BindReconciledSchema(discovery.Components, manifest);
             return new GeneratedOutputs
             {
@@ -228,7 +275,7 @@ namespace DingoGameObjectsCMS.Editor
                 .OrderBy(
                     assembly => assembly.GetName().Name,
                     StringComparer.Ordinal)
-                .SelectMany(TakeLoadableTypes);
+                .SelectMany(RuntimeGenerationTypeDiscovery.GetTypes);
         }
 
         private static bool IsPlayerRuntimeAssembly(Assembly assembly)
@@ -255,17 +302,5 @@ namespace DingoGameObjectsCMS.Editor
                        StringComparison.OrdinalIgnoreCase) < 0;
         }
 
-        private static IEnumerable<Type> TakeLoadableTypes(
-            Assembly assembly)
-        {
-            try
-            {
-                return assembly.GetTypes();
-            }
-            catch (ReflectionTypeLoadException exception)
-            {
-                return exception.Types.Where(type => type != null);
-            }
-        }
     }
 }

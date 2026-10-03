@@ -30,8 +30,8 @@ namespace DingoGameObjectsCMS.Editor
             string registryClassName,
             IReadOnlyList<IRuntimePatchCodeEmissionExtension> extensions = null)
         {
-            GeneratedNamespace = RequireNamespace(generatedNamespace, nameof(generatedNamespace));
-            RegistryClassName = RequireIdentifier(registryClassName, nameof(registryClassName));
+            GeneratedNamespace = RuntimeGeneratedCodeNames.RequireNamespace(generatedNamespace, nameof(generatedNamespace));
+            RegistryClassName = RuntimeGeneratedCodeNames.RequireIdentifier(registryClassName, nameof(registryClassName));
             if (extensions == null)
                 Extensions = Array.Empty<IRuntimePatchCodeEmissionExtension>();
             else
@@ -44,31 +44,6 @@ namespace DingoGameObjectsCMS.Editor
             }
         }
 
-        private static string RequireNamespace(string value, string parameterName)
-        {
-            if (string.IsNullOrWhiteSpace(value))
-                throw new ArgumentException("Generated namespace is required.", parameterName);
-            var result = value.Trim();
-            var segments = result.Split('.');
-            for (var i = 0; i < segments.Length; i++)
-                RequireIdentifier(segments[i], parameterName);
-            return result;
-        }
-
-        private static string RequireIdentifier(string value, string parameterName)
-        {
-            if (string.IsNullOrWhiteSpace(value))
-                throw new ArgumentException("Generated C# identifier is required.", parameterName);
-            var result = value.Trim();
-            if (!(char.IsLetter(result[0]) || result[0] == '_'))
-                throw new ArgumentException($"Generated C# identifier '{result}' is invalid.", parameterName);
-            for (var i = 1; i < result.Length; i++)
-            {
-                if (!(char.IsLetterOrDigit(result[i]) || result[i] == '_'))
-                    throw new ArgumentException($"Generated C# identifier '{result}' is invalid.", parameterName);
-            }
-            return result;
-        }
     }
 
     public class RuntimePatchSourceBuilder

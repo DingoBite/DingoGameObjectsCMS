@@ -394,6 +394,18 @@ removed-entry records. `SchemaHash`, direct codecs, and static `CreateManifest`
 live in one compiled C# authority. Patch generation does not read or publish a
 mutable `runtime_patch_schema.json` file.
 
+Generation refuses partial assembly discovery and reports the assembly and loader
+failure rather than reconciling an incomplete type set. Generated namespaces and
+symbols must be valid C# identifiers. Types uses `IsOutputCurrent`; Patch and DOTS
+use `AreOutputsCurrent` to check expected source without creating or repairing
+files. Repeated `GenerateAndWrite` preserves unchanged output and its timestamp.
+DOTS checks the previous compiled manifest hash and active/reserved ID ledger,
+then invokes the optional profile `ValidateManifest` callback on the new
+reconciled manifest before emission or writing. The read-only check invokes the
+same callback, so products can enforce coverage without SDK dependencies on their
+domain. Explicit additional fingerprint inputs must exist; the generated
+fingerprint source and its metadata remain excluded from its own input set.
+
 ## Network synchronization
 
 Mirror is the transport/framework; the DingoCMS runtime protocol synchronizes

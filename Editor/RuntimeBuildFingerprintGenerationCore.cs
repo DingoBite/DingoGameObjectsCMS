@@ -39,9 +39,9 @@ namespace DingoGameObjectsCMS.Editor
                 throw new ArgumentException("Generated fingerprint path must be project-relative.", nameof(generatedAssetPath));
             GeneratedAssetPath = NormalizePath(generatedAssetPath.Trim());
             RequireUnderProject(Path.Combine(ProjectRoot, GeneratedAssetPath), nameof(generatedAssetPath));
-            GeneratedNamespace = RequireNamespace(generatedNamespace, nameof(generatedNamespace));
-            GeneratedClassName = RequireIdentifier(generatedClassName, nameof(generatedClassName));
-            GeneratedValueMemberName = RequireIdentifier(generatedValueMemberName, nameof(generatedValueMemberName));
+            GeneratedNamespace = RuntimeGeneratedCodeNames.RequireNamespace(generatedNamespace, nameof(generatedNamespace));
+            GeneratedClassName = RuntimeGeneratedCodeNames.RequireIdentifier(generatedClassName, nameof(generatedClassName));
+            GeneratedValueMemberName = RuntimeGeneratedCodeNames.RequireIdentifier(generatedValueMemberName, nameof(generatedValueMemberName));
             ApplicationIdentifier = RequireValue(applicationIdentifier, nameof(applicationIdentifier));
             ApplicationVersion = RequireValue(applicationVersion, nameof(applicationVersion));
 
@@ -72,37 +72,11 @@ namespace DingoGameObjectsCMS.Editor
                 throw new ArgumentException($"Fingerprint path '{path}' must be inside '{ProjectRoot}'.", parameterName);
         }
 
-        private static string RequireNamespace(string value, string parameterName)
-        {
-            if (string.IsNullOrWhiteSpace(value))
-                throw new ArgumentException("Generated namespace is required.", parameterName);
-            var result = value.Trim();
-            var segments = result.Split('.');
-            for (var i = 0; i < segments.Length; i++)
-                RequireIdentifier(segments[i], parameterName);
-            return result;
-        }
-
         private static string RequireValue(string value, string parameterName)
         {
             if (string.IsNullOrWhiteSpace(value))
                 throw new ArgumentException($"{parameterName} is required.", parameterName);
             return value.Trim();
-        }
-
-        private static string RequireIdentifier(string value, string parameterName)
-        {
-            if (string.IsNullOrWhiteSpace(value))
-                throw new ArgumentException("Generated C# identifier is required.", parameterName);
-            var result = value.Trim();
-            if (!(char.IsLetter(result[0]) || result[0] == '_'))
-                throw new ArgumentException($"Generated C# identifier '{result}' is invalid.", parameterName);
-            for (var i = 1; i < result.Length; i++)
-            {
-                if (!(char.IsLetterOrDigit(result[i]) || result[i] == '_'))
-                    throw new ArgumentException($"Generated C# identifier '{result}' is invalid.", parameterName);
-            }
-            return result;
         }
 
         private static string NormalizePath(string path) => path.Replace('\\', '/');
@@ -193,8 +167,10 @@ namespace DingoGameObjectsCMS.Editor
                 var input = profile.AdditionalInputPaths[i];
                 if (Directory.Exists(input))
                     AddDirectoryContents(result, input, includeMeta: true, profile);
-                else
+                else if (File.Exists(input))
                     AddFileAndMeta(result, input, profile);
+                else
+                    throw new FileNotFoundException($"Declared additional fingerprint input '{input}' does not exist.", input);
             }
 
             return result.OrderBy(path => NormalizePath(Path.GetRelativePath(profile.ProjectRoot, path)), StringComparer.Ordinal);

@@ -15,21 +15,8 @@ namespace DingoGameObjectsCMS.Editor
             string generatedNamespace,
             string registryClassName)
         {
-            if (string.IsNullOrWhiteSpace(generatedNamespace))
-            {
-                throw new ArgumentException(
-                    "Generated DOTS state namespace is required.",
-                    nameof(generatedNamespace));
-            }
-            if (string.IsNullOrWhiteSpace(registryClassName))
-            {
-                throw new ArgumentException(
-                    "Generated DOTS state registry class name is required.",
-                    nameof(registryClassName));
-            }
-
-            GeneratedNamespace = generatedNamespace.Trim();
-            RegistryClassName = registryClassName.Trim();
+            GeneratedNamespace = RuntimeGeneratedCodeNames.RequireNamespace(generatedNamespace, nameof(generatedNamespace));
+            RegistryClassName = RuntimeGeneratedCodeNames.RequireIdentifier(registryClassName, nameof(registryClassName));
         }
     }
 
