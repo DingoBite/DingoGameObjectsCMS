@@ -534,7 +534,17 @@ namespace DingoGameObjectsCMS.Stores
                 if (directions != null && directions.TryGetValue(store.Id, out var direction))
                     _netDirById[store.Id] = direction;
             }
-            bind.V = bind.V;
+            Exception publicationFailure = null;
+            try
+            {
+                bind.V = bind.V;
+            }
+            catch (Exception exception)
+            {
+                // The registry already owns the new cohort. Finish retirement and
+                // lifecycle publication before reporting a binding observer failure.
+                publicationFailure = exception;
+            }
 
             for (var i = 0; i < previous.Length; i++)
             {
@@ -588,6 +598,11 @@ namespace DingoGameObjectsCMS.Stores
             _restoreCompletedDispatcher.Invoke(new RuntimeStoresRestoreCompleted(
                 realm,
                 Array.AsReadOnly(published)));
+            if (publicationFailure != null)
+            {
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo
+                    .Capture(publicationFailure).Throw();
+            }
         }
 
         public static RuntimeStore PublishPreparedReplicaStore(RuntimeStore store, StoreNetDir dir = StoreNetDir.S2C)

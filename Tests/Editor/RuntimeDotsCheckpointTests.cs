@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using DingoGameObjectsCMS.AssetLibrary;
 using DingoGameObjectsCMS.RuntimeObjects.Commands;
 using DingoGameObjectsCMS.RuntimeObjects.Overrides;
@@ -257,6 +258,120 @@ namespace DingoGameObjectsCMS.Tests.Editor
             }
         }
 
+        [TestCase(StoreRealm.Server)]
+        [TestCase(StoreRealm.Client)]
+        public void PrepareRestoreStage_ObserverFailureKeepsPublishedCohortAlive(StoreRealm realm)
+        {
+            var mapId = new FixedString32Bytes("map");
+            var unitsId = new FixedString32Bytes("units");
+            var previousMap = RuntimeStores.GetOrAddRuntimeStore(mapId, realm: realm);
+            var previousUnits = RuntimeStores.GetOrAddRuntimeStore(unitsId, realm: realm);
+            var otherRealm = realm == StoreRealm.Server ? StoreRealm.Client : StoreRealm.Server;
+            var otherMap = RuntimeStores.GetOrAddRuntimeStore(mapId, realm: otherRealm);
+            var otherUnits = RuntimeStores.GetOrAddRuntimeStore(unitsId, realm: otherRealm);
+            var participant = CreateStoreParticipant(realm, "map", "units");
+            var checkpoint = CreateRegistry(participant).Capture(12L, 7UL);
+            var section = checkpoint.Sections[0];
+            RuntimeStoresReplayCheckpointStage stage;
+            using (var reader = new RuntimeReplayCheckpointReader(section.Pages, section.PayloadLength,
+                       RuntimeReplayCheckpointCodec.MAX_SECTION_BYTES))
+            {
+                stage = participant.PrepareRestoreStage(reader);
+            }
+            var restoredMap = stage.TakeStore(mapId);
+            var restoredUnits = stage.TakeStore(unitsId);
+            var binding = realm == StoreRealm.Server ? RuntimeStores.ServerStores : RuntimeStores.ClientStores;
+            var injected = new InvalidOperationException("Intentional checkpoint publication observer failure.");
+            var callbacks = 0;
+            var observerSawCompleteSwap = false;
+            var lifecycleChanges = new List<RuntimeStoreLifecycleChange>();
+            var restoreCompletions = new List<RuntimeStoresRestoreCompleted>();
+            var lifecycleSawPublishedCohort = true;
+            var completionSawPublishedCohort = true;
+            bool PublishedCohortIsValid() => previousMap.Retired && previousUnits.Retired
+                && !restoredMap.Retired && !restoredUnits.Retired
+                && ReferenceEquals(RuntimeStores.GetRuntimeStore(mapId, realm), restoredMap)
+                && ReferenceEquals(RuntimeStores.GetRuntimeStore(unitsId, realm), restoredUnits);
+            Action<RuntimeStoreLifecycleChange> observeLifecycle = change =>
+            {
+                lifecycleChanges.Add(change);
+                lifecycleSawPublishedCohort &= PublishedCohortIsValid();
+            };
+            Action<RuntimeStoresRestoreCompleted> observeCompletion = completed =>
+            {
+                restoreCompletions.Add(completed);
+                completionSawPublishedCohort &= PublishedCohortIsValid();
+            };
+            Action<IReadOnlyDictionary<FixedString32Bytes, RuntimeStore>> failPublication = stores =>
+            {
+                callbacks++;
+                observerSawCompleteSwap = ReferenceEquals(stores[mapId], restoredMap)
+                    && ReferenceEquals(stores[unitsId], restoredUnits);
+                throw injected;
+            };
+            binding.OnValueChange += failPublication;
+            RuntimeStores.StoreLifecycleChanged += observeLifecycle;
+            RuntimeStores.RestoreCompleted += observeCompletion;
+            try
+            {
+                Assert.That(RuntimeStores.GetRuntimeStore(mapId, realm), Is.SameAs(previousMap));
+                Assert.That(RuntimeStores.GetRuntimeStore(unitsId, realm), Is.SameAs(previousUnits));
+                var failure = Assert.Throws<InvalidOperationException>(() => stage.Publish());
+                Assert.That(failure, Is.SameAs(injected));
+                Assert.That(callbacks, Is.EqualTo(1));
+                Assert.That(observerSawCompleteSwap, Is.True);
+                Assert.That(lifecycleChanges.Count, Is.EqualTo(2));
+                Assert.That(lifecycleSawPublishedCohort, Is.True,
+                    "Lifecycle callbacks must observe retired previous stores and the complete live replacement cohort.");
+                CollectionAssert.AreEquivalent(new[] { mapId, unitsId },
+                    new[] { lifecycleChanges[0].StoreId, lifecycleChanges[1].StoreId });
+                foreach (var change in lifecycleChanges)
+                {
+                    Assert.That(change.Kind, Is.EqualTo(RuntimeStoreLifecycleKind.Replaced));
+                    Assert.That(change.Realm, Is.EqualTo(realm));
+                    Assert.That(change.Store, Is.SameAs(change.StoreId.Equals(mapId) ? restoredMap : restoredUnits));
+                    Assert.That(change.PreviousStore, Is.SameAs(change.StoreId.Equals(mapId) ? previousMap : previousUnits));
+                    Assert.That(change.StoreGeneration, Is.EqualTo(change.Store.StoreGeneration));
+                }
+                Assert.That(restoreCompletions.Count, Is.EqualTo(1));
+                Assert.That(completionSawPublishedCohort, Is.True,
+                    "Restore completion must observe the published registry after the bind observer failure.");
+                Assert.That(restoreCompletions[0].Realm, Is.EqualTo(realm));
+                CollectionAssert.AreEquivalent(new[] { restoredMap, restoredUnits }, restoreCompletions[0].Stores);
+                Assert.That(stage.IsPublished, Is.True,
+                    "The stage must report registry publication even when a later observer throws.");
+                Assert.That(previousMap.Retired, Is.True);
+                Assert.That(previousUnits.Retired, Is.True);
+                Assert.That(RuntimeStores.GetRuntimeStore(mapId, realm), Is.SameAs(restoredMap));
+                Assert.That(RuntimeStores.GetRuntimeStore(unitsId, realm), Is.SameAs(restoredUnits));
+                Assert.That(restoredMap.Retired, Is.False);
+                Assert.That(restoredUnits.Retired, Is.False);
+                Assert.That(restoredMap.Epoch, Is.EqualTo(previousMap.Epoch + 1u));
+                Assert.That(restoredUnits.StoreGeneration, Is.EqualTo(previousUnits.StoreGeneration + 1u));
+                Assert.Throws<InvalidOperationException>(() => stage.Publish());
+                Assert.That(callbacks, Is.EqualTo(1), "A repeated publication attempt must not notify observers again.");
+                Assert.That(lifecycleChanges.Count, Is.EqualTo(2));
+                Assert.That(restoreCompletions.Count, Is.EqualTo(1));
+            }
+            finally
+            {
+                binding.OnValueChange -= failPublication;
+                RuntimeStores.StoreLifecycleChanged -= observeLifecycle;
+                RuntimeStores.RestoreCompleted -= observeCompletion;
+                stage.Dispose();
+            }
+            Assert.That(stage.IsDisposed, Is.True);
+            Assert.That(stage.IsPublished, Is.True);
+            Assert.That(RuntimeStores.GetRuntimeStore(mapId, realm), Is.SameAs(restoredMap));
+            Assert.That(RuntimeStores.GetRuntimeStore(unitsId, realm), Is.SameAs(restoredUnits));
+            Assert.That(restoredMap.Retired, Is.False, "Disposal cannot abort an already published stage.");
+            Assert.That(restoredUnits.Retired, Is.False);
+            Assert.That(RuntimeStores.GetRuntimeStore(mapId, otherRealm), Is.SameAs(otherMap));
+            Assert.That(RuntimeStores.GetRuntimeStore(unitsId, otherRealm), Is.SameAs(otherUnits));
+            Assert.That(otherMap.Retired, Is.False);
+            Assert.That(otherUnits.Retired, Is.False);
+        }
+
         [Test]
         public void JournalMutationDuringCapture_DoesNotPublishMixedBoundary()
         {
@@ -444,6 +559,10 @@ namespace DingoGameObjectsCMS.Tests.Editor
 
         private RuntimeStoresReplayCheckpointParticipant
             CreateStoreParticipant(params string[] storeIds)
+            => CreateStoreParticipant(StoreRealm.Server, storeIds);
+
+        private RuntimeStoresReplayCheckpointParticipant
+            CreateStoreParticipant(StoreRealm realm, params string[] storeIds)
         {
             var assetLock = new GameAssetLibraryLock().Seal();
             var patchCodecs = new RuntimePatchCodecRegistry(
@@ -453,7 +572,7 @@ namespace DingoGameObjectsCMS.Tests.Editor
                 RuntimeTemplatePatchCodecContext.Instance);
             return new RuntimeStoresReplayCheckpointParticipant(
                 _world,
-                StoreRealm.Server,
+                realm,
                 assetLock,
                 templates,
                 new RuntimeReplayStoreScope(storeIds));

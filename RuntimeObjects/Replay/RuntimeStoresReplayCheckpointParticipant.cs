@@ -949,11 +949,24 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Replay
                     patchContext,
                     stage =>
                     {
-                        RuntimeStores.PublishPreparedRestoreStores(
-                            stagedStores,
-                            directions,
-                            replaceRealm: false);
-                        stage.MarkPublished();
+                        try
+                        {
+                            RuntimeStores.PublishPreparedRestoreStores(
+                                stagedStores,
+                                directions,
+                                replaceRealm: false);
+                        }
+                        finally
+                        {
+                            // Publication can commit before a binding observer throws.
+                            // The registry, rather than callback completion, owns this boundary.
+                            if (stagedStores.All(store =>
+                                    RuntimeStores.TryGetRuntimeStore(store.Id, store.Realm, out var published)
+                                    && ReferenceEquals(published, store)))
+                            {
+                                stage.MarkPublished();
+                            }
+                        }
                     },
                     () => RetireStagedStores(stagedStores));
             }

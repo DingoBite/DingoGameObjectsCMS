@@ -311,6 +311,15 @@ if projection fails; ordinary projection continues to resolve active stores.
 Preparing a checkpoint therefore does not publish its stores or expose a
 partially restored graph through `RS`.
 
+Restore publication commits the entire scoped cohort to its realm before
+notifying binding observers. If an observer throws, publication still retires
+the replaced stores and publishes lifecycle notifications before rethrowing the
+original exception. A checkpoint stage reports `IsPublished` from the actual
+registry references even when that callback fails. Its disposal retains a
+published cohort; failures before the registry swap still abort staged stores.
+Server and Client publication follow the same rule and leave the other realm
+unchanged.
+
 Hot checkpoint owners can use `RuntimeObjects.Replay.RuntimeReplayNativeRows<T>`
 for retained unmanaged rows. It owns one persistent `NativeList<T>` and provides
 capture preparation, non-clearing capacity reservation, capacity-preserving reset,
