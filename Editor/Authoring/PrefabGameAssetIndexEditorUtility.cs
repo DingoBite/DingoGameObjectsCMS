@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using DingoGameObjectsCMS.AssetLibrary.Manifest;
+using DingoGameObjectsCMS.AssetObjects;
 using DingoGameObjectsCMS.AssetObjects.Authoring;
 using UnityEditor;
 using UnityEngine;
@@ -12,12 +13,14 @@ namespace DingoGameObjectsCMS.Editor.Authoring
     {
         public static string IndexAssetPath { get; private set; }
         public static Func<string, bool> IncludeAssetPath { get; private set; }
+        public static Func<IReadOnlyList<GameAssetComponent>, IEnumerable<string>> ResourceDependencies { get; private set; }
         public static bool IsConfigured => !string.IsNullOrEmpty(IndexAssetPath);
 
-        public static void Configure(string indexAssetPath, Func<string, bool> includeAssetPath)
+        public static void Configure(string indexAssetPath, Func<string, bool> includeAssetPath, Func<IReadOnlyList<GameAssetComponent>, IEnumerable<string>> resourceDependencies = null)
         {
             IndexAssetPath = indexAssetPath?.Replace('\\', '/');
             IncludeAssetPath = includeAssetPath;
+            ResourceDependencies = resourceDependencies;
             if (IsConfigured)
                 PrefabGameAssetIndexEditorUtility.RequestReconcile();
         }
@@ -43,6 +46,11 @@ namespace DingoGameObjectsCMS.Editor.Authoring
 
         public static IReadOnlyList<PrefabGameAssetIndexEntry> CollectEntries()
         {
+            return CollectEntries(true, new PrefabGameAssetContentHashCache());
+        }
+
+        private static IReadOnlyList<PrefabGameAssetIndexEntry> CollectEntries(bool collectHashes, PrefabGameAssetContentHashCache cache)
+        {
             var entries = new List<PrefabGameAssetIndexEntry>();
             foreach (var guid in AssetDatabase.FindAssets("t:Prefab", new[] { "Assets" }).OrderBy(value => value, StringComparer.Ordinal))
             {
@@ -51,7 +59,7 @@ namespace DingoGameObjectsCMS.Editor.Authoring
                     continue;
                 var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(path);
                 if (prefab != null && prefab.TryGetComponent<GameAssetAuthoring>(out var authoring))
-                    entries.Add(new PrefabGameAssetIndexEntry(guid, authoring));
+                    entries.Add(new PrefabGameAssetIndexEntry(guid, authoring, collectHashes ? PrefabGameAssetContentHashUtility.Compute(path, cache) : null));
             }
             return entries;
         }
@@ -75,7 +83,14 @@ namespace DingoGameObjectsCMS.Editor.Authoring
                     index = ScriptableObject.CreateInstance<PrefabGameAssetIndex>();
                     AssetDatabase.CreateAsset(index, path);
                 }
-                if (index.ReplaceEntries(CollectEntries()))
+                var roots = CollectEntries(false, null);
+                PrefabGameAssetOverrideEditorUtility.BakeSavedAssets(roots.Select(entry => AssetDatabase.GetAssetPath(entry.Authoring)));
+                var hashCache = new PrefabGameAssetContentHashCache();
+                var overrides = PrefabGameAssetOverrideEditorUtility.CollectOverrides(roots, hashCache);
+                var refreshedRoots = roots.Select(entry => new PrefabGameAssetIndexEntry(entry.GUID, entry.Authoring, PrefabGameAssetContentHashUtility.Compute(AssetDatabase.GUIDToAssetPath(entry.GUID), hashCache)));
+                var changed = index.ReplaceEntries(refreshedRoots);
+                changed |= index.ReplaceOverrides(overrides);
+                if (changed)
                 {
                     EditorUtility.SetDirty(index);
                     AssetDatabase.SaveAssetIfDirty(index);
@@ -93,21 +108,21 @@ namespace DingoGameObjectsCMS.Editor.Authoring
             if (_scheduled || _reconciling)
                 return;
             _scheduled = true;
-            EditorApplication.delayCall += ReconcileDeferred;
+            EditorApplication.update += ReconcileDeferred;
         }
 
         private static void ReconcileDeferred()
         {
-            _scheduled = false;
-            if (!PrefabGameAssetIndexConfiguration.IsConfigured)
-                return;
-            if (EditorApplication.isPlayingOrWillChangePlaymode)
-                return;
-            if (EditorApplication.isCompiling || EditorApplication.isUpdating)
+            if (!PrefabGameAssetIndexConfiguration.IsConfigured || EditorApplication.isPlayingOrWillChangePlaymode)
             {
-                RequestReconcile();
+                EditorApplication.update -= ReconcileDeferred;
+                _scheduled = false;
                 return;
             }
+            if (EditorApplication.isCompiling || EditorApplication.isUpdating)
+                return;
+            EditorApplication.update -= ReconcileDeferred;
+            _scheduled = false;
             try
             {
                 Reconcile();
@@ -120,7 +135,21 @@ namespace DingoGameObjectsCMS.Editor.Authoring
 
         private static void OnPlayModeStateChanged(PlayModeStateChange state)
         {
-            if (state == PlayModeStateChange.EnteredEditMode)
+            if (state == PlayModeStateChange.ExitingEditMode)
+            {
+                EditorApplication.update -= ReconcileDeferred;
+                _scheduled = false;
+                try
+                {
+                    Reconcile();
+                }
+                catch (Exception error)
+                {
+                    Debug.LogException(error);
+                    EditorApplication.isPlaying = false;
+                }
+            }
+            else if (state == PlayModeStateChange.EnteredEditMode)
                 RequestReconcile();
         }
 
@@ -145,14 +174,16 @@ namespace DingoGameObjectsCMS.Editor.Authoring
                 PrefabGameAssetIndexEditorUtility.RequestReconcile();
         }
 
-        private static bool IsRelevant(string path) => path == PrefabGameAssetIndexConfiguration.IndexAssetPath || path.StartsWith("Assets/", StringComparison.Ordinal) && (path.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase) || !System.IO.Path.HasExtension(path));
+        private static bool IsRelevant(string path) => PrefabGameAssetIndexConfiguration.Includes(path) || (!string.IsNullOrEmpty(path) && path.StartsWith("Packages/", StringComparison.Ordinal));
     }
 
     public class PrefabGameAssetIndexSaveHook : AssetModificationProcessor
     {
         private static string[] OnWillSaveAssets(string[] paths)
         {
-            if (paths.Any(path => path.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase)))
+            if (!EditorApplication.isPlayingOrWillChangePlaymode)
+                PrefabGameAssetOverrideEditorUtility.BakeSavedAssets(paths);
+            if (paths.Any(path => PrefabGameAssetIndexConfiguration.Includes(path) || path.StartsWith("Packages/", StringComparison.Ordinal)))
                 PrefabGameAssetIndexEditorUtility.RequestReconcile();
             return paths;
         }

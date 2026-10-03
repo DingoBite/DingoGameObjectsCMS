@@ -1,5 +1,6 @@
 using System;
 using System.Collections;
+using System.Collections.Generic;
 using System.Linq;
 using DingoGameObjectsCMS.AssetLibrary.Manifest;
 using DingoGameObjectsCMS.AssetObjects;
@@ -20,6 +21,7 @@ namespace DingoGameObjectsCMS.Tests.Editor
         private PrefabGameAssetTestAssets _assets;
         private string _previousIndexPath;
         private Func<string, bool> _previousInclude;
+        private Func<IReadOnlyList<GameAssetComponent>, IEnumerable<string>> _previousResourceDependencies;
 
         [SetUp]
         public void SetUp()
@@ -27,13 +29,14 @@ namespace DingoGameObjectsCMS.Tests.Editor
             _assets = new PrefabGameAssetTestAssets();
             _previousIndexPath = PrefabGameAssetIndexConfiguration.IndexAssetPath;
             _previousInclude = PrefabGameAssetIndexConfiguration.IncludeAssetPath;
+            _previousResourceDependencies = PrefabGameAssetIndexConfiguration.ResourceDependencies;
             PrefabGameAssetIndexConfiguration.Configure(_assets.Folder + "/S_PrefabGameAssetIndex.asset", path => path.StartsWith(_assets.Folder + "/", StringComparison.Ordinal) && !path.Contains("/Playgrounds/"));
         }
 
         [TearDown]
         public void TearDown()
         {
-            PrefabGameAssetIndexConfiguration.Configure(_previousIndexPath, _previousInclude);
+            PrefabGameAssetIndexConfiguration.Configure(_previousIndexPath, _previousInclude, _previousResourceDependencies);
             _assets.Dispose();
         }
 

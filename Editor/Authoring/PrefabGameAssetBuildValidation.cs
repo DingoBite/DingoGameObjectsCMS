@@ -17,6 +17,7 @@ namespace DingoGameObjectsCMS.Editor.Authoring
             var errors = new List<string>();
             if (!PrefabGameAssetIndexConfiguration.IsConfigured)
                 return errors;
+            var hashCache = new PrefabGameAssetContentHashCache();
             foreach (var guid in AssetDatabase.FindAssets("t:PrefabGameAssetIndex", new[] { "Assets" }))
             {
                 var path = AssetDatabase.GUIDToAssetPath(guid);
@@ -30,7 +31,7 @@ namespace DingoGameObjectsCMS.Editor.Authoring
                     // Reading the persistent prefab avoids creating a live GameObject or running its lifecycle.
                     var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(path);
                     if (prefab != null)
-                        ValidateHierarchy(prefab, path, errors);
+                        ValidateHierarchy(prefab, path, errors, hashCache);
                 }
                 catch (Exception error)
                 {
@@ -47,7 +48,7 @@ namespace DingoGameObjectsCMS.Editor.Authoring
                     scene = EditorSceneManager.OpenPreviewScene(path);
                     foreach (var root in scene.GetRootGameObjects())
                     {
-                        ValidateHierarchy(root, path, errors);
+                        ValidateHierarchy(root, path, errors, hashCache);
                     }
                 }
                 catch (Exception error)
@@ -76,7 +77,7 @@ namespace DingoGameObjectsCMS.Editor.Authoring
             return AssetDatabase.FindAssets(filter, new[] { "Assets" }).Select(AssetDatabase.GUIDToAssetPath).Where(PrefabGameAssetIndexConfiguration.Includes).OrderBy(path => path, StringComparer.Ordinal);
         }
 
-        private static void ValidateHierarchy(GameObject root, string path, ICollection<string> errors)
+        private static void ValidateHierarchy(GameObject root, string path, ICollection<string> errors, PrefabGameAssetContentHashCache hashCache)
         {
             foreach (var authoring in root.GetComponentsInChildren<GameAssetAuthoring>(true))
             {
@@ -88,6 +89,8 @@ namespace DingoGameObjectsCMS.Editor.Authoring
                 }
                 if (GameAssetAuthoringEditorUtility.TryGetDefinition(authoring, out var definition, out _, out _) && !PrefabGameAssetIndexConfiguration.Includes(AssetDatabase.GetAssetPath(definition)))
                     errors.Add(identity + ": the source definition is excluded from the production prefab GA index.");
+                if (!PrefabGameAssetOverrideEditorUtility.TryCreateOverride(authoring, path, out _, out _, out var overrideError, hashCache))
+                    errors.Add(identity + ": " + overrideError);
             }
         }
 

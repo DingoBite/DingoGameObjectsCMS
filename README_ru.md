@@ -1,10 +1,10 @@
 # DingoGameObjectsCMS
 
-`DingoGameObjectsCMS` — это content-first runtime framework для Unity, в котором игровое поведение описывается versioned JSON asset-ами, во время выполнения собирается в дерево runtime-объектов, а затем при необходимости материализуется в ECS, сеть, view и persistent data. Каноническая authored-библиотека — это набор внешних module package на диске; Unity asset-ы не являются вторым изменяемым источником истины.
+`DingoGameObjectsCMS` — это content-first runtime framework для Unity, в котором игровые определения задаются versioned JSON module package или обычными Unity-префабами, собираются в дерево runtime-объектов, а затем при необходимости материализуются в ECS, сеть, view и persistent data. У каждого определения один авторский источник; изменяемое состояние игры принадлежит `RuntimeStore`.
 
 Идея фреймворка простая:
 
-1. Вы описываете объект не кодом сцены, а JSON-документом `GameAsset`.
+1. Вы описываете объект через GAC в JSON-документе `GameAsset` или компоненте `GameAssetAuthoring` на корне префаба.
 2. `GameAsset` собирает `GameRuntimeObject` с набором `GameRuntimeComponent`.
 3. `GameRuntimeObject` живёт в `RuntimeStore`, который умеет хранить дерево объектов, отслеживать dirty-изменения, публиковать потоки изменений и связывать runtime-объекты с ECS entity.
 4. Тот же runtime-слой может быть использован для:
@@ -16,7 +16,7 @@
 
 Это не просто “CMS для ScriptableObject”, а унифицированная модель игры, где внешний content catalog, runtime model, ECS bridge, replication и modding используют один и тот же язык данных.
 
-Для prefab и объектов сцены GA можно генерировать из Unity-компонентов через [авторинг GameObject → GameAsset](AssetObjects/Authoring/README.md). MonoBehaviour-компоненты формируют GAC, а редактор сохраняет результат как канонический документ в модуле DingoCMS. Размещение объекта и изменяемое игровое состояние при этом остаются данными экземпляра и RuntimeStore.
+Через [авторинг GameObject → GameAsset](AssetObjects/Authoring/README.md) определения префабов подготавливаются в памяти и подключаются к тому же неизменяемому `LibraryLock`, что и JSON-модули. Генерируемый индекс хранит идентичность префаба, hash зависимостей и snapshots переопределённых значений и ресурсов сохранённых экземпляров. Владелец приложения освобождает подготовленные определения после остановки потребителей. Старый авторинг с публикацией GA-документов остаётся отдельным доступным контуром.
 
 Опциональный высоконагруженный DOTS-профиль описан в [Интеграции DOTS + RuntimeStore](DOTS_INTEGRATION.md).
 

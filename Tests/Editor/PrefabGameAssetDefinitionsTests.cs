@@ -220,7 +220,7 @@ namespace DingoGameObjectsCMS.Tests.Editor
             _index.ReplaceEntries(new[] { new PrefabGameAssetIndexEntry(AssetDatabase.AssetPathToGUID(AssetDatabase.GetAssetPath(known)), known) });
             Assert.That(PrefabGameAssetDefinitions.TryPrepare(_index, out _definitions, out var error), Is.True, error);
             Assert.That(_definitions.TryGetAsset(new PrefabGameAssetReference(unknown), out _), Is.False);
-            Assert.That(_definitions.TryResolveReference(default, out _), Is.False);
+            Assert.That(_definitions.TryResolveReference(default(PrefabGameAssetReference), out _), Is.False);
         }
     }
 }

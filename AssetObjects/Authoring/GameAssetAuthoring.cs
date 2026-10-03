@@ -8,9 +8,22 @@ namespace DingoGameObjectsCMS.AssetObjects.Authoring
     {
         [SerializeReference, SubclassSelector] private List<GameAssetComponent> _components = new();
         [SerializeField] private List<GameAssetAuthoringConverterBinding> _converters = new();
+        [SerializeField, HideInInspector] private string _sourceDefinitionGuid;
+        [SerializeField, HideInInspector] private string _runtimeOverrideId;
 
         public IReadOnlyList<GameAssetComponent> Components => _components;
         public IReadOnlyList<GameAssetAuthoringConverterBinding> Converters => _converters;
+        public string SourceDefinitionGuid => _sourceDefinitionGuid;
+        public string RuntimeOverrideId => _runtimeOverrideId;
+
+        public bool SetRuntimeDefinitionSource(string guid, string overrideId = null)
+        {
+            if (_sourceDefinitionGuid == guid && _runtimeOverrideId == overrideId)
+                return false;
+            _sourceDefinitionGuid = guid;
+            _runtimeOverrideId = overrideId;
+            return true;
+        }
 
         public void SetComponents(IEnumerable<GameAssetComponent> components)
         {

@@ -46,7 +46,7 @@ namespace DingoGameObjectsCMS.Editor.Authoring
             if (!_hasDefinition)
                 EditorGUILayout.HelpBox(_ownershipError, MessageType.Error);
             else if (!_isDefinition)
-                EditorGUILayout.HelpBox("This instance may override values. Component types, converter sources and binding composition belong to its prefab. Effective values are preview only in phase 1.", MessageType.Info);
+                EditorGUILayout.HelpBox("This instance may override values. Component types, converter sources and binding composition belong to its prefab. Saved instance values become generated derived definitions during runtime preparation.", MessageType.Info);
 
             var components = serializedObject.FindProperty("_components");
             var converters = serializedObject.FindProperty("_converters");
@@ -163,7 +163,7 @@ namespace DingoGameObjectsCMS.Editor.Authoring
         public override void OnInspectorGUI()
         {
             var index = (PrefabGameAssetIndex)target;
-            EditorGUILayout.HelpBox("Generated prefab definition index. Its entries are maintained after prefab save/import and checked before builds.", MessageType.Info);
+            EditorGUILayout.HelpBox("Generated prefab definitions and instance snapshots. Entries are maintained after prefab or scene save/import and checked before builds.", MessageType.Info);
             using (new EditorGUI.DisabledScope(true))
             {
                 EditorGUILayout.IntField("Definitions", index.Entries.Count);
@@ -171,6 +171,16 @@ namespace DingoGameObjectsCMS.Editor.Authoring
                 {
                     EditorGUILayout.TextField("Prefab GUID", entry.GUID);
                     EditorGUILayout.ObjectField("Authoring", entry.Authoring, typeof(GameAssetAuthoring), false);
+                    EditorGUILayout.TextField("Content hash", entry.ContentHash);
+                }
+                EditorGUILayout.Space();
+                EditorGUILayout.IntField("Generated snapshots", index.Overrides.Count);
+                foreach (var entry in index.Overrides)
+                {
+                    EditorGUILayout.TextField("Record ID", entry.Id);
+                    EditorGUILayout.ObjectField("Source authoring", entry.Source, typeof(GameAssetAuthoring), false);
+                    EditorGUILayout.IntField("GAC components", entry.Components.Count);
+                    EditorGUILayout.TextField("Content hash", entry.ContentHash);
                 }
             }
         }
