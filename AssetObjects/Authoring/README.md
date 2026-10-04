@@ -1,4 +1,4 @@
-# GameObject → GameAsset authoring
+# Prefab → GameAsset authoring
 
 ## Native prefab definitions
 
@@ -10,7 +10,7 @@
 
 The Inspector previews only definition data, without invoking GameObject lifecycle, materializing a GRO or touching a Store. Prefab instances in scenes or parent prefabs may override values, but cannot change manual GAC types/counts, converter/source bindings or the final GAC type set. The Editor records their effective GAC snapshots in `PrefabGameAssetIndex.Overrides`, including Unity resource references. Hidden generated `SourceDefinitionGuid` and `RuntimeOverrideId` metadata links a built instance to its source and snapshot; authors do not enter these values. Saving a scene persists its generated metadata, and scene build processing prepares it for player use. Record identity uses the containing asset GUID and the object's `GlobalObjectId` file/prefab ids. These records are generated data, not new prefab definitions or published GA documents.
 
-Build validation covers configured production prefab and scene assets, including scenes outside Build Settings, using isolated Editor loading without saving them. Invalid native definitions or structural overrides block a build. This is the explicit native-authoring contract; the existing CMS content fallback remains unchanged for the legacy contour.
+Build validation covers configured production prefab and scene assets, including scenes outside Build Settings, using isolated Editor loading without saving them. Invalid native definitions or structural overrides block a build. This is the explicit native-authoring contract; the existing CMS content fallback remains unchanged for JSON modules.
 
 ## Runtime preparation and ownership
 
@@ -26,20 +26,8 @@ A product may pass `ResourceDependencies` as the third `PrefabGameAssetIndexConf
 
 The application/session owner may use `GameAssetRuntimeEnvironment(codecs, context, index)` to own preparation, mounting and temporary definitions. Stop consumers before calling its idempotent `Dispose()`: it clears templates and disposes native definition SOs, while source prefabs, the index and Unity resources remain owned by Unity. With direct preparation, the caller owns `PrefabGameAssetDefinitions.Dispose()` and template lifetime. A new preparation/session is required to observe authoring changes. Authoring and reference resolution do not create or own a live GRO or GameObject lifecycle; feature owners continue to create objects through `RuntimeStore`.
 
-## Existing document-producing authoring
+## JSON module definitions
 
-This folder defines the reusable Unity-side source for a generated DingoCMS `GameAsset`. A `GameAssetObjectAuthoring` component marks one prefab or scene object as the owner of a GA definition. Any `MonoBehaviour` in its owned hierarchy may implement `IGameAssetComponentAuthoring` and return one `GameAssetComponent`. The collector excludes nested authoring roots, rejects duplicate GAC types, and orders the result deterministically.
+Definitions may also be authored directly as JSON documents through DingoCMS. Its transactional writer, filesystem module packages and generic EditorServer remain available independently of native prefab authoring. Both sources mount into the same immutable library and use the existing runtime template, save and replication contracts.
 
-The scene or prefab is the authoring source; the generated GA document is the compiled content. The Inspector's **Create GA** action chooses a `GameAssetKey` and optional JSON path inside a mounted DingoCMS module. The EditorServer persists the document through its transactional CMS writer and records the returned GUID. Later source changes queue an editor-side bake of the same key and GUID. Each bake replaces the generated GA's full GAC list with the contributors under its authoring root; edits made directly to that list in CMS are not retained. `OnValidate` only signals that work; it does not write assets or call the Unity asset database. A changed GA becomes visible to runtime only in a newly prepared content session.
-
-The component also exposes **Refresh**, **Reset**, and **Delete** buttons. Refresh forces a bake from the current authoring components into the linked GA; a stale document hash blocks an overwrite. Reset clears only this component's local GUID/hash link and leaves the CMS document in place. Delete asks for confirmation, removes the matching CMS document through a transaction, then clears the local link. Removing a scene object or prefab does not automatically delete its GA.
-
-Only one authoring root owns a generated GA. Prefab instances placed in scenes should share their prefab's definition and express placement-specific values separately, for example through a `GameAssetInstance` patch or a feature-specific placement descriptor. A copied standalone root that needs an independent GA must explicitly create a new one. Scene-only Unity object references and mutable runtime state do not belong in generated GACs.
-
-The saved authoring link includes the Unity source object's `GlobalObjectId`. Bake and Delete require that the current source still has the same ID, so duplicating or moving a root does not silently publish over the original GA. Create requires a saved scene or prefab with a stable source ID.
-
-The CMS module package is the canonical output. The file is JSON below the mounted `Application.persistentDataPath/assets/<module>` library, not a Unity `.asset`. A product that ships a packaged base module must publish the generated GA into that package before a build; saving the mounted library alone does not change an existing packaged copy.
-
-Reset and removed authoring objects can leave generated documents without owners. Such documents must not be deleted by a blind GA sweep because manually authored GA can share the module. An eventual orphan audit should compare an explicit registry of generated GA GUIDs with authoring owners across relevant scenes and prefabs, show candidates for review, and delete selected documents only through CMS after an identity check.
-
-Runtime direction remains unchanged: a feature model creates or restores a GRO/GRC in `RuntimeStore`, and presentation binds to the runtime object through dirty streams. Authoring components never mutate the runtime store directly.
+A native prefab is the sole authored source for its definition. It does not create or maintain a separate GA document or require a publish step. Feature models still create and mutate GRO/GRC through `RuntimeStore`, while GameObject presentation binds through dirty streams.

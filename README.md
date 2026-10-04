@@ -16,7 +16,7 @@ The core idea is simple:
 
 This is not just a "ScriptableObject CMS". It is a unified game model where the external content catalog, runtime model, ECS bridge, replication, and modding all speak the same data language.
 
-The [GameObject → GameAsset authoring](AssetObjects/Authoring/README.md) workflow supports native prefab definitions prepared in memory and mounted into the same immutable `LibraryLock` as JSON modules. Its generated index captures prefab identity, resource dependency hashes and saved instance value/resource overrides. The application owner disposes prepared definitions after consumers stop. The older document-producing authoring workflow remains available separately.
+The [Prefab → GameAsset authoring](AssetObjects/Authoring/README.md) workflow supports native prefab definitions prepared in memory and mounted into the same immutable `LibraryLock` as JSON modules. Its generated index captures prefab identity, resource dependency hashes and saved instance value/resource overrides. The application owner disposes prepared definitions after consumers stop. Prefab definitions do not publish or maintain a separate GA document; JSON modules remain independent authored sources supported by DingoCMS.
 
 For the opt-in high-cardinality DOTS profile, see [DOTS + RuntimeStore Integration](DOTS_INTEGRATION.md).
 
