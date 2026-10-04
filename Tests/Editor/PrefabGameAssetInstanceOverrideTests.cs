@@ -15,6 +15,8 @@ using Newtonsoft.Json.Linq;
 using NUnit.Framework;
 using UnityEditor;
 using UnityEngine;
+using UnityEngine.TestTools;
+using System.Text.RegularExpressions;
 
 namespace DingoGameObjectsCMS.Tests.Editor
 {
@@ -139,6 +141,184 @@ namespace DingoGameObjectsCMS.Tests.Editor
         private PrefabGameAssetOverrideEntry Override(string id, int value)
         {
             return new PrefabGameAssetOverrideEntry(id, _source, new[] { new PrefabAuthoringAlpha_GAC { Value = value } }, OverrideJson(value), "override-content-hash-" + value);
+        }
+
+        [TestCase(null)]
+        [TestCase("")]
+        [TestCase("null")]
+        [TestCase("{}")]
+        public void MissingValueOverridesResolveToBaseWithoutDiscardingHealthyOverrides(string json)
+        {
+            var broken = new PrefabGameAssetOverrideEntry("invalid-json", _source, new[] { new PrefabAuthoringAlpha_GAC { Value = 99 } }, json, "broken-content-hash");
+            AssertBaseFallbackWithHealthyOverride(broken);
+        }
+
+        [Test]
+        public void MalformedJsonReportsTheExceptionAndResolvesToBase()
+        {
+            var broken = new PrefabGameAssetOverrideEntry("invalid-json", _source, new[] { new PrefabAuthoringAlpha_GAC { Value = 99 } }, "{", "broken-json-hash");
+            LogAssert.Expect(LogType.Exception, new Regex("JsonSerializationException|JsonReaderException"));
+            AssertBaseFallbackWithHealthyOverride(broken);
+        }
+
+        [TestCase("{\"OverrideComponents\":[null]}", false)]
+        [TestCase("{\"OverrideComponents\":[{\"Value\":99}]}", false)]
+        [TestCase("{\"OverrideComponents\":[{\"$type\":\"Unknown_GAC\",\"Value\":99}]}", false)]
+        [TestCase("{\"OverrideComponents\":[{\"$type\":[]}]}", false)]
+        [TestCase("{\"OverrideComponents\":[{\"$type\":\"PrefabAuthoringAlpha_GAC\"},{\"$type\":\"PrefabAuthoringAlpha_GAC\"}]}", false)]
+        [TestCase("{\"OverrideComponents\":[{\"$type\":\"PrefabAuthoringAlpha_GAC\",\"UnknownField\":99}]}", false)]
+        [TestCase("{\"OverrideFields\":{\"/PrefabAuthoringAlpha_GAC/UnknownField\":99}}", false)]
+        [TestCase("{\"OverrideFields\":{\"/PrefabAuthoringAlpha_GAC/Value/InvalidChild\":99}}", true)]
+        [TestCase("{\"OverrideFields\":{\"/Unknown_GAC/Value\":99}}", true)]
+        [TestCase("{\"OverrideFields\":{\"/PrefabAuthoringAlpha_GAC/$type\":[]}}", false)]
+        [TestCase("{\"OverrideFields\":{\"/PrefabAuthoringAlpha_GAC/$type\":123}}", false)]
+        [TestCase("{\"RemovedFields\":[\"/PrefabAuthoringAlpha_GAC/$type\"]}", false)]
+        [TestCase("{\"RemovedFields\":[null]}", true)]
+        [TestCase("{\"RemovedComponents\":[null]}", true)]
+        [TestCase("{\"RemovedComponents\":[\"PrefabAuthoringAlpha_GAC\"]}", false)]
+        public void MalformedValueOverrideStructureResolvesToBaseAndKeepsHealthyOverride(string json, bool reportsException)
+        {
+            var broken = new PrefabGameAssetOverrideEntry("invalid-value-structure", _source, new[] { new PrefabAuthoringAlpha_GAC { Value = 99 } }, json, "broken-value-structure-hash");
+            if (reportsException)
+                LogAssert.Expect(LogType.Exception, new Regex("InvalidDataException"));
+            AssertBaseFallbackWithHealthyOverride(broken);
+        }
+
+        [Test]
+        public void FullComponentOverrideKeepsNativeResourceFingerprintAndFrozenResource()
+        {
+            var resource = new Texture2D(2, 2);
+            var resourcePath = _assets.Folder + "/override-resource.asset";
+            AssetDatabase.CreateAsset(resource, resourcePath);
+            AssetDatabase.TryGetGUIDAndLocalFileIdentifier(resource, out string resourceGuid, out long resourceId);
+            _source.SetComponents(new[] { new PrefabAuthoringAlpha_GAC { Value = 5, Resource = resource } });
+            var changed = new JObject
+            {
+                ["$type"] = nameof(PrefabAuthoringAlpha_GAC),
+                [nameof(PrefabAuthoringAlpha_GAC.Value)] = 25,
+                [nameof(PrefabAuthoringAlpha_GAC.Resource)] = new JObject { ["UnityAssetGuid"] = resourceGuid, ["LocalFileId"] = resourceId }
+            };
+            var json = GameAssetDocumentComposer.CanonicalizeOverrides(new GameAssetOverrides { OverrideComponents = new List<JObject> { changed } });
+            _index.ReplaceOverrides(new[] { new PrefabGameAssetOverrideEntry("native-resource", _source, new[] { new PrefabAuthoringAlpha_GAC { Value = 25, Resource = resource } }, json, "native-resource-content-hash") });
+            var instance = Instance("native-resource", 25);
+            Assert.That(PrefabGameAssetDefinitions.TryPrepare(_index, out _definitions, out var error), Is.True, error);
+            var templates = Templates();
+            try
+            {
+                var library = GameAssetLibraryLockBuilder.Build(templates, Array.Empty<ModPackage>(), _definitions);
+                Assert.That(_definitions.TryGetAsset(instance, out var derived), Is.True);
+                var value = derived.Components.OfType<PrefabAuthoringAlpha_GAC>().Single();
+                Assert.That(value.Value, Is.EqualTo(25));
+                Assert.That(value.Resource.GetEntityId(), Is.EqualTo(resource.GetEntityId()));
+                Assert.That(_definitions.TryResolveReference(instance, out var reference), Is.True);
+                Assert.That(GameAssetDerivedIdentity.IsDerived(reference.RequestedKey), Is.True);
+                Assert.That(RuntimeSessionAssetCatalog.FromLock(library).ManifestEntries.Count, Is.EqualTo(2));
+            }
+            finally
+            {
+                templates.Clear();
+            }
+        }
+
+        [Test]
+        public void RemovedFieldOverrideRetainsDeclaredDefaultSemantics()
+        {
+            var json = GameAssetDocumentComposer.CanonicalizeOverrides(new GameAssetOverrides { RemovedFields = new List<string> { "/" + nameof(PrefabAuthoringAlpha_GAC) + "/" + nameof(PrefabAuthoringAlpha_GAC.Value) } });
+            _index.ReplaceOverrides(new[] { new PrefabGameAssetOverrideEntry("removed-field", _source, new[] { new PrefabAuthoringAlpha_GAC() }, json, "removed-field-content-hash") });
+            var instance = Instance("removed-field", 0);
+            Assert.That(PrefabGameAssetDefinitions.TryPrepare(_index, out _definitions, out var error), Is.True, error);
+            var templates = Templates();
+            try
+            {
+                var library = GameAssetLibraryLockBuilder.Build(templates, Array.Empty<ModPackage>(), _definitions);
+                Assert.That(_definitions.TryResolveReference(instance, out var reference), Is.True);
+                Assert.That(GameAssetDerivedIdentity.IsDerived(reference.RequestedKey), Is.True);
+                var runtime = templates.Materialize(GameAssetInstanceFactory.Create(reference, Hash128.Compute("removed-field-runtime")), library);
+                Assert.That(runtime.Origin.Asset.ExactKey, Is.EqualTo(reference.RequestedKey));
+                Assert.That(_definitions.TryGetAsset(instance, out var derived), Is.True);
+                Assert.That(derived.Components.OfType<PrefabAuthoringAlpha_GAC>().Single().Value, Is.EqualTo(new PrefabAuthoringAlpha_GAC().Value));
+            }
+            finally
+            {
+                templates.Clear();
+            }
+        }
+
+        [TestCase("null")]
+        [TestCase("duplicate")]
+        [TestCase("missing")]
+        [TestCase("extra")]
+        public void InvalidSnapshotCompositionResolvesToBaseWithoutDiscardingHealthyOverrides(string scenario)
+        {
+            GameAssetComponent[] components = scenario switch
+            {
+                "null" => new GameAssetComponent[] { null },
+                "duplicate" => new GameAssetComponent[] { new PrefabAuthoringAlpha_GAC { Value = 99 }, new PrefabAuthoringAlpha_GAC() },
+                "missing" => Array.Empty<GameAssetComponent>(),
+                _ => new GameAssetComponent[] { new PrefabAuthoringAlpha_GAC { Value = 99 }, new PrefabAuthoringBeta_GAC() }
+            };
+            var broken = new PrefabGameAssetOverrideEntry("invalid-structure", _source, components, OverrideJson(99), "broken-snapshot-hash");
+            AssertBaseFallbackWithHealthyOverride(broken);
+        }
+
+        [Test]
+        public void OverrideCannotRestoreComponentsOfAnInvalidBaseDefinition()
+        {
+            _source.SetComponents(new GameAssetComponent[] { new PrefabAuthoringAlpha_GAC(), new PrefabAuthoringAlpha_GAC() });
+            _index.ReplaceOverrides(new[] { Override("invalid-base", 99) });
+            var instance = Instance("invalid-base", 99);
+            LogAssert.Expect(LogType.Error, new Regex("Prefab 'override-source'.*Using an empty GameAsset definition"));
+            LogAssert.Expect(LogType.Error, new Regex("Prefab instance override 'invalid-base'.*Using base GameAsset definition"));
+            Assert.That(PrefabGameAssetDefinitions.TryPrepare(_index, out _definitions, out var error), Is.True, error);
+            Assert.That(_definitions.TryGetAsset(_source, out var fallback), Is.True);
+            Assert.That(_definitions.TryGetAsset(instance, out var resolved), Is.True);
+            Assert.That(resolved, Is.SameAs(fallback));
+            Assert.That(resolved.Components, Is.Empty);
+            var templates = Templates();
+            try
+            {
+                var library = GameAssetLibraryLockBuilder.Build(templates, Array.Empty<ModPackage>(), _definitions);
+                Assert.That(RuntimeSessionAssetCatalog.FromLock(library).ManifestEntries.Count, Is.EqualTo(1));
+                Assert.That(_definitions.TryResolveReference(instance, out var reference), Is.True);
+                Assert.That(GameAssetDerivedIdentity.IsDerived(reference.RequestedKey), Is.False);
+            }
+            finally
+            {
+                templates.Clear();
+            }
+        }
+
+        private void AssertBaseFallbackWithHealthyOverride(PrefabGameAssetOverrideEntry broken)
+        {
+            _index.ReplaceOverrides(new[] { broken, Override("healthy-instance", 25) });
+            var invalidInstance = Instance(broken.Id, 99);
+            var healthyInstance = Instance("healthy-instance", 25);
+            LogAssert.Expect(LogType.Error, new Regex("Prefab instance override '" + broken.Id + "'.*Using base GameAsset definition"));
+            Assert.That(PrefabGameAssetDefinitions.TryPrepare(_index, out _definitions, out var error), Is.True, error);
+            Assert.That(error, Is.Null);
+            var templates = Templates();
+            try
+            {
+                var library = GameAssetLibraryLockBuilder.Build(templates, Array.Empty<ModPackage>(), _definitions);
+                Assert.That(_definitions.TryGetAsset(_source, out var baseAsset), Is.True);
+                Assert.That(_definitions.TryGetAsset(invalidInstance, out var fallback), Is.True);
+                Assert.That(fallback, Is.SameAs(baseAsset));
+                Assert.That(((PrefabAuthoringAlpha_GAC)fallback.Components.Single()).Value, Is.EqualTo(5));
+                Assert.That(_definitions.TryResolveReference(invalidInstance, out var reference), Is.True);
+                Assert.That(reference.RequestedKey.Key, Is.EqualTo(_sourceGuid));
+                Assert.That(GameAssetDerivedIdentity.IsDerived(reference.RequestedKey), Is.False);
+                Assert.That(_definitions.TryGetAsset(healthyInstance, out var healthy), Is.True);
+                Assert.That(((PrefabAuthoringAlpha_GAC)healthy.Components.Single()).Value, Is.EqualTo(25));
+                Assert.That(RuntimeSessionAssetCatalog.FromLock(library).ManifestEntries.Count, Is.EqualTo(2));
+                Assert.That(((PrefabAuthoringAlpha_GAC)_source.Components.Single()).Value, Is.EqualTo(5));
+                _definitions.Dispose();
+                Assert.That(fallback == null && healthy == null, Is.True);
+                Assert.That(_source != null, Is.True);
+            }
+            finally
+            {
+                templates.Clear();
+            }
         }
 
         private GameAssetAuthoring Instance(string id, int value)

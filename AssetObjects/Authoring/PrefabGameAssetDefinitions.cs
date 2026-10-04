@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
 using DingoGameObjectsCMS.AssetLibrary.Manifest;
@@ -8,6 +9,7 @@ using DingoGameObjectsCMS.RuntimeObjects.Overrides;
 using DingoGameObjectsCMS.AssetLibrary;
 using DingoGameObjectsCMS.Serialization;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using UnityEngine;
 using Object = UnityEngine.Object;
 
@@ -77,13 +79,10 @@ namespace DingoGameObjectsCMS.AssetObjects.Authoring
                         return false;
                     }
                     if (!GameAssetAuthoringCollector.TryCollect(entry.Authoring, out var collection, out var collectionError))
-                    {
-                        error = $"Prefab '{entry.Authoring.name}' ({entry.GUID}): {collectionError}";
-                        return false;
-                    }
+                        Debug.LogError($"Prefab '{entry.Authoring.name}' ({entry.GUID}): {collectionError} Using an empty GameAsset definition.", entry.Authoring);
 
                     var key = new GameAssetKey(MOD, TYPE, entry.GUID, VERSION);
-                    var asset = CloneDefinition(entry.Authoring, collection.Components, key, guid);
+                    var asset = CloneDefinition(entry.Authoring, collection?.Components ?? Array.Empty<GameAssetComponent>(), key, guid);
                     prepared._assets.Add(entry.Authoring, asset);
                     prepared._references.Add(entry.Authoring, new GameAssetReference(key));
                     prepared._sourcesByGuid.Add(entry.GUID, entry.Authoring);
@@ -91,31 +90,16 @@ namespace DingoGameObjectsCMS.AssetObjects.Authoring
                 var overrideIds = new HashSet<string>(StringComparer.Ordinal);
                 foreach (var entry in index.Overrides ?? Array.Empty<PrefabGameAssetOverrideEntry>())
                 {
-                    if (entry == null || string.IsNullOrWhiteSpace(entry.Id) || !overrideIds.Add(entry.Id) || entry.Source == null || !prepared._assets.TryGetValue(entry.Source, out var source) || entry.Components == null)
+                    if (entry == null || string.IsNullOrWhiteSpace(entry.Id) || !overrideIds.Add(entry.Id) || entry.Source == null || !prepared._assets.TryGetValue(entry.Source, out var source))
                     {
-                        error = "A prefab GameAsset override requires a unique instance id, an indexed source prefab and effective components.";
+                        error = "A prefab GameAsset override requires a unique instance id and an indexed source prefab.";
                         return false;
                     }
-                    var types = new HashSet<Type>(source.Components.Select(component => component.GetType()));
-                    var effectiveTypes = new HashSet<Type>();
-                    foreach (var component in entry.Components)
+                    if (!TryReadOverride(entry, source, out var overrides, out var overrideError))
                     {
-                        if (component == null || !effectiveTypes.Add(component.GetType()))
-                        {
-                            error = $"Prefab instance override '{entry.Id}' contains a null or repeated GAC type.";
-                            return false;
-                        }
-                    }
-                    if (!types.SetEquals(effectiveTypes))
-                    {
-                        error = $"Prefab instance override '{entry.Id}' changes the source GAC composition.";
-                        return false;
-                    }
-                    var overrides = JsonConvert.DeserializeObject<GameAssetOverrides>(entry.OverridesJson, GameAssetJson.DataSettings);
-                    if (overrides?.HasAny != true)
-                    {
-                        error = $"Prefab instance override '{entry.Id}' has no effective value overrides.";
-                        return false;
+                        Debug.LogError($"Prefab instance override '{entry.Id}' of '{entry.Source.name}': {overrideError} Using base GameAsset definition '{source.Key}'.", entry.Source);
+                        prepared._overrideAssets.Add(entry.Id, source);
+                        continue;
                     }
                     var asset = CloneDefinition(entry.Source, entry.Components, source.Key, source.GUID);
                     asset.SourceAssetKey = source.Key;
@@ -237,6 +221,127 @@ namespace DingoGameObjectsCMS.AssetObjects.Authoring
             {
                 DestroyDefinition(source);
             }
+        }
+
+        private static bool TryReadOverride(PrefabGameAssetOverrideEntry entry, GameAsset source, out GameAssetOverrides overrides, out string error)
+        {
+            overrides = null;
+            error = null;
+            if (entry.Components == null)
+                error = "The effective component snapshot is missing.";
+            else
+            {
+                var types = new HashSet<Type>(source.Components.Select(component => component.GetType()));
+                var effectiveTypes = new HashSet<Type>();
+                foreach (var component in entry.Components)
+                {
+                    if (component == null || !effectiveTypes.Add(component.GetType()))
+                    {
+                        error = "The effective snapshot contains a null or repeated GAC type.";
+                        break;
+                    }
+                }
+                if (error == null && !types.SetEquals(effectiveTypes))
+                    error = "The effective snapshot changes the source GAC composition.";
+                if (error == null && types.Count == 0)
+                    error = "The source definition has no components to override.";
+            }
+            if (error != null)
+                return false;
+            if (string.IsNullOrWhiteSpace(entry.OverridesJson))
+            {
+                error = "The value overrides JSON is missing.";
+                return false;
+            }
+            try
+            {
+                overrides = JsonConvert.DeserializeObject<GameAssetOverrides>(entry.OverridesJson, GameAssetJson.DataSettings);
+            }
+            catch (JsonException exception)
+            {
+                Debug.LogException(exception, entry.Source);
+                error = "The value overrides JSON is invalid: " + exception.Message;
+                return false;
+            }
+            if (overrides?.HasAny != true)
+            {
+                error = "The snapshot has no effective value overrides.";
+                return false;
+            }
+            try
+            {
+                return TryValidateOverrideShape(source, overrides, out error);
+            }
+            catch (Exception exception) when (exception is JsonException || exception is InvalidDataException)
+            {
+                Debug.LogException(exception, entry.Source);
+                error = "The value overrides structure is invalid: " + exception.Message;
+                return false;
+            }
+        }
+
+        private static bool TryValidateOverrideShape(GameAsset source, GameAssetOverrides overrides, out string error)
+        {
+            error = null;
+            var serializer = JsonSerializer.Create(GameAssetJson.Settings);
+            serializer.TypeNameHandling = TypeNameHandling.None;
+            serializer.NullValueHandling = NullValueHandling.Include;
+            var components = new JArray();
+            var byAlias = new Dictionary<string, JObject>(StringComparer.Ordinal);
+            foreach (var component in source.Components)
+            {
+                serializer.SerializationBinder.BindToName(component.GetType(), out _, out var alias);
+                var value = JObject.FromObject(component, serializer);
+                value[GameAssetDocumentComposer.TYPE_PROPERTY] = alias;
+                byAlias.Add(alias, value);
+                components.Add(value);
+            }
+            var assigned = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var component in overrides.OverrideComponents ?? new List<JObject>())
+            {
+                var type = component?[GameAssetDocumentComposer.TYPE_PROPERTY];
+                if (type?.Type != JTokenType.String || !byAlias.TryGetValue(type.Value<string>(), out var original))
+                {
+                    error = "A component override requires a known source '$type'.";
+                    return false;
+                }
+                if (!assigned.Add(type.Value<string>()))
+                {
+                    error = "A component is overridden more than once.";
+                    return false;
+                }
+                foreach (var property in component.Properties())
+                {
+                    if (property.Name != GameAssetDocumentComposer.TYPE_PROPERTY && original.Property(property.Name) == null)
+                    {
+                        error = "A component override contains an unknown field: " + property.Name;
+                        return false;
+                    }
+                }
+            }
+            foreach (var path in (overrides.RemovedFields ?? new List<string>()).Concat(overrides.OverrideFields?.Keys ?? Enumerable.Empty<string>()))
+            {
+                var segments = path?.StartsWith("/", StringComparison.Ordinal) == true
+                    ? path[1..].Split('/').Select(segment => segment.Replace("~1", "/").Replace("~0", "~")).ToArray()
+                    : null;
+                if (segments is { Length: >= 2 } && byAlias.TryGetValue(segments[0], out var original) && original.Property(segments[1]) == null)
+                {
+                    error = "A field override targets an unknown source field: " + path;
+                    return false;
+                }
+            }
+            var document = new JObject { [GameAssetDocumentComposer.COMPONENTS_PROPERTY] = components };
+            var effective = GameAssetDocumentComposer.ApplyOverrides(source.Key, document, overrides);
+            var effectiveTypes = effective[GameAssetDocumentComposer.COMPONENTS_PROPERTY] is JArray values
+                ? values.Select(value => value is JObject component && component[GameAssetDocumentComposer.TYPE_PROPERTY]?.Type == JTokenType.String ? component[GameAssetDocumentComposer.TYPE_PROPERTY].Value<string>() : null).ToArray()
+                : Array.Empty<string>();
+            if (effectiveTypes.Length != byAlias.Count || !byAlias.Keys.ToHashSet(StringComparer.Ordinal).SetEquals(effectiveTypes))
+            {
+                error = "The value overrides change the source GAC composition.";
+                return false;
+            }
+            GameAssetDocumentComposer.CanonicalizeOverrides(overrides);
+            return true;
         }
 
         private static bool TryParseGuid(string value, out Hash128 guid)

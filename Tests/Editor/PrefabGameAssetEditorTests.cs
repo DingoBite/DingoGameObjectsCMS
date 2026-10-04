@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.RegularExpressions;
 using DingoGameObjectsCMS.AssetLibrary.Manifest;
 using DingoGameObjectsCMS.AssetObjects;
 using DingoGameObjectsCMS.AssetObjects.Authoring;
@@ -154,7 +155,8 @@ namespace DingoGameObjectsCMS.Tests.Editor
                 Assert.That(GameAssetAuthoringEditorUtility.TryCollect(authoring, out _, out var error), Is.False);
                 Assert.That(error, Is.Not.Empty);
                 Assert.That(PrefabGameAssetBuildValidation.CollectErrors().Any(message => message.Contains("manual-child.prefab") && message.Contains("manual child")), Is.True);
-                Assert.Throws<BuildFailedException>(() => PrefabGameAssetBuildValidation.Validate());
+                LogAssert.Expect(LogType.Error, new Regex(@"\[Prefab GameAsset content\].*manual-child\.prefab.*manual child.*Fallback:.*safe Try\*"));
+                Assert.DoesNotThrow(() => PrefabGameAssetBuildValidation.Validate());
             }
             finally
             {
@@ -252,13 +254,132 @@ namespace DingoGameObjectsCMS.Tests.Editor
         }
 
         [Test]
-        public void InvalidRootDefinitionRemainsIndexedButBlocksValidation()
+        public void CandidatesSkipUnrelatedSavedSceneButFindPlainAuthoringWithoutIndexedDefinitions()
+        {
+            var originalActiveScene = SceneManager.GetActiveScene();
+            var mode = string.IsNullOrEmpty(originalActiveScene.path) ? NewSceneMode.Single : NewSceneMode.Additive;
+            var testScene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, mode);
+            var unrelatedPath = _assets.Folder + "/unrelated.unity";
+            var invalidPath = _assets.Folder + "/plain-authoring.unity";
+            try
+            {
+                var root = new GameObject("plain-authoring");
+                SceneManager.MoveGameObjectToScene(root, testScene);
+                Assert.That(EditorSceneManager.SaveScene(testScene, unrelatedPath), Is.True);
+                root.AddComponent<GameAssetAuthoring>().SetComponents(new[] { new PrefabAuthoringAlpha_GAC() });
+                Assert.That(EditorSceneManager.SaveScene(testScene, invalidPath), Is.True);
+            }
+            finally
+            {
+                if (SceneManager.sceneCount > 1)
+                {
+                    EditorSceneManager.CloseScene(testScene, true);
+                    if (originalActiveScene.IsValid() && originalActiveScene.isLoaded)
+                        SceneManager.SetActiveScene(originalActiveScene);
+                }
+                else
+                    EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
+            }
+            var entries = PrefabGameAssetIndexEditorUtility.CollectEntries();
+            Assert.That(entries, Is.Empty);
+            var candidates = PrefabGameAssetOverrideEditorUtility.CollectHierarchyAssetPaths(entries);
+            Assert.That(candidates, Does.Not.Contain(unrelatedPath));
+            Assert.That(candidates, Does.Contain(invalidPath));
+            LogAssert.Expect(LogType.Error, new Regex(@"\[Prefab GameAsset content\].*plain-authoring\.unity.*source GUID 'unresolved'.*plain scene objects.*Fallback:.*safe Try\*"));
+            var index = PrefabGameAssetIndexEditorUtility.Reconcile();
+            Assert.That(index.Entries, Is.Empty);
+            Assert.That(index.Overrides, Is.Empty);
+            LogAssert.NoUnexpectedReceived();
+        }
+
+        [Test]
+        public void CandidatesFindInvalidChildOnlyPrefabWithoutIndexedDefinitionsAndClearStaleMetadata()
+        {
+            var root = new GameObject("child-only");
+            var path = _assets.Folder + "/child-only.prefab";
+            try
+            {
+                var child = new GameObject("invalid-child");
+                child.transform.SetParent(root.transform);
+                var authoring = child.AddComponent<GameAssetAuthoring>();
+                authoring.SetComponents(new[] { new PrefabAuthoringAlpha_GAC() });
+                authoring.SetRuntimeDefinitionSource("obsolete-source-guid", "obsolete-instance-id");
+                PrefabUtility.SaveAsPrefabAsset(root, path);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+            var entries = PrefabGameAssetIndexEditorUtility.CollectEntries();
+            Assert.That(entries, Is.Empty);
+            Assert.That(PrefabGameAssetOverrideEditorUtility.CollectHierarchyAssetPaths(entries), Does.Contain(path));
+            LogAssert.Expect(LogType.Error, new Regex(@"\[Prefab GameAsset content\].*child-only\.prefab.*invalid-child.*source GUID 'unresolved'.*Fallback:.*safe Try\*"));
+            var index = PrefabGameAssetIndexEditorUtility.Reconcile();
+            Assert.That(index.Entries, Is.Empty);
+            Assert.That(index.Overrides, Is.Empty);
+            var saved = AssetDatabase.LoadAssetAtPath<GameObject>(path).GetComponentInChildren<GameAssetAuthoring>(true);
+            Assert.That(saved.SourceDefinitionGuid, Is.Null.Or.Empty);
+            Assert.That(saved.RuntimeOverrideId, Is.Null.Or.Empty);
+            LogAssert.NoUnexpectedReceived();
+        }
+
+        [Test]
+        public void InvalidRootDefinitionRemainsIndexedAndReportsInertFallbackWithoutBlockingPreparation()
         {
             var authoring = _assets.CreatePrefab("invalid-root", new GameAssetComponent[] { new PrefabAuthoringBeta_GAC(), new PrefabAuthoringBeta_GAC() });
+            var diagnostic = new Regex(@"\[Prefab GameAsset content\].*invalid-root\.prefab.*source GUID '[a-f0-9]{32}'.*PrefabAuthoringBeta_GAC.*Fallback: an empty inert definition");
+            LogAssert.Expect(LogType.Error, diagnostic);
             var index = PrefabGameAssetIndexEditorUtility.Reconcile();
             Assert.That(index.Entries.Single().Authoring, Is.SameAs(authoring));
             Assert.That(PrefabGameAssetBuildValidation.CollectErrors().Any(error => error.Contains("invalid-root.prefab") && error.Contains(nameof(PrefabAuthoringBeta_GAC))), Is.True);
-            Assert.Throws<BuildFailedException>(() => PrefabGameAssetBuildValidation.Validate());
+            LogAssert.Expect(LogType.Error, diagnostic);
+            Assert.DoesNotThrow(() => new PrefabGameAssetBuildProcessor().PrepareForBuild(null));
+            LogAssert.NoUnexpectedReceived();
+        }
+
+        [Test]
+        public void RejectedSavedInstanceUsesSourceDefinitionAndOneDiagnosticInReconcileAndBuild()
+        {
+            var source = _assets.CreatePrefab("fallback-source", new[] { new PrefabAuthoringAlpha_GAC { Value = 5 } });
+            PrefabGameAssetIndexEditorUtility.Reconcile();
+            var sourceGuid = AssetDatabase.AssetPathToGUID(AssetDatabase.GetAssetPath(source));
+            var container = new GameObject("rejected-instance");
+            var containerPath = _assets.Folder + "/rejected-instance.prefab";
+            try
+            {
+                var instance = (GameObject)PrefabUtility.InstantiatePrefab(source.gameObject);
+                instance.transform.SetParent(container.transform);
+                var authoring = instance.GetComponent<GameAssetAuthoring>();
+                authoring.SetComponents(new GameAssetComponent[] { new PrefabAuthoringAlpha_GAC { Value = 25 }, new PrefabAuthoringBeta_GAC() });
+                authoring.SetRuntimeDefinitionSource(sourceGuid, "obsolete-valid-instance-id");
+                PrefabUtility.RecordPrefabInstancePropertyModifications(authoring);
+                PrefabUtility.SaveAsPrefabAsset(container, containerPath);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(container);
+            }
+            var diagnostic = new Regex(@"\[Prefab GameAsset content\].*rejected-instance\.prefab.*source GUID '" + sourceGuid + @"'.*cannot add or remove manual GAC.*Fallback: the source prefab definition");
+            LogAssert.Expect(LogType.Error, diagnostic);
+            var index = PrefabGameAssetIndexEditorUtility.Reconcile();
+            LogAssert.NoUnexpectedReceived();
+            Assert.That(index.Overrides, Is.Empty);
+            var saved = AssetDatabase.LoadAssetAtPath<GameObject>(containerPath).GetComponentInChildren<GameAssetAuthoring>(true);
+            Assert.That(saved.SourceDefinitionGuid, Is.EqualTo(sourceGuid));
+            Assert.That(saved.RuntimeOverrideId, Is.Null.Or.Empty);
+            Assert.That(PrefabGameAssetDefinitions.TryPrepare(index, out var definitions, out var error), Is.True, error);
+            using (definitions)
+            {
+                Assert.That(definitions.TryGetAsset(saved, out var fallback), Is.True);
+                Assert.That(((PrefabAuthoringAlpha_GAC)fallback.Components.Single()).Value, Is.EqualTo(5));
+                Assert.That(fallback.GUID, Is.EqualTo(Hash128.Parse(sourceGuid)));
+            }
+            var hash = index.Entries.Single().ContentHash;
+            LogAssert.Expect(LogType.Error, diagnostic);
+            Assert.DoesNotThrow(() => new PrefabGameAssetBuildProcessor().PrepareForBuild(null));
+            LogAssert.NoUnexpectedReceived();
+            Assert.That(index.Entries.Single().ContentHash, Is.EqualTo(hash));
+            Assert.That(index.Overrides, Is.Empty);
         }
 
         [Test]
@@ -379,11 +500,13 @@ namespace DingoGameObjectsCMS.Tests.Editor
                     EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
             }
             Assert.That(EditorBuildSettings.scenes.Any(scene => scene.path == scenePath), Is.False);
+            Assert.That(PrefabGameAssetOverrideEditorUtility.CollectHierarchyAssetPaths(Array.Empty<PrefabGameAssetIndexEntry>()), Does.Contain(scenePath));
             var before = EditorSceneManager.GetSceneManagerSetup();
             var dirtyBefore = Enumerable.Range(0, SceneManager.sceneCount).Select(index => SceneManager.GetSceneAt(index).isDirty).ToArray();
             var errors = PrefabGameAssetBuildValidation.CollectErrors();
             Assert.That(errors.Any(error => error.Contains(scenePath) && error.Contains("scene-definition")), Is.True);
-            Assert.Throws<BuildFailedException>(() => PrefabGameAssetBuildValidation.Validate());
+            LogAssert.Expect(LogType.Error, new Regex(@"\[Prefab GameAsset content\].*outside-build-settings\.unity.*scene-definition.*Fallback: the source prefab definition"));
+            Assert.DoesNotThrow(() => PrefabGameAssetBuildValidation.Validate());
             var after = EditorSceneManager.GetSceneManagerSetup();
             Assert.That(after.Select(scene => (scene.path, scene.isLoaded, scene.isActive)), Is.EqualTo(before.Select(scene => (scene.path, scene.isLoaded, scene.isActive))));
             Assert.That(Enumerable.Range(0, SceneManager.sceneCount).Select(index => SceneManager.GetSceneAt(index).isDirty), Is.EqualTo(dirtyBefore));

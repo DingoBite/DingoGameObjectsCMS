@@ -23,8 +23,6 @@ namespace DingoGameObjectsCMS.Editor.Authoring
         public static IReadOnlyList<PrefabGameAssetOverrideEntry> CollectOverrides(IReadOnlyList<PrefabGameAssetIndexEntry> entries, PrefabGameAssetContentHashCache hashCache = null)
         {
             var result = new List<PrefabGameAssetOverrideEntry>();
-            if (entries.Count == 0)
-                return result;
             hashCache ??= new PrefabGameAssetContentHashCache();
             var paths = CollectHierarchyAssetPaths(entries);
             foreach (var path in paths.Where(path => path.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase)))
@@ -63,9 +61,8 @@ namespace DingoGameObjectsCMS.Editor.Authoring
 
         public static IReadOnlyList<string> CollectHierarchyAssetPaths(IReadOnlyList<PrefabGameAssetIndexEntry> entries)
         {
-            if (entries.Count == 0)
-                return Array.Empty<string>();
-            var scriptPath = AssetDatabase.GetAssetPath(MonoScript.FromMonoBehaviour(entries[0].Authoring));
+            var script = entries.Count > 0 ? MonoScript.FromMonoBehaviour(entries[0].Authoring) : MonoImporter.GetAllRuntimeMonoScripts().First(candidate => candidate.GetClass() == typeof(GameAssetAuthoring));
+            var scriptPath = AssetDatabase.GetAssetPath(script);
             var candidates = AssetDatabase.FindAssets("t:Prefab t:Scene", new[] { "Assets" }).Select(AssetDatabase.GUIDToAssetPath).Where(PrefabGameAssetIndexConfiguration.Includes).Distinct(StringComparer.Ordinal).OrderBy(path => path, StringComparer.Ordinal).ToArray();
             var relevant = new HashSet<string>(entries.Select(entry => AssetDatabase.GetAssetPath(entry.Authoring)), StringComparer.Ordinal);
             var relevantPending = new Queue<string>(relevant);
@@ -118,7 +115,10 @@ namespace DingoGameObjectsCMS.Editor.Authoring
                 foreach (var authoring in root.GetComponentsInChildren<GameAssetAuthoring>(true))
                 {
                     if (!GameAssetAuthoringEditorUtility.TryGetDefinition(authoring, out var source, out var sourceGuid, out _))
+                    {
+                        changed |= authoring.SetRuntimeDefinitionSource(null);
                         continue;
+                    }
                     var hasOverride = TryGetRecordId(authoring, scene.path, out var recordId) && records.TryGetValue(recordId, out var record) && record.Source == source;
                     changed |= authoring.SetRuntimeDefinitionSource(sourceGuid, hasOverride ? recordId : null);
                 }
@@ -227,7 +227,12 @@ namespace DingoGameObjectsCMS.Editor.Authoring
             foreach (var authoring in root.GetComponentsInChildren<GameAssetAuthoring>(true))
             {
                 if (!TryCreateOverride(authoring, path, out var entry, out var sourceGuid, out _, hashCache, entries != null))
-                    continue;
+                {
+                    // Validation reports the rejected content once. Do not retain an older valid override's identity.
+                    if (!GameAssetAuthoringEditorUtility.TryGetDefinition(authoring, out _, out sourceGuid, out _))
+                        sourceGuid = null;
+                    entry = null;
+                }
                 if (entry != null)
                     entries?.Add(entry);
                 if (bake && authoring.SetRuntimeDefinitionSource(sourceGuid, entry?.Id))
