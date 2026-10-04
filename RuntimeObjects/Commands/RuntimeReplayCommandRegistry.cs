@@ -144,6 +144,15 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Commands
         public string CatalogHash { get; private set; }
         public int Count => _registrationsById.Count;
 
+        public bool ContainsComponentType(Type componentType)
+        {
+            if (componentType == null)
+            {
+                throw new ArgumentNullException(nameof(componentType));
+            }
+            return _registrationsByComponentType.ContainsKey(componentType);
+        }
+
         public void Register<TCommandComponent>(
             uint typeId,
             string stableKey,

@@ -525,6 +525,14 @@ Why it matters:
 - commands use the same component language as objects;
 - spawn/change logic can be expressed with the same data-oriented primitives as the runtime world.
 
+[`RuntimeReplayCommandRegistry.ContainsComponentType(Type)`](RuntimeObjects/Commands/RuntimeReplayCommandRegistry.cs)
+queries the existing registration by exact CLR component type, including before
+the registry is sealed. It does not match a base type to a registered derived
+type, execute codecs, instantiate commands or change the catalog. A null type
+is rejected. Host Editor/build checks may use it with their explicit assembly
+and namespace scope to require replay coverage. This read-only query does not
+change generic SDK live command admission or replay store-scope handling.
+
 ## Modding and external asset packs
 
 `GameAssetLibraryManifest` mounts the asset library directly from the filesystem:
