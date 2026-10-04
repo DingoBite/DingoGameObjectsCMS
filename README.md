@@ -329,6 +329,25 @@ finish before capacity changes, reset, preparation or disposal. This storage
 mechanism does not choose entity queries, state authority, validation policy or
 a cold wire format.
 
+`RuntimeReplayOwnedStorage(order)` declares a public readonly storage field for
+the Editor-only `RuntimeReplayOwnedStorageLifecycleGenerator`. Its explicit
+profile supplies the owner `Type`, output path and cleanup policy. The owner is
+a public concrete top-level non-generic `IDisposable` class with a public
+parameterless constructor, `Reset()` and `Dispose()`. Marked storage has the same
+constructor and method contract; every `RuntimeReplayNativeRows<T>` field must
+be declared. The generated partial owns only the constructor, reset and disposal
+with direct typed calls in declaration order. Queries, capacity and gameplay
+validation remain with the owner, and jobs must finish before lifecycle calls.
+`AggregateFailures` attempts every cleanup and retains nested cleanup failures
+and initialization failures. `FailFast` stops at the first cleanup failure;
+during constructor cleanup that failure replaces the initialization exception.
+Generation validates and emits the whole explicit profile batch before writing.
+`AreOutputsCurrent` checks source without writing; `GenerateAndWrite` reuses
+unchanged bytes and timestamps. Inherited, static, mutable, missing and duplicate
+storage declarations fail before output mutation. A product binding owns build
+ordering and stale-output rejection; lifecycle output carries `.Lifecycle.g.cs`
+provenance and must be regenerated rather than hand-edited.
+
 This is intentionally not a generic always-live two-way sync. Runtime data can stay authoritative in `RuntimeStore`, while high-frequency simulation can still move into DOTS when needed.
 
 ### Asset -> Runtime -> View
