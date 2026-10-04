@@ -83,9 +83,9 @@ namespace DingoGameObjectsCMS.AssetObjects.Authoring
                     error = $"GameAsset authoring '{authoring.name}' binding #{index + 1} requires both a source and a converter.";
                     return false;
                 }
-                if (binding.Source.gameObject != authoring.gameObject)
+                if (binding.Source.GetComponentInParent<GameAssetAuthoring>(true) != authoring)
                 {
-                    error = $"GameAsset authoring '{authoring.name}' binding #{index + 1} uses '{binding.Source.name}' outside its own GameObject.";
+                    error = $"GameAsset authoring '{authoring.name}' binding #{index + 1} uses '{binding.Source.name}' outside its owned hierarchy or below another GameAssetAuthoring.";
                     return false;
                 }
                 if (!assignedComponents.Add(binding.Source))

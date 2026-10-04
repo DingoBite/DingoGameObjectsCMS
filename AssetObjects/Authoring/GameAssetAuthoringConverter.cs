@@ -10,6 +10,9 @@ namespace DingoGameObjectsCMS.AssetObjects.Authoring
     {
         public abstract Type SourceComponentType { get; }
 
+        // Editor composition prepares derived runtime resource identity; invalidate unusable metadata before a preparation failure.
+        public virtual bool Prepare(Component source, Func<UnityEngine.Object, string> resourceGuid) => false;
+
         public abstract IReadOnlyList<GameAssetComponent> Convert(Component source);
     }
 

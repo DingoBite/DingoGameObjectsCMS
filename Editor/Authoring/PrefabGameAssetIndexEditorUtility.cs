@@ -85,11 +85,14 @@ namespace DingoGameObjectsCMS.Editor.Authoring
                 }
                 var roots = CollectEntries(false, null);
                 PrefabGameAssetOverrideEditorUtility.BakeSavedAssets(roots.Select(entry => AssetDatabase.GetAssetPath(entry.Authoring)));
+                roots = CollectEntries(false, null);
                 // Play, ordinary reconciliation and builds use the same content diagnostics and fallback policy.
                 PrefabGameAssetBuildValidation.Validate();
                 var hashCache = new PrefabGameAssetContentHashCache();
                 var overrides = PrefabGameAssetOverrideEditorUtility.CollectOverrides(roots, hashCache);
-                var refreshedRoots = roots.Select(entry => new PrefabGameAssetIndexEntry(entry.GUID, entry.Authoring, PrefabGameAssetContentHashUtility.Compute(AssetDatabase.GUIDToAssetPath(entry.GUID), hashCache)));
+                var refreshedRoots = CollectEntries(true, hashCache);
+                // Prefab saves can reimport dependent assets, including this index.
+                index = AssetDatabase.LoadAssetAtPath<PrefabGameAssetIndex>(path);
                 var changed = index.ReplaceEntries(refreshedRoots);
                 changed |= index.ReplaceOverrides(overrides);
                 if (changed)

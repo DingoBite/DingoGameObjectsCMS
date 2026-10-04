@@ -307,6 +307,106 @@ namespace DingoGameObjectsCMS.Tests.Editor
             Assert.That(RuntimeSessionAssetCatalog.FromLock(library).ManifestEntries.Count, Is.EqualTo(2));
         }
 
+        [Test]
+        public void ProcessedSceneRootKeepsIndexedBakedIdentityAfterPrefabConnectionIsRemoved()
+        {
+            var source = _assets.CreatePrefab("processed-root-source", new[] { new PrefabAuthoringAlpha_GAC { Value = 5 } });
+            var index = PrefabGameAssetIndexEditorUtility.Reconcile();
+            var definitions = Prepare(index);
+            var sourceGuid = AssetDatabase.AssetPathToGUID(AssetDatabase.GetAssetPath(source));
+            var scene = EditorSceneManager.NewPreviewScene();
+            try
+            {
+                var instance = (GameObject)PrefabUtility.InstantiatePrefab(source.gameObject, scene);
+                var authoring = UnpackForSceneProcessing(instance);
+                Assert.That(authoring.SourceDefinitionGuid, Is.EqualTo(sourceGuid));
+                Assert.That(PrefabGameAssetOverrideEditorUtility.ApplyIndexedSceneMetadata(scene, index), Is.False);
+                Assert.That(authoring.SourceDefinitionGuid, Is.EqualTo(sourceGuid));
+                Assert.That(authoring.RuntimeOverrideId, Is.Null.Or.Empty);
+                Assert.That(definitions.TryResolveReference(authoring, out var reference), Is.True);
+                Assert.That(reference.RequestedKey.Key, Is.EqualTo(sourceGuid));
+                Assert.That(definitions.TryGetAsset(authoring, out var asset), Is.True);
+                Assert.That(((PrefabAuthoringAlpha_GAC)asset.Components.Single()).Value, Is.EqualTo(5));
+            }
+            finally
+            {
+                EditorSceneManager.ClosePreviewScene(scene);
+            }
+        }
+
+        [Test]
+        public void ProcessedSceneOverrideKeepsIndexedBakedIdentityAfterPrefabConnectionIsRemoved()
+        {
+            var source = _assets.CreatePrefab("processed-override-source", new[] { new PrefabAuthoringAlpha_GAC { Value = 5 } });
+            var prefabPath = AssetDatabase.GetAssetPath(source);
+            PrefabGameAssetIndexEditorUtility.Reconcile();
+            var scenePath = _assets.Folder + "/processed-override.unity";
+            var overrideId = SaveInstanceScene(prefabPath, scenePath, authoring => ((PrefabAuthoringAlpha_GAC)authoring.Components.Single()).Value = 25);
+            var index = PrefabGameAssetIndexEditorUtility.Reconcile();
+            var definitions = Prepare(index);
+            GameAssetLibraryLockBuilder.Build(Templates(), Array.Empty<ModPackage>(), definitions);
+            var sourceGuid = AssetDatabase.AssetPathToGUID(prefabPath);
+            var scene = EditorSceneManager.OpenPreviewScene(scenePath);
+            try
+            {
+                var authoring = UnpackForSceneProcessing(scene.GetRootGameObjects().Single());
+                Assert.That(authoring.SourceDefinitionGuid, Is.EqualTo(sourceGuid));
+                Assert.That(authoring.RuntimeOverrideId, Is.EqualTo(overrideId));
+                Assert.That(PrefabGameAssetOverrideEditorUtility.ApplyIndexedSceneMetadata(scene, index), Is.False);
+                Assert.That(authoring.SourceDefinitionGuid, Is.EqualTo(sourceGuid));
+                Assert.That(authoring.RuntimeOverrideId, Is.EqualTo(overrideId));
+                Assert.That(definitions.TryResolveReference(authoring, out var reference), Is.True);
+                Assert.That(GameAssetDerivedIdentity.IsDerived(reference.RequestedKey), Is.True);
+                Assert.That(definitions.TryGetAsset(authoring, out var asset), Is.True);
+                Assert.That(((PrefabAuthoringAlpha_GAC)asset.Components.Single()).Value, Is.EqualTo(25));
+            }
+            finally
+            {
+                EditorSceneManager.ClosePreviewScene(scene);
+            }
+        }
+
+        [TestCase("MissingSource")]
+        [TestCase("MissingOverride")]
+        [TestCase("WrongOverrideSource")]
+        public void ProcessedSceneDoesNotPreserveBakedIdentityOutsideItsIndexedSourceAndOverride(string invalidIdentity)
+        {
+            var source = _assets.CreatePrefab("processed-invalid-source", new[] { new PrefabAuthoringAlpha_GAC { Value = 5 } });
+            var otherSource = _assets.CreatePrefab("processed-other-source", new[] { new PrefabAuthoringAlpha_GAC { Value = 10 } });
+            var prefabPath = AssetDatabase.GetAssetPath(source);
+            PrefabGameAssetIndexEditorUtility.Reconcile();
+            var scenePath = _assets.Folder + "/processed-invalid.unity";
+            var overrideId = SaveInstanceScene(prefabPath, scenePath, authoring => ((PrefabAuthoringAlpha_GAC)authoring.Components.Single()).Value = 25);
+            var index = PrefabGameAssetIndexEditorUtility.Reconcile();
+            var definitions = Prepare(index);
+            GameAssetLibraryLockBuilder.Build(Templates(), Array.Empty<ModPackage>(), definitions);
+            var scene = EditorSceneManager.OpenPreviewScene(scenePath);
+            try
+            {
+                var authoring = UnpackForSceneProcessing(scene.GetRootGameObjects().Single());
+                var sourceGuid = invalidIdentity == "MissingSource" ? Guid.NewGuid().ToString("N") : invalidIdentity == "WrongOverrideSource" ? AssetDatabase.AssetPathToGUID(AssetDatabase.GetAssetPath(otherSource)) : AssetDatabase.AssetPathToGUID(prefabPath);
+                authoring.SetRuntimeDefinitionSource(sourceGuid, invalidIdentity == "MissingOverride" ? "unindexed-override" : overrideId);
+                Assert.That(PrefabGameAssetOverrideEditorUtility.ApplyIndexedSceneMetadata(scene, index), Is.True);
+                Assert.That(authoring.SourceDefinitionGuid, Is.Null.Or.Empty);
+                Assert.That(authoring.RuntimeOverrideId, Is.Null.Or.Empty);
+                Assert.That(definitions.TryResolveReference(authoring, out _), Is.False);
+            }
+            finally
+            {
+                EditorSceneManager.ClosePreviewScene(scene);
+            }
+        }
+
+        private static GameAssetAuthoring UnpackForSceneProcessing(GameObject instance)
+        {
+            var authoring = instance.GetComponent<GameAssetAuthoring>();
+            Assert.That(PrefabUtility.GetCorrespondingObjectFromSource(authoring), Is.Not.Null);
+            PrefabUtility.UnpackPrefabInstance(instance, PrefabUnpackMode.Completely, InteractionMode.AutomatedAction);
+            Assert.That(PrefabUtility.GetCorrespondingObjectFromSource(authoring), Is.Null);
+            Assert.That(GameAssetAuthoringEditorUtility.TryGetDefinition(authoring, out _, out _, out _), Is.False);
+            return authoring;
+        }
+
         private PrefabGameAssetDefinitions Prepare(DingoGameObjectsCMS.AssetLibrary.Manifest.PrefabGameAssetIndex index)
         {
             Assert.That(PrefabGameAssetDefinitions.TryPrepare(index, out var definitions, out var error), Is.True, error);

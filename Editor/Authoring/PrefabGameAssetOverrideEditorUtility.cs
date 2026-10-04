@@ -116,6 +116,12 @@ namespace DingoGameObjectsCMS.Editor.Authoring
                 {
                     if (!GameAssetAuthoringEditorUtility.TryGetDefinition(authoring, out var source, out var sourceGuid, out _))
                     {
+                        // Processed scene copies can lose their prefab connections after authoring validation.
+                        // Preserve only baked identities whose source and optional override exist in this index.
+                        var bakedSource = string.IsNullOrEmpty(authoring.SourceDefinitionGuid) ? null : index.Entries.FirstOrDefault(entry => entry.GUID == authoring.SourceDefinitionGuid && entry.Authoring != null)?.Authoring;
+                        var bakedOverride = authoring.RuntimeOverrideId;
+                        if (PrefabUtility.GetCorrespondingObjectFromSource(authoring) == null && bakedSource != null && (string.IsNullOrEmpty(bakedOverride) || records.TryGetValue(bakedOverride, out var bakedRecord) && bakedRecord.Source == bakedSource))
+                            continue;
                         changed |= authoring.SetRuntimeDefinitionSource(null);
                         continue;
                     }
@@ -189,10 +195,16 @@ namespace DingoGameObjectsCMS.Editor.Authoring
                 foreach (var path in sourcePaths.Where(path => path.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase)))
                 {
                     var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(path);
-                    if (prefab != null && prefab.TryGetComponent<GameAssetAuthoring>(out var authoring) && authoring.SetRuntimeDefinitionSource(AssetDatabase.AssetPathToGUID(path)))
+                    if (prefab != null && prefab.TryGetComponent<GameAssetAuthoring>(out var authoring))
                     {
-                        EditorUtility.SetDirty(authoring);
-                        PrefabUtility.SavePrefabAsset(prefab);
+                        var changed = GameAssetAuthoringEditorUtility.PrepareConverters(authoring);
+                        changed |= authoring.SetRuntimeDefinitionSource(AssetDatabase.AssetPathToGUID(path));
+                        changed |= EditorUtility.IsDirty(authoring);
+                        if (changed)
+                        {
+                            EditorUtility.SetDirty(authoring);
+                            PrefabUtility.SavePrefabAsset(prefab);
+                        }
                     }
                 }
                 foreach (var path in sourcePaths)
@@ -226,6 +238,11 @@ namespace DingoGameObjectsCMS.Editor.Authoring
             var changed = false;
             foreach (var authoring in root.GetComponentsInChildren<GameAssetAuthoring>(true))
             {
+                if (bake)
+                {
+                    changed |= GameAssetAuthoringEditorUtility.PrepareConverters(authoring);
+                    changed |= EditorUtility.IsDirty(authoring);
+                }
                 if (!TryCreateOverride(authoring, path, out var entry, out var sourceGuid, out _, hashCache, entries != null))
                 {
                     // Validation reports the rejected content once. Do not retain an older valid override's identity.

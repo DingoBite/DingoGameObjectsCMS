@@ -70,6 +70,10 @@ namespace DingoGameObjectsCMS.Editor.Authoring
                 return false;
             if (!isDefinition && !TryValidateInstanceStructure(authoring, definition, out error))
                 return false;
+            if (!TryPrepareConverters(authoring, out _, out error))
+                return false;
+            if (!isDefinition && !TryPrepareConverters(definition, out _, out error))
+                return false;
             if (!GameAssetAuthoringCollector.TryCollect(authoring, out var effective, out error))
                 return false;
             if (!isDefinition)
@@ -89,6 +93,47 @@ namespace DingoGameObjectsCMS.Editor.Authoring
             collection = effective;
             return true;
         }
+
+        public static bool PrepareConverters(GameAssetAuthoring authoring)
+        {
+            if (!TryPrepareConverters(authoring, out var changed, out var error))
+                Debug.LogError(error, authoring);
+            return changed;
+        }
+
+        public static bool TryPrepareConverters(GameAssetAuthoring authoring, out bool changed, out string error)
+        {
+            changed = false;
+            error = null;
+            if (authoring == null || authoring.Converters == null)
+                return true;
+            for (var index = 0; index < authoring.Converters.Count; index++)
+            {
+                var binding = authoring.Converters[index];
+                if (binding?.Source == null || binding.Converter == null)
+                    continue;
+                try
+                {
+                    changed |= binding.Converter.Prepare(binding.Source, ResourceGuid);
+                }
+                catch (Exception exception)
+                {
+                    Debug.LogException(exception, authoring);
+                    error = $"GameAsset authoring '{authoring.name}' binding #{index + 1}: converter '{binding.Converter.GetType().FullName}' preparation failed: {exception.Message}";
+                    changed = true;
+                    break;
+                }
+            }
+            if (changed)
+            {
+                EditorUtility.SetDirty(authoring);
+                if (PrefabUtility.IsPartOfPrefabInstance(authoring))
+                    PrefabUtility.RecordPrefabInstancePropertyModifications(authoring);
+            }
+            return error == null;
+        }
+
+        private static string ResourceGuid(UnityEngine.Object resource) => resource == null ? null : AssetDatabase.AssetPathToGUID(AssetDatabase.GetAssetPath(resource));
 
         public static bool TryValidateInstanceStructure(GameAssetAuthoring instance, GameAssetAuthoring definition, out string error)
         {

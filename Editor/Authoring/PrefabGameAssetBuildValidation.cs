@@ -102,7 +102,7 @@ namespace DingoGameObjectsCMS.Editor.Authoring
                 }
                 if (isDefinition)
                 {
-                    if (!GameAssetAuthoringCollector.TryCollect(authoring, out _, out error))
+                    if (!GameAssetAuthoringEditorUtility.TryCollect(authoring, out _, out error))
                         errors.Add(ContentError(identity, guid, error, "an empty inert definition retaining the prefab key and GUID"));
                 }
                 else if (!PrefabGameAssetOverrideEditorUtility.TryCreateOverride(authoring, path, out _, out _, out error, hashCache))

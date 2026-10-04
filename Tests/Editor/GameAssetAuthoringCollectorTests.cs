@@ -149,13 +149,63 @@ namespace DingoGameObjectsCMS.Tests.Editor
             AssertFailure(nameof(PrefabAuthoringBeta_GAC));
         }
 
-        [Test]
-        public void ChildSourcesAreRejectedEvenWithCompatibleType()
+        [TestCase(false, false)]
+        [TestCase(false, true)]
+        [TestCase(true, false)]
+        [TestCase(true, true)]
+        public void OwnedDescendantSourcesPreserveTheirIdentityAndNativeValues(bool inactiveOwner, bool inactiveParent)
         {
-            var child = new GameObject("child");
-            child.transform.SetParent(_object.transform);
-            _authoring.SetConverters(new[] { new GameAssetAuthoringConverterBinding(child.transform, new PrefabAuthoringTransformConverter()) });
-            AssertFailure();
+            var parent = new GameObject("native hierarchy");
+            parent.transform.SetParent(_object.transform, false);
+            var child = new GameObject("native source");
+            child.transform.SetParent(parent.transform, false);
+            child.transform.localPosition = new Vector3(11, 0, 0);
+            parent.SetActive(!inactiveParent);
+            _object.SetActive(!inactiveOwner);
+            var converter = new PrefabAuthoringTransformConverter { Offset = 7 };
+            _authoring.SetConverters(new[] { new GameAssetAuthoringConverterBinding(child.transform, converter) });
+
+            Assert.That(GameAssetAuthoringCollector.TryCollect(_authoring, out var collection, out var error), Is.True, error);
+            Assert.That(collection.Components, Has.Count.EqualTo(2));
+            Assert.That(((PrefabAuthoringAlpha_GAC)collection.Components[1]).Value, Is.EqualTo(18));
+            Assert.That(collection.Sources[1].Kind, Is.EqualTo(GameAssetAuthoringSourceKind.Converted));
+            Assert.That(collection.Sources[1].Component, Is.SameAs(child.transform));
+            Assert.That(collection.Sources[1].Converter, Is.SameAs(converter));
+            Assert.That(child.transform.parent, Is.SameAs(parent.transform), "Conversion must not rebuild or move the native hierarchy.");
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public void SourcesOutsideTheOwnedHierarchyAreRejected(bool inactiveSource)
+        {
+            var outside = new GameObject("outside source");
+            try
+            {
+                outside.SetActive(!inactiveSource);
+                _authoring.SetConverters(new[] { new GameAssetAuthoringConverterBinding(outside.transform, new PrefabAuthoringTransformConverter()) });
+                AssertFailure(_object.name, outside.name, "owned hierarchy");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(outside);
+            }
+        }
+
+        [TestCase(false, false)]
+        [TestCase(false, true)]
+        [TestCase(true, false)]
+        [TestCase(true, true)]
+        public void AnotherAuthoringOwnsItsRootAndDescendantSources(bool descendantSource, bool inactiveNestedOwner)
+        {
+            var nested = new GameObject("nested definition");
+            nested.transform.SetParent(_object.transform, false);
+            nested.AddComponent<GameAssetAuthoring>();
+            var child = new GameObject("nested source");
+            child.transform.SetParent(nested.transform, false);
+            nested.SetActive(!inactiveNestedOwner);
+            var source = descendantSource ? child.transform : nested.transform;
+            _authoring.SetConverters(new[] { new GameAssetAuthoringConverterBinding(source, new PrefabAuthoringTransformConverter()) });
+            AssertFailure(_object.name, source.name, "another GameAssetAuthoring");
         }
 
         [Test]

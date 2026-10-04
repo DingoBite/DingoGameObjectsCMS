@@ -19,7 +19,7 @@ namespace DingoGameObjectsCMS.Editor.Authoring
             if (assetPath.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase))
             {
                 var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(assetPath);
-                if (prefab != null && prefab.TryGetComponent<GameAssetAuthoring>(out var authoring) && GameAssetAuthoringCollector.TryCollect(authoring, out var collection, out _))
+                if (prefab != null && prefab.TryGetComponent<GameAssetAuthoring>(out var authoring) && GameAssetAuthoringEditorUtility.TryCollect(authoring, out var collection, out _))
                     components = collection.Components;
             }
             return Compute(assetPath, components, cache);
