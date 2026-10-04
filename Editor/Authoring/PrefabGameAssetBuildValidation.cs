@@ -5,6 +5,7 @@ using DingoGameObjectsCMS.AssetLibrary.Manifest;
 using DingoGameObjectsCMS.AssetObjects.Authoring;
 using UnityEditor;
 using UnityEditor.Build;
+using UnityEditor.Build.Reporting;
 using UnityEditor.SceneManagement;
 using UnityEngine;
 
@@ -130,6 +131,19 @@ namespace DingoGameObjectsCMS.Editor.Authoring
 
         public override void PrepareForBuild(BuildPlayerContext context)
         {
+            PrefabGameAssetIndexEditorUtility.Reconcile();
+        }
+    }
+
+    public class PrefabGameAssetBuildFinalizer : IPreprocessBuildWithReport
+    {
+        public int callbackOrder => int.MaxValue;
+
+        public void OnPreprocessBuild(BuildReport report)
+        {
+            // BuildPlayerProcessor prepares references for content discovery. Other preprocessors
+            // can still change dependencies (for example, clear dynamic font caches) before packing Resources.
+            AssetDatabase.SaveAssets();
             PrefabGameAssetIndexEditorUtility.Reconcile();
         }
     }

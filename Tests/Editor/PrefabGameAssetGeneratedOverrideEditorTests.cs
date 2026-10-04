@@ -56,6 +56,100 @@ namespace DingoGameObjectsCMS.Tests.Editor
         }
 
         [Test]
+        public void BuildFinalizerRefreshesLateResourceDependenciesWithoutChangingSavedOverrideIdentityOrValues()
+        {
+            var sourceResourcePath = _assets.Folder + "/build-source-resource.asset";
+            var instanceResourcePath = _assets.Folder + "/build-instance-resource.asset";
+            var sourceResource = CreateTexture(sourceResourcePath, Color.black);
+            var instanceResource = CreateTexture(instanceResourcePath, Color.white);
+            var source = _assets.CreatePrefab("build-finalizer-source", new[] { new PrefabAuthoringAlpha_GAC { Value = 5, Values = new List<int> { 1, 2 }, Resource = sourceResource } });
+            var prefabPath = AssetDatabase.GetAssetPath(source);
+            PrefabGameAssetIndexEditorUtility.Reconcile();
+            var scenePath = _assets.Folder + "/build-finalizer-instance.unity";
+            var instanceId = SaveInstanceScene(prefabPath, scenePath, authoring =>
+            {
+                var component = (PrefabAuthoringAlpha_GAC)authoring.Components.Single();
+                component.Value = 25;
+                component.Values = new List<int> { 8, 13 };
+                component.Resource = instanceResource;
+            });
+            var initialIndex = PrefabGameAssetIndexEditorUtility.Reconcile();
+            var initialRoot = initialIndex.Entries.Single();
+            var initialOverride = initialIndex.Overrides.Single();
+            var initialDefinitions = Prepare(initialIndex);
+            var initialLibrary = GameAssetLibraryLockBuilder.Build(Templates(), Array.Empty<ModPackage>(), initialDefinitions);
+            var initialCatalog = RuntimeSessionAssetCatalog.FromLock(initialLibrary);
+            var frozenHash = initialDefinitions.NativeContentHash;
+            var initialSourceResourceHash = AssetDatabase.GetAssetDependencyHash(sourceResourcePath);
+            var initialInstanceResourceHash = AssetDatabase.GetAssetDependencyHash(instanceResourcePath);
+
+            // A late preprocessor may leave a changed resource dirty after the early CMS preparation.
+            foreach (var resource in new[] { sourceResource, instanceResource })
+            {
+                resource.SetPixel(0, 0, Color.red);
+                resource.Apply();
+                EditorUtility.SetDirty(resource);
+            }
+            Assert.That(EditorUtility.IsDirty(sourceResource), Is.True);
+            Assert.That(EditorUtility.IsDirty(instanceResource), Is.True);
+            Assert.That(initialIndex.Entries.Single().ContentHash, Is.EqualTo(initialRoot.ContentHash), "The synchronous late preprocessor leaves the early index stale until the final build gate runs.");
+            Assert.That(initialIndex.Overrides.Single().ContentHash, Is.EqualTo(initialOverride.ContentHash));
+
+            new PrefabGameAssetBuildFinalizer().OnPreprocessBuild(null);
+            Assert.That(EditorUtility.IsDirty(sourceResource), Is.False, "Changed dependencies must be saved before computing the hashes packed into the player.");
+            Assert.That(EditorUtility.IsDirty(instanceResource), Is.False);
+            Assert.That(AssetDatabase.GetAssetDependencyHash(sourceResourcePath), Is.Not.EqualTo(initialSourceResourceHash));
+            Assert.That(AssetDatabase.GetAssetDependencyHash(instanceResourcePath), Is.Not.EqualTo(initialInstanceResourceHash));
+            var changedRootHash = PrefabGameAssetContentHashUtility.Compute(prefabPath);
+            var changedOverrideHash = PrefabGameAssetContentHashUtility.Compute(scenePath, initialOverride.Components);
+            Assert.That(changedRootHash, Is.Not.EqualTo(initialRoot.ContentHash));
+            Assert.That(changedOverrideHash, Is.Not.EqualTo(initialOverride.ContentHash));
+            var indexPath = PrefabGameAssetIndexConfiguration.IndexAssetPath;
+            AssetDatabase.ImportAsset(indexPath, ImportAssetOptions.ForceUpdate | ImportAssetOptions.ForceSynchronousImport);
+            var finalized = AssetDatabase.LoadAssetAtPath<DingoGameObjectsCMS.AssetLibrary.Manifest.PrefabGameAssetIndex>(indexPath);
+            var root = finalized.Entries.Single();
+            var record = finalized.Overrides.Single();
+            Assert.That(root.GUID, Is.EqualTo(initialRoot.GUID));
+            Assert.That(root.ContentHash, Is.EqualTo(changedRootHash), "The saved Resources index must contain the final dependency hash.");
+            Assert.That(record.ContentHash, Is.EqualTo(changedOverrideHash));
+            Assert.That(record.Id, Is.EqualTo(instanceId));
+            Assert.That(record.Source.GetEntityId(), Is.EqualTo(initialOverride.Source.GetEntityId()));
+            Assert.That(record.OverridesJson, Is.EqualTo(initialOverride.OverridesJson));
+            var effective = (PrefabAuthoringAlpha_GAC)record.Components.Single();
+            Assert.That(effective.Value, Is.EqualTo(25));
+            Assert.That(effective.Values, Is.EqualTo(new[] { 8, 13 }));
+            Assert.That(AssetDatabase.GetAssetPath(effective.Resource), Is.EqualTo(instanceResourcePath));
+
+            var nextDefinitions = Prepare(finalized);
+            var nextTemplates = Templates();
+            var nextLibrary = GameAssetLibraryLockBuilder.Build(nextTemplates, Array.Empty<ModPackage>(), nextDefinitions);
+            var nextCatalog = RuntimeSessionAssetCatalog.FromLock(nextLibrary);
+            Assert.That(initialDefinitions.NativeContentHash, Is.EqualTo(frozenHash), "Already prepared definitions remain frozen.");
+            Assert.That(nextDefinitions.NativeContentHash, Is.Not.EqualTo(frozenHash), "The catalog prepared for packing must include dependencies changed by late preprocessors.");
+            Assert.That(nextDefinitions.ResourceAssets, Has.Count.EqualTo(2));
+            Assert.That(nextCatalog.ManifestEntries.Select(entry => (entry.AssetGuid, entry.ExactKey)), Is.EqualTo(initialCatalog.ManifestEntries.Select(entry => (entry.AssetGuid, entry.ExactKey))), "A dependency edit must not change root or derived domain identities.");
+            var preview = EditorSceneManager.OpenPreviewScene(scenePath);
+            try
+            {
+                var instance = preview.GetRootGameObjects().Single().GetComponent<GameAssetAuthoring>();
+                Assert.That(instance.RuntimeOverrideId, Is.EqualTo(instanceId));
+                Assert.That(nextDefinitions.TryResolveReference(instance, out var reference), Is.True);
+                Assert.That(GameAssetDerivedIdentity.IsDerived(reference.RequestedKey), Is.True);
+                Assert.That(nextDefinitions.TryGetAsset(instance, out var derived), Is.True);
+                var component = (PrefabAuthoringAlpha_GAC)derived.Components.Single();
+                Assert.That(component.Value, Is.EqualTo(25));
+                Assert.That(component.Values, Is.EqualTo(new[] { 8, 13 }));
+                Assert.That(AssetDatabase.GetAssetPath(component.Resource), Is.EqualTo(instanceResourcePath));
+                var runtime = nextTemplates.Materialize(GameAssetInstanceFactory.Create(reference, Hash128.Compute("build-finalizer-instance")), nextLibrary);
+                Assert.That(runtime.Origin.Asset.AssetGuid, Is.EqualTo(derived.GUID));
+            }
+            finally
+            {
+                EditorSceneManager.ClosePreviewScene(preview);
+            }
+        }
+
+        [Test]
         public void ResourceOnlyOverrideInSavedSceneGeneratesDerivedDefinitionAndIsRemovedWithScene()
         {
             var firstPath = _assets.Folder + "/original-resource.asset";
