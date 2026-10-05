@@ -224,11 +224,43 @@ namespace DingoGameObjectsCMS.Tests.Editor
         }
 
         [Test]
-        public void MissingSourceOrConverterIsRejected()
+        public void MissingSourceIsRejected()
         {
             _authoring.SetConverters(new[] { new GameAssetAuthoringConverterBinding(null, new PrefabAuthoringTransformConverter()) });
             AssertFailure();
+        }
+
+        [Test]
+        public void NoneConverterExplicitlyExcludesItsSource()
+        {
+            _authoring.SetComponents(new[] { new PrefabAuthoringBeta_GAC() });
             _authoring.SetConverters(new[] { new GameAssetAuthoringConverterBinding(_object.transform, null) });
+            Assert.That(GameAssetAuthoringCollector.TryCollect(_authoring, out var collection, out var error), Is.True, error);
+            Assert.That(collection.Components, Has.Count.EqualTo(1));
+            Assert.That(collection.Sources[0].Kind, Is.EqualTo(GameAssetAuthoringSourceKind.Manual));
+        }
+
+        [Test]
+        public void NoneConverterStillReservesItsOwnedSource()
+        {
+            _authoring.SetConverters(new[] { new GameAssetAuthoringConverterBinding(_object.transform, null), new GameAssetAuthoringConverterBinding(_object.transform, new PrefabAuthoringTransformConverter()) });
+            AssertFailure("more than once");
+        }
+
+        [Test]
+        public void NoneConverterDoesNotPermitSourcesAcrossAuthoringBoundaries()
+        {
+            var nested = new GameObject("nested authoring");
+            nested.transform.SetParent(_object.transform, false);
+            nested.AddComponent<GameAssetAuthoring>();
+            _authoring.SetConverters(new[] { new GameAssetAuthoringConverterBinding(nested.transform, null) });
+            AssertFailure("another GameAssetAuthoring");
+        }
+
+        [Test]
+        public void EmptyBindingStillRequiresASource()
+        {
+            _authoring.SetConverters(new[] { new GameAssetAuthoringConverterBinding(null, null) });
             AssertFailure();
         }
 

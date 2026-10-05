@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using UnityEngine;
 
@@ -15,6 +16,12 @@ namespace DingoGameObjectsCMS.AssetObjects.Authoring
         public IReadOnlyList<GameAssetAuthoringConverterBinding> Converters => _converters;
         public string SourceDefinitionGuid => _sourceDefinitionGuid;
         public string RuntimeOverrideId => _runtimeOverrideId;
+
+#if UNITY_EDITOR
+        public static event Action<GameAssetAuthoring> ValidationRequested;
+
+        private void OnValidate() => ValidationRequested?.Invoke(this);
+#endif
 
         public bool SetRuntimeDefinitionSource(string guid, string overrideId = null)
         {

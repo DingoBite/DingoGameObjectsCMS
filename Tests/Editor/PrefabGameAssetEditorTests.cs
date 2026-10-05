@@ -194,6 +194,61 @@ namespace DingoGameObjectsCMS.Tests.Editor
         }
 
         [Test]
+        public void SaveCallbackBakePreparesMetadataAndLeavesTheNativeSaveToItsCaller()
+        {
+            var authoring = _assets.CreatePrefab("save-callback");
+            var path = AssetDatabase.GetAssetPath(authoring);
+            var guid = AssetDatabase.AssetPathToGUID(path);
+            PrefabGameAssetOverrideEditorUtility.BakeSavedAssets(new[] { path });
+            Assert.That(EditorUtility.IsDirty(authoring), Is.False);
+            authoring.SetRuntimeDefinitionSource(null);
+            EditorUtility.SetDirty(authoring);
+
+            PrefabGameAssetOverrideEditorUtility.BakeSavedAssets(new[] { path }, false);
+
+            Assert.That(authoring.SourceDefinitionGuid, Is.EqualTo(guid));
+            Assert.That(EditorUtility.IsDirty(authoring), Is.True, "OnWillSaveAssets preparation must not start another native save of its caller's prefab.");
+            Assert.That(PrefabGameAssetOverrideEditorUtility.IsBakingSavedAssets, Is.False);
+            PrefabGameAssetOverrideEditorUtility.BakeSavedAssets(new[] { path }, false);
+            Assert.That(authoring.SourceDefinitionGuid, Is.EqualTo(guid));
+            Assert.That(EditorUtility.IsDirty(authoring), Is.True);
+            Assert.That(PrefabUtility.SavePrefabAsset(authoring.gameObject), Is.Not.Null);
+            Assert.That(EditorUtility.IsDirty(authoring), Is.False);
+        }
+
+        [Test]
+        public void NativePrefabSavePersistsPreparedMetadataAndRepeatedBakeIsIdempotent()
+        {
+            var authoring = _assets.CreatePrefab("native-save");
+            var path = AssetDatabase.GetAssetPath(authoring);
+            var guid = AssetDatabase.AssetPathToGUID(path);
+            authoring.SetRuntimeDefinitionSource(null);
+            EditorUtility.SetDirty(authoring);
+
+            Assert.That(PrefabUtility.SavePrefabAsset(authoring.gameObject), Is.Not.Null);
+
+            Assert.That(authoring.SourceDefinitionGuid, Is.EqualTo(guid));
+            Assert.That(EditorUtility.IsDirty(authoring), Is.False);
+            var contents = PrefabUtility.LoadPrefabContents(path);
+            try
+            {
+                var saved = contents.GetComponent<GameAssetAuthoring>();
+                Assert.That(saved.SourceDefinitionGuid, Is.EqualTo(guid));
+                Assert.That(string.IsNullOrEmpty(saved.RuntimeOverrideId), Is.True);
+            }
+            finally
+            {
+                PrefabUtility.UnloadPrefabContents(contents);
+            }
+            var hash = AssetDatabase.GetAssetDependencyHash(path);
+            PrefabGameAssetOverrideEditorUtility.BakeSavedAssets(new[] { path });
+            Assert.That(authoring.SourceDefinitionGuid, Is.EqualTo(guid));
+            Assert.That(EditorUtility.IsDirty(authoring), Is.False);
+            Assert.That(AssetDatabase.GetAssetDependencyHash(path), Is.EqualTo(hash));
+            Assert.That(PrefabGameAssetOverrideEditorUtility.IsBakingSavedAssets, Is.False);
+        }
+
+        [Test]
         public void IndexExcludesConfiguredAssetsSortsGuidsAndRecreatesDeletedIndex()
         {
             _assets.CreatePrefab("second");

@@ -20,6 +20,8 @@ namespace DingoGameObjectsCMS.Editor.Authoring
     {
         private static bool _savingMetadata;
 
+        public static bool IsBakingSavedAssets => _savingMetadata;
+
         public static IReadOnlyList<PrefabGameAssetOverrideEntry> CollectOverrides(IReadOnlyList<PrefabGameAssetIndexEntry> entries, PrefabGameAssetContentHashCache hashCache = null)
         {
             var result = new List<PrefabGameAssetOverrideEntry>();
@@ -184,7 +186,7 @@ namespace DingoGameObjectsCMS.Editor.Authoring
             return CollectHierarchy(root, path, null, true);
         }
 
-        public static void BakeSavedAssets(IEnumerable<string> paths)
+        public static void BakeSavedAssets(IEnumerable<string> paths, bool savePrefabs = true)
         {
             if (_savingMetadata)
                 return;
@@ -203,7 +205,8 @@ namespace DingoGameObjectsCMS.Editor.Authoring
                         if (changed)
                         {
                             EditorUtility.SetDirty(authoring);
-                            PrefabUtility.SavePrefabAsset(prefab);
+                            if (savePrefabs)
+                                PrefabUtility.SavePrefabAsset(prefab);
                         }
                     }
                 }
@@ -212,7 +215,7 @@ namespace DingoGameObjectsCMS.Editor.Authoring
                     if (path.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase))
                     {
                         var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(path);
-                        if (prefab != null && BakeHierarchy(prefab, path))
+                        if (prefab != null && BakeHierarchy(prefab, path) && savePrefabs)
                             PrefabUtility.SavePrefabAsset(prefab);
                     }
                     else if (path.EndsWith(".unity", StringComparison.OrdinalIgnoreCase))

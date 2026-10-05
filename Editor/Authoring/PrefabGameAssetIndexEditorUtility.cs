@@ -124,7 +124,7 @@ namespace DingoGameObjectsCMS.Editor.Authoring
                 _scheduled = false;
                 return;
             }
-            if (EditorApplication.isCompiling || EditorApplication.isUpdating)
+            if (EditorApplication.isCompiling || EditorApplication.isUpdating || PrefabGameAssetOverrideEditorUtility.IsBakingSavedAssets)
                 return;
             EditorApplication.update -= ReconcileDeferred;
             _scheduled = false;
@@ -187,7 +187,7 @@ namespace DingoGameObjectsCMS.Editor.Authoring
         private static string[] OnWillSaveAssets(string[] paths)
         {
             if (!EditorApplication.isPlayingOrWillChangePlaymode)
-                PrefabGameAssetOverrideEditorUtility.BakeSavedAssets(paths);
+                PrefabGameAssetOverrideEditorUtility.BakeSavedAssets(paths, false);
             if (paths.Any(path => PrefabGameAssetIndexConfiguration.Includes(path) || path.StartsWith("Packages/", StringComparison.Ordinal)))
                 PrefabGameAssetIndexEditorUtility.RequestReconcile();
             return paths;

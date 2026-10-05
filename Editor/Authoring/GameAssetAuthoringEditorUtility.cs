@@ -11,6 +11,9 @@ namespace DingoGameObjectsCMS.Editor.Authoring
 {
     public static class GameAssetAuthoringEditorUtility
     {
+        private static readonly Dictionary<Type, IReadOnlyList<Type>> CONVERTER_TYPES_BY_SOURCE = new();
+        private static IReadOnlyList<KeyValuePair<Type, Type>> _converterCatalog;
+
         public static bool TryGetDefinition(GameAssetAuthoring authoring, out GameAssetAuthoring definition, out string guid, out string error)
         {
             return TryGetDefinition(authoring, out definition, out guid, out _, out error);
@@ -68,11 +71,11 @@ namespace DingoGameObjectsCMS.Editor.Authoring
             collection = null;
             if (!TryGetDefinition(authoring, out var definition, out _, out var isDefinition, out error))
                 return false;
+            if (!isDefinition && !TryPrepareConverters(definition, out _, out error))
+                return false;
             if (!isDefinition && !TryValidateInstanceStructure(authoring, definition, out error))
                 return false;
             if (!TryPrepareConverters(authoring, out _, out error))
-                return false;
-            if (!isDefinition && !TryPrepareConverters(definition, out _, out error))
                 return false;
             if (!GameAssetAuthoringCollector.TryCollect(authoring, out var effective, out error))
                 return false;
@@ -107,6 +110,16 @@ namespace DingoGameObjectsCMS.Editor.Authoring
             error = null;
             if (authoring == null || authoring.Converters == null)
                 return true;
+            try
+            {
+                changed = SynchronizeConverters(authoring);
+            }
+            catch (Exception exception)
+            {
+                Debug.LogException(exception, authoring);
+                error = $"GameAsset authoring '{authoring.name}' automatic converter setup failed: {exception.Message}";
+                return false;
+            }
             for (var index = 0; index < authoring.Converters.Count; index++)
             {
                 var binding = authoring.Converters[index];
@@ -133,7 +146,55 @@ namespace DingoGameObjectsCMS.Editor.Authoring
             return error == null;
         }
 
-        private static string ResourceGuid(UnityEngine.Object resource) => resource == null ? null : AssetDatabase.AssetPathToGUID(AssetDatabase.GetAssetPath(resource));
+        public static bool IsDefinitionAuthoring(GameAssetAuthoring authoring)
+        {
+            if (authoring == null)
+                return false;
+            var stage = PrefabStageUtility.GetPrefabStage(authoring.gameObject);
+            return stage != null && stage.prefabContentsRoot == authoring.gameObject || EditorUtility.IsPersistent(authoring) && AssetDatabase.LoadAssetAtPath<GameObject>(AssetDatabase.GetAssetPath(authoring)) == authoring.gameObject;
+        }
+
+        public static bool SynchronizeConverters(GameAssetAuthoring authoring, Func<Component, IReadOnlyList<Type>> converterTypes = null)
+        {
+            if (!IsDefinitionAuthoring(authoring) || authoring.Converters == null)
+                return false;
+            converterTypes ??= GetConverterTypes;
+            var assigned = new HashSet<Component>(authoring.Converters.Where(binding => binding?.Source != null).Select(binding => binding.Source));
+            var bindings = new List<GameAssetAuthoringConverterBinding>(authoring.Converters);
+            var discovered = new Dictionary<Type, IReadOnlyList<Type>>();
+            foreach (var source in authoring.GetComponentsInChildren<Component>(true))
+            {
+                if (source == null || assigned.Contains(source) || source.GetComponentInParent<GameAssetAuthoring>(true) != authoring)
+                    continue;
+                var sourceType = source.GetType();
+                if (!discovered.TryGetValue(sourceType, out var types))
+                {
+                    types = converterTypes(source).OrderBy(type => type.FullName, StringComparer.Ordinal).ThenBy(type => type.AssemblyQualifiedName, StringComparer.Ordinal).ToArray();
+                    discovered.Add(sourceType, types);
+                }
+                if (types.Count == 0)
+                    continue;
+                var converter = (GameAssetAuthoringConverter)Activator.CreateInstance(types[0]);
+                bindings.Add(new GameAssetAuthoringConverterBinding(source, converter));
+            }
+            if (bindings.Count == authoring.Converters.Count)
+                return false;
+            Undo.RecordObject(authoring, "Add GameAsset converters");
+            authoring.SetConverters(bindings);
+            EditorUtility.SetDirty(authoring);
+            if (PrefabUtility.IsPartOfPrefabInstance(authoring))
+                PrefabUtility.RecordPrefabInstancePropertyModifications(authoring);
+            return true;
+        }
+
+        private static string ResourceGuid(UnityEngine.Object resource)
+        {
+            if (resource == null)
+                return null;
+            if (resource is GameObject root && root.TryGetComponent<GameAssetAuthoring>(out var authoring) && TryGetDefinition(authoring, out _, out var guid, out _))
+                return guid;
+            return AssetDatabase.AssetPathToGUID(AssetDatabase.GetAssetPath(resource));
+        }
 
         public static bool TryValidateInstanceStructure(GameAssetAuthoring instance, GameAssetAuthoring definition, out string error)
         {
@@ -183,9 +244,20 @@ namespace DingoGameObjectsCMS.Editor.Authoring
 
         public static IReadOnlyList<Type> GetConverterTypes(Component source)
         {
-            var types = new List<Type>();
             if (source == null)
+                return Array.Empty<Type>();
+            var sourceType = source.GetType();
+            if (CONVERTER_TYPES_BY_SOURCE.TryGetValue(sourceType, out var types))
                 return types;
+            _converterCatalog ??= CreateConverterCatalog();
+            types = Array.AsReadOnly(_converterCatalog.Where(entry => entry.Value.IsAssignableFrom(sourceType)).Select(entry => entry.Key).ToArray());
+            CONVERTER_TYPES_BY_SOURCE.Add(sourceType, types);
+            return types;
+        }
+
+        private static IReadOnlyList<KeyValuePair<Type, Type>> CreateConverterCatalog()
+        {
+            var entries = new List<KeyValuePair<Type, Type>>();
             var playerAssemblies = new HashSet<string>(CompilationPipeline.GetAssemblies(AssembliesType.Player).Select(assembly => assembly.name), StringComparer.Ordinal);
             foreach (var type in TypeCache.GetTypesDerivedFrom<GameAssetAuthoringConverter>())
             {
@@ -195,15 +267,15 @@ namespace DingoGameObjectsCMS.Editor.Authoring
                 {
                     var converter = (GameAssetAuthoringConverter)Activator.CreateInstance(type);
                     var supported = converter.SourceComponentType;
-                    if (supported != null && typeof(Component).IsAssignableFrom(supported) && supported.IsAssignableFrom(source.GetType()))
-                        types.Add(type);
+                    if (supported != null && typeof(Component).IsAssignableFrom(supported))
+                        entries.Add(new KeyValuePair<Type, Type>(type, supported));
                 }
                 catch
                 {
                     // An unavailable converter constructor cannot be offered in the Inspector.
                 }
             }
-            return types.OrderBy(type => type.FullName, StringComparer.Ordinal).ToArray();
+            return entries.OrderBy(entry => entry.Key.FullName, StringComparer.Ordinal).ThenBy(entry => entry.Key.AssemblyQualifiedName, StringComparer.Ordinal).ToArray();
         }
 
         public static bool TryGetReferenceAuthoring(UnityEngine.Object candidate, out GameAssetAuthoring authoring, out string error)

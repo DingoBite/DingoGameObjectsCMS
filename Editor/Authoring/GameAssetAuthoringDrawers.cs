@@ -73,7 +73,7 @@ namespace DingoGameObjectsCMS.Editor.Authoring
             var converterType = ManagedReferenceUtility.GetType(converter.managedReferenceFullTypename);
             using (new EditorGUI.DisabledScope(source.objectReferenceValue == null))
             {
-                if (EditorGUI.DropdownButton(popup, new GUIContent(converterType == null ? "Select converter" : ObjectNames.NicifyVariableName(converterType.Name)), FocusType.Keyboard))
+                if (EditorGUI.DropdownButton(popup, new GUIContent(converterType == null ? "None" : ObjectNames.NicifyVariableName(converterType.Name)), FocusType.Keyboard))
                     ShowConverters(popup, source.objectReferenceValue as Component, converter);
             }
             if (property.isExpanded && converter.managedReferenceValue != null)

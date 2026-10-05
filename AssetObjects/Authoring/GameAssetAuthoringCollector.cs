@@ -78,9 +78,9 @@ namespace DingoGameObjectsCMS.AssetObjects.Authoring
             for (var index = 0; index < authoring.Converters.Count; index++)
             {
                 var binding = authoring.Converters[index];
-                if (binding == null || binding.Source == null || binding.Converter == null)
+                if (binding == null || binding.Source == null)
                 {
-                    error = $"GameAsset authoring '{authoring.name}' binding #{index + 1} requires both a source and a converter.";
+                    error = $"GameAsset authoring '{authoring.name}' binding #{index + 1} requires a source component.";
                     return false;
                 }
                 if (binding.Source.GetComponentInParent<GameAssetAuthoring>(true) != authoring)
@@ -93,6 +93,8 @@ namespace DingoGameObjectsCMS.AssetObjects.Authoring
                     error = $"GameAsset authoring '{authoring.name}' assigns '{binding.Source.GetType().FullName}' more than once.";
                     return false;
                 }
+                if (binding.Converter == null)
+                    continue;
 
                 IReadOnlyList<GameAssetComponent> converted;
                 try

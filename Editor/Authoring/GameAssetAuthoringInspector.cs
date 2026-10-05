@@ -11,7 +11,7 @@ namespace DingoGameObjectsCMS.Editor.Authoring
     public class GameAssetAuthoringInspector : UnityEditor.Editor
     {
         private GameAsset _preview;
-        private bool _showPreview = true;
+        private bool _showPreview;
         private bool _needsRefresh = true;
         private GameAssetAuthoringCollection _collection;
         private GameAssetAuthoring _definition;
@@ -31,9 +31,9 @@ namespace DingoGameObjectsCMS.Editor.Authoring
 
         public override void OnInspectorGUI()
         {
-            serializedObject.Update();
             var authoring = (GameAssetAuthoring)target;
             RefreshPreview(authoring);
+            serializedObject.Update();
             using (new EditorGUI.DisabledScope(true))
             {
                 EditorGUILayout.ObjectField("Script", MonoScript.FromMonoBehaviour(authoring), typeof(MonoScript), false);
@@ -140,7 +140,7 @@ namespace DingoGameObjectsCMS.Editor.Authoring
                 using (new EditorGUI.DisabledScope(true))
                 {
                     EditorGUILayout.PropertyField(source, new GUIContent("Source"));
-                    EditorGUILayout.TextField("Converter", type?.Name ?? "Missing converter");
+                    EditorGUILayout.TextField("Converter", type?.Name ?? "None");
                 }
                 if (converter.managedReferenceValue != null)
                     GameAssetAuthoringInspectorGUI.DrawFields(converter);
