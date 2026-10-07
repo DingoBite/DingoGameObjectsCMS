@@ -27,6 +27,7 @@ namespace DingoGameObjectsCMS.Mirror
 
         private RuntimeProtocolContextFactory _contextFactory;
         private Func<RuntimeCommandsBus> _commandsBusGetter;
+        private bool _runtimeSuspended;
 
         public override void Awake()
         {
@@ -49,6 +50,7 @@ namespace DingoGameObjectsCMS.Mirror
 
         public override void OnStartServer()
         {
+            _runtimeSuspended = false;
             Trace($"OnStartServer begin. server={NetworkServer.active}, client={NetworkClient.active}.");
             base.OnStartServer();
             ReplaceServerEndpoint();
@@ -67,6 +69,7 @@ namespace DingoGameObjectsCMS.Mirror
 
         public override void OnStartClient()
         {
+            _runtimeSuspended = false;
             Trace($"OnStartClient begin. server={NetworkServer.active}, client={NetworkClient.active}.");
             base.OnStartClient();
             if (NetworkServer.active)
@@ -76,12 +79,7 @@ namespace DingoGameObjectsCMS.Mirror
                 return;
             }
 
-            RuntimeExecutionContext.SetReplicaReady(false);
-            RuntimeExecutionContext.SetNetworkRole(ResolveRuntimeRole());
-            var context = RequireContext(StoreRealm.Client);
-            UnregisterClientHandlers();
-            RtClient = new RuntimeStoreNetClient(context, CreateClientNonce());
-            RtClient.ReplicaReadyChanged += RuntimeExecutionContext.SetReplicaReady;
+            ReplaceClientEndpoint();
             NotifyRuntimeRoleChanged();
             Trace($"OnStartClient complete. role={RuntimeRole}, endpoint={RtClient != null}.");
         }
@@ -89,12 +87,7 @@ namespace DingoGameObjectsCMS.Mirror
         public override void OnStopClient()
         {
             Trace($"OnStopClient begin. endpoint={RtClient != null}, connected={NetworkClient.isConnected}.");
-            if (RtClient != null)
-            {
-                RtClient.ReplicaReadyChanged -= RuntimeExecutionContext.SetReplicaReady;
-                RtClient.Dispose();
-                RtClient = null;
-            }
+            DisposeClientEndpoint();
             RuntimeExecutionContext.SetReplicaReady(false);
             base.OnStopClient();
             NotifyRuntimeRoleChanged();
@@ -120,6 +113,8 @@ namespace DingoGameObjectsCMS.Mirror
         {
             Trace($"OnServerConnect begin. connection={connection?.connectionId ?? -1}, authenticated={connection?.isAuthenticated ?? false}.");
             base.OnServerConnect(connection);
+            if (_runtimeSuspended)
+                return;
             try
             {
                 if (RtServer == null || RtServer.IsSessionInvalidated)
@@ -200,6 +195,61 @@ namespace DingoGameObjectsCMS.Mirror
             return RtServer?.RefreshInterestAll() ?? 0;
         }
 
+        /// <summary>Retire the runtime protocol while retaining authenticated transport connections.</summary>
+        public void SuspendRuntime()
+        {
+            _runtimeSuspended = true;
+            DisposeClientEndpoint();
+            DisposeServerEndpoint();
+            RuntimeExecutionContext.SetReplicaReady(false);
+            // Reliable packets already sent by the retiring runtime may still arrive.
+            // Consume them without admitting commands into the replacement runtime.
+            if (NetworkServer.active)
+            {
+                NetworkServer.RegisterHandler<RtSessionHello>((_, _) => { });
+                NetworkServer.RegisterHandler<RtSessionReady>((_, _) => { });
+                NetworkServer.RegisterHandler<RtStoreAck>((_, _) => { });
+                NetworkServer.RegisterHandler<RtStoreResyncRequest>((_, _) => { });
+                NetworkServer.RegisterHandler<RtCommandJournalResyncRequest>((_, _) => { });
+                NetworkServer.RegisterHandler<RtCommandEnvelope>((_, _) => { });
+            }
+            if (NetworkClient.active && !NetworkServer.active)
+            {
+                NetworkClient.RegisterHandler<RtSessionManifest>(_ => { });
+                NetworkClient.RegisterHandler<RtProtocolReject>(_ => { });
+                NetworkClient.RegisterHandler<RtBaselineChunk>(_ => { });
+                NetworkClient.RegisterHandler<RtCheckpointChunk>(_ => { });
+                NetworkClient.RegisterHandler<RtStoreDelta>(_ => { });
+                NetworkClient.RegisterHandler<RtCommandResult>(_ => { });
+                NetworkClient.RegisterHandler<RtStateStreamFrame>(_ => { });
+                NetworkClient.RegisterHandler<RtCommandJournalBatch>(_ => { });
+            }
+        }
+
+        /// <summary>Start a fresh protocol handshake and baseline on the retained connections.</summary>
+        public void ResumeRuntime()
+        {
+            if (!_runtimeSuspended)
+                throw new InvalidOperationException("Suspend the runtime before replacing its protocol endpoints.");
+
+            _runtimeSuspended = false;
+            if (NetworkServer.active)
+            {
+                ReplaceServerEndpoint();
+                foreach (var connection in NetworkServer.connections.Values)
+                {
+                    if (connection.isAuthenticated)
+                        RtServer.OnConnectionConnected(connection.connectionId);
+                }
+            }
+            else if (NetworkClient.active && NetworkClient.isConnected)
+            {
+                ReplaceClientEndpoint();
+                RtClient.BeginHandshake();
+            }
+            NotifyRuntimeRoleChanged();
+        }
+
         private RuntimeProtocolContext RequireContext(StoreRealm realm)
         {
             var contextFactory = _contextFactory
@@ -231,6 +281,27 @@ namespace DingoGameObjectsCMS.Mirror
             server.ConnectionReady -= OnProtocolConnectionReady;
             server.ConnectionRemoved -= OnProtocolConnectionRemoved;
             RtServer = null;
+        }
+
+        private void ReplaceClientEndpoint()
+        {
+            var context = RequireContext(StoreRealm.Client);
+            DisposeClientEndpoint();
+            UnregisterClientHandlers();
+            RuntimeExecutionContext.SetReplicaReady(false);
+            RuntimeExecutionContext.SetNetworkRole(ResolveRuntimeRole());
+            RtClient = new RuntimeStoreNetClient(context, CreateClientNonce());
+            RtClient.ReplicaReadyChanged += RuntimeExecutionContext.SetReplicaReady;
+        }
+
+        private void DisposeClientEndpoint()
+        {
+            if (RtClient == null)
+                return;
+
+            RtClient.ReplicaReadyChanged -= RuntimeExecutionContext.SetReplicaReady;
+            RtClient.Dispose();
+            RtClient = null;
         }
 
         private RuntimeNetRole ResolveRuntimeRole()
