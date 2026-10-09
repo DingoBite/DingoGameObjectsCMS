@@ -4,6 +4,7 @@ using DingoGameObjectsCMS.RuntimeObjects.Commands;
 using DingoGameObjectsCMS.RuntimeObjects.Replay;
 using DingoGameObjectsCMS.RuntimeObjects.Stores;
 using DingoGameObjectsCMS.Stores;
+using Unity.Collections;
 using UnityEngine;
 
 namespace DingoGameObjectsCMS.Mirror.Protocol
@@ -167,6 +168,22 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                     + $"detail='{result.Detail}'.");
                 _output.Reject(result.RejectCode, result.Detail);
                 return result;
+            }
+
+            var replicaStoreIds = new FixedString32Bytes[_handshake.Manifest.Stores.Count];
+            for (var i = 0; i < replicaStoreIds.Length; i++)
+            {
+                replicaStoreIds[i] = _handshake.Manifest.Stores[i].StoreId;
+            }
+            try
+            {
+                RuntimeStores.BeginReplicaSession(replicaStoreIds);
+            }
+            catch (InvalidOperationException exception)
+            {
+                var failure = _handshake.ReceiveReject(RuntimeProtocolRejectCode.InvalidEnvelope, exception.Message);
+                _output.Reject(failure.RejectCode, failure.Detail);
+                return failure;
             }
 
             Trace(
@@ -802,6 +819,10 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                     if (initial.ApplyToStaging || !_baselineGroupPublished)
                         return;
 
+                    UnityEngine.Debug.LogWarning($"Runtime replica resync: store={request.Store}, "
+                        + $"reason={request.Reason}, expectedDelivery={request.ExpectedDeliverySequence}. "
+                        + (request.Reason == RuntimeClientResyncReason.DeltaApplyFailed
+                            ? _deltaTransaction.LastFailure?.Message : string.Empty));
                     SendResync(new RtStoreResyncData(
                         request.SessionId,
                         request.Store,

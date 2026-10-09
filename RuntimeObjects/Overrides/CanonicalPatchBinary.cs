@@ -1,21 +1,22 @@
 using System;
-using System.Collections.Generic;
+using System.Buffers.Binary;
 using System.Text;
+using Unity.Collections;
 using UnityEngine;
 
 namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
 {
-    public class CanonicalPatchBinaryWriter
+    public class CanonicalPatchBinaryWriter : IDisposable
     {
         private static readonly UTF8Encoding UTF8 = new(false, true);
 
-        private readonly List<byte> _buffer;
+        private NativeList<byte> _buffer;
 
-        public int Length => _buffer.Count;
+        public int Length => _buffer.Length;
 
-        public CanonicalPatchBinaryWriter(int capacity = 128)
+        public CanonicalPatchBinaryWriter(int capacity = 128, Allocator allocator = Allocator.Temp)
         {
-            _buffer = new List<byte>(capacity);
+            _buffer = new NativeList<byte>(capacity, allocator);
         }
 
         public void WriteByte(byte value)
@@ -35,10 +36,9 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
 
         public void WriteUInt32(uint value)
         {
-            _buffer.Add((byte)value);
-            _buffer.Add((byte)(value >> 8));
-            _buffer.Add((byte)(value >> 16));
-            _buffer.Add((byte)(value >> 24));
+            var start = _buffer.Length;
+            _buffer.ResizeUninitialized(start + sizeof(uint));
+            BinaryPrimitives.WriteUInt32LittleEndian(_buffer.AsSpan().Slice(start, sizeof(uint)), value);
         }
 
         public void WriteInt64(long value)
@@ -48,14 +48,9 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
 
         public void WriteUInt64(ulong value)
         {
-            _buffer.Add((byte)value);
-            _buffer.Add((byte)(value >> 8));
-            _buffer.Add((byte)(value >> 16));
-            _buffer.Add((byte)(value >> 24));
-            _buffer.Add((byte)(value >> 32));
-            _buffer.Add((byte)(value >> 40));
-            _buffer.Add((byte)(value >> 48));
-            _buffer.Add((byte)(value >> 56));
+            var start = _buffer.Length;
+            _buffer.ResizeUninitialized(start + sizeof(ulong));
+            BinaryPrimitives.WriteUInt64LittleEndian(_buffer.AsSpan().Slice(start, sizeof(ulong)), value);
         }
 
         public void WriteSingle(float value)
@@ -86,9 +81,11 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
                 return;
             }
 
-            var bytes = UTF8.GetBytes(value);
-            WriteInt32(bytes.Length);
-            WriteRawBytes(bytes);
+            var byteCount = UTF8.GetByteCount(value);
+            WriteInt32(byteCount);
+            var start = _buffer.Length;
+            _buffer.ResizeUninitialized(start + byteCount);
+            UTF8.GetBytes(value.AsSpan(), _buffer.AsSpan().Slice(start, byteCount));
         }
 
         public void WriteBytes(byte[] value)
@@ -103,6 +100,12 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
             WriteRawBytes(value);
         }
 
+        public void WriteBytes(NativeArray<byte> value)
+        {
+            WriteInt32(value.Length);
+            WriteRawBytes(value.AsReadOnlySpan());
+        }
+
         public void WriteHash128(Hash128 value)
         {
             WriteString(value.ToString());
@@ -110,14 +113,43 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
 
         public byte[] ToArray()
         {
-            return _buffer.ToArray();
+            var result = new byte[_buffer.Length];
+            _buffer.AsReadOnlySpan().CopyTo(result);
+            return result;
         }
 
-        private void WriteRawBytes(byte[] value)
+        public NativeArray<byte> ToNativeArray(Allocator allocator)
         {
-            for (var i = 0; i < value.Length; i++)
+            var result = new NativeArray<byte>(_buffer.Length, allocator);
+            _buffer.AsReadOnlySpan().CopyTo(result.AsSpan());
+            return result;
+        }
+
+        // The view is valid only until this writer grows or is disposed.
+        public ReadOnlySpan<byte> AsReadOnlySpan() => _buffer.AsReadOnlySpan();
+
+        // The view is valid only until this writer grows or is disposed. Do not dispose it.
+        public NativeArray<byte> AsArray() => _buffer.AsArray();
+
+        public int BeginLengthPrefixedBlock()
+        {
+            var offset = Length;
+            WriteInt32(0);
+            return offset;
+        }
+
+        public void EndLengthPrefixedBlock(int offset)
+        {
+            BinaryPrimitives.WriteInt32LittleEndian(_buffer.AsSpan().Slice(offset, sizeof(int)), Length - offset - sizeof(int));
+        }
+
+        public void WriteRawBytes(ReadOnlySpan<byte> value) => _buffer.AddRange(value);
+
+        public void Dispose()
+        {
+            if (_buffer.IsCreated)
             {
-                _buffer.Add(value[i]);
+                _buffer.Dispose();
             }
         }
     }
@@ -126,22 +158,36 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
     {
         private static readonly UTF8Encoding UTF8 = new(false, true);
 
-        private readonly byte[] _buffer;
+        private readonly ReadOnlyMemory<byte> _managedBuffer;
+        private readonly NativeArray<byte> _nativeBuffer;
+        private readonly bool _isNative;
         private int _position;
 
         public int Position => _position;
-        public int Length => _buffer.Length;
-        public bool IsAtEnd => _position == _buffer.Length;
+        public int Length => _isNative ? _nativeBuffer.Length : _managedBuffer.Length;
+        public bool IsAtEnd => _position == Length;
 
         public CanonicalPatchBinaryReader(byte[] buffer)
         {
-            _buffer = buffer ?? throw new ArgumentNullException(nameof(buffer));
+            _managedBuffer = buffer ?? throw new ArgumentNullException(nameof(buffer));
+        }
+
+        public CanonicalPatchBinaryReader(ReadOnlyMemory<byte> buffer)
+        {
+            _managedBuffer = buffer;
+        }
+
+        // The input must remain allocated and unchanged for this reader's lifetime.
+        public CanonicalPatchBinaryReader(NativeArray<byte> buffer)
+        {
+            _nativeBuffer = buffer;
+            _isNative = true;
         }
 
         public byte ReadByte()
         {
             Require(1);
-            return _buffer[_position++];
+            return ReadSpan(1)[0];
         }
 
         public bool ReadBoolean()
@@ -159,13 +205,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
 
         public uint ReadUInt32()
         {
-            Require(4);
-            var value = (uint)_buffer[_position]
-                        | ((uint)_buffer[_position + 1] << 8)
-                        | ((uint)_buffer[_position + 2] << 16)
-                        | ((uint)_buffer[_position + 3] << 24);
-            _position += 4;
-            return value;
+            return BinaryPrimitives.ReadUInt32LittleEndian(ReadSpan(sizeof(uint)));
         }
 
         public long ReadInt64()
@@ -175,17 +215,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
 
         public ulong ReadUInt64()
         {
-            Require(8);
-            var value = (ulong)_buffer[_position]
-                        | ((ulong)_buffer[_position + 1] << 8)
-                        | ((ulong)_buffer[_position + 2] << 16)
-                        | ((ulong)_buffer[_position + 3] << 24)
-                        | ((ulong)_buffer[_position + 4] << 32)
-                        | ((ulong)_buffer[_position + 5] << 40)
-                        | ((ulong)_buffer[_position + 6] << 48)
-                        | ((ulong)_buffer[_position + 7] << 56);
-            _position += 8;
-            return value;
+            return BinaryPrimitives.ReadUInt64LittleEndian(ReadSpan(sizeof(ulong)));
         }
 
         public float ReadSingle()
@@ -203,10 +233,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
             var length = ReadLength();
             if (length < 0)
                 return null;
-            Require(length);
-            var result = UTF8.GetString(_buffer, _position, length);
-            _position += length;
-            return result;
+            return UTF8.GetString(ReadSpan(length));
         }
 
         public byte[] ReadBytes()
@@ -214,10 +241,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
             var length = ReadLength();
             if (length < 0)
                 return null;
-            Require(length);
-            var result = new byte[length];
-            Buffer.BlockCopy(_buffer, _position, result, 0, length);
-            _position += length;
+            var result = ReadSpan(length).ToArray();
             return result;
         }
 
@@ -233,9 +257,69 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
                 throw new FormatException(
                     $"Canonical {label ?? "byte payload"} length {length} exceeds maximum {maxLength}.");
             }
+            var result = ReadSpan(length).ToArray();
+            return result;
+        }
+
+        public bool TryReadBytesSpan(int maxLength, string label, out ReadOnlySpan<byte> value)
+        {
+            value = default;
+            if (maxLength < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(maxLength));
+            }
+            var length = ReadLength();
+            if (length < 0)
+            {
+                return false;
+            }
+            if (length > maxLength)
+            {
+                throw new FormatException($"Canonical {label ?? "byte payload"} length {length} exceeds maximum {maxLength}.");
+            }
+            value = ReadSpan(length);
+            return true;
+        }
+
+        // The view borrows the managed input. Native input is copied because ReadOnlyMemory cannot refer to NativeArray.
+        public bool TryReadBytesMemory(out ReadOnlyMemory<byte> value)
+        {
+            value = default;
+            var length = ReadLength();
+            if (length < 0)
+            {
+                return false;
+            }
             Require(length);
-            var result = new byte[length];
-            Buffer.BlockCopy(_buffer, _position, result, 0, length);
+            if (_isNative)
+            {
+                value = ReadSpan(length).ToArray();
+            }
+            else
+            {
+                value = _managedBuffer.Slice(_position, length);
+                _position += length;
+            }
+            return true;
+        }
+
+        public CanonicalPatchBinaryReader ReadBytesReader(int maxLength, string label)
+        {
+            if (maxLength < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(maxLength));
+            }
+            var length = ReadLength();
+            if (length < 0)
+            {
+                return null;
+            }
+            if (length > maxLength)
+            {
+                throw new FormatException($"Canonical {label ?? "byte payload"} length {length} exceeds maximum {maxLength}.");
+            }
+            Require(length);
+            var result = _isNative ? new CanonicalPatchBinaryReader(_nativeBuffer.GetSubArray(_position, length)) : new CanonicalPatchBinaryReader(_managedBuffer.Slice(_position, length));
             _position += length;
             return result;
         }
@@ -271,7 +355,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
         public void RequireEnd()
         {
             if (!IsAtEnd)
-                throw new FormatException($"Canonical payload has {_buffer.Length - _position} trailing bytes.");
+                throw new FormatException($"Canonical payload has {Length - _position} trailing bytes.");
         }
 
         private int ReadLength()
@@ -284,8 +368,16 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
 
         private void Require(int count)
         {
-            if (count < 0 || _position > _buffer.Length - count)
+            if (count < 0 || _position > Length - count)
                 throw new FormatException($"Canonical payload ended at offset {_position}; {count} more bytes were required.");
+        }
+
+        private ReadOnlySpan<byte> ReadSpan(int count)
+        {
+            Require(count);
+            var result = _isNative ? _nativeBuffer.AsReadOnlySpan().Slice(_position, count) : _managedBuffer.Span.Slice(_position, count);
+            _position += count;
+            return result;
         }
     }
 }

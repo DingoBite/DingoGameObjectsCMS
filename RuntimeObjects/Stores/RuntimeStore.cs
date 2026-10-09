@@ -948,6 +948,12 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
 
         private bool RemoveInternal(long id, RemoveMode mode, out Entity entity, bool recordOp)
         {
+            if (id == STORE_ROOT_OBJECT_ID)
+            {
+                entity = Entity.Null;
+                return false;
+            }
+
             var wasPublished = IsPublished(id);
             var objectGuid = TakeObjectGuid(id);
             TakeStructurePosition(id, out var oldParentId, out var oldIndex);
@@ -1265,7 +1271,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
 
         public bool AttachChild(long parentId, long childId, int insertIndex = -1)
         {
-            if (parentId == childId)
+            if (parentId == childId || childId == STORE_ROOT_OBJECT_ID)
                 return false;
 
             if (!_all.V.TryGetValue(parentId, out var parent) || !_all.V.TryGetValue(childId, out var child))
@@ -1324,6 +1330,9 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
 
         public bool DetachChild(long childId)
         {
+            if (childId == STORE_ROOT_OBJECT_ID)
+                return false;
+
             if (!_all.V.TryGetValue(childId, out var child))
                 return false;
 
@@ -1340,6 +1349,9 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
 
         public bool MoveChild(long parentId, long childId, int newIndex)
         {
+            if (childId == STORE_ROOT_OBJECT_ID)
+                return false;
+
             if (!_childrenByParent.TryGetValue(parentId, out var list))
                 return false;
 

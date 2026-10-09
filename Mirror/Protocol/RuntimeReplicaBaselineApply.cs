@@ -217,6 +217,34 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             _inboundPatchValidator.ValidateSpawn(patch, blueprint.ComponentTypeIds);
         }
 
+        public virtual void ValidateInboundRootPatch(RuntimeObjectPatch patch)
+        {
+            if (_inboundPatchValidator == null)
+                throw new InvalidOperationException("Replica baseline spawn factory has no inbound patch validator.");
+            _inboundPatchValidator.ValidateSpawn(patch, Array.Empty<uint>());
+            foreach (var component in patch.Components)
+            {
+                if (component.Kind != ComponentPatchKind.Add)
+                    throw new InvalidOperationException($"Baseline root component {component.ComponentTypeId} cannot use {component.Kind} without a GA baseline.");
+            }
+        }
+
+        public virtual void ApplyRootPatch(RuntimeStore store, RuntimeObjectPatch patch, RuntimePatchCodecContext networkPatchContext)
+        {
+            if (store == null || patch == null || networkPatchContext == null)
+                throw new ArgumentException("Replica root patch requires a store, patch, and network context.");
+            if (_templateCache == null || _replicationPolicies == null)
+                throw new InvalidOperationException("Replica baseline spawn factory has no root patch dependencies.");
+
+            var patchEngine = new RuntimeObjectPatchEngine(_templateCache.CodecRegistry, networkPatchContext);
+            var components = patchEngine.ApplyProjectedPatch(null, patch, componentTypeId => RuntimeComponentVisibilityProjection.GetPatchProjectionMode(_replicationPolicies, componentTypeId));
+            var root = store.TakeRootRW();
+            var orderedTypeIds = new List<uint>(components.Keys);
+            orderedTypeIds.Sort();
+            for (var i = 0; i < orderedTypeIds.Count; i++)
+                root.AddOrReplaceById(orderedTypeIds[i], components[orderedTypeIds[i]]);
+        }
+
         public virtual GameRuntimeObject Spawn(
             RuntimeStore store,
             RuntimeStoreBaselineSpawn spawn,
@@ -335,6 +363,8 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                         throw new InvalidOperationException($"Replica baseline object {spawn.ObjectId} was not registered in staging store '{Store.Id}'.");
                 }
 
+                _spawnFactory.ApplyRootPatch(Store, _payload.RootPatch, patchContext);
+
                 for (var i = 0; i < _payload.Spawns.Count; i++)
                 {
                     var spawn = _payload.Spawns[i];
@@ -350,7 +380,7 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                 for (var i = 0; i < _payload.Spawns.Count; i++)
                 {
                     var spawn = _payload.Spawns[i];
-                    if (spawn.ParentObjectId == RuntimeStoreStructureChange.NO_PARENT_ID)
+                    if (spawn.ParentObjectId == RuntimeStoreStructureChange.NO_PARENT_ID || spawn.ParentObjectId == RuntimeStore.STORE_ROOT_OBJECT_ID)
                         Store.CreateEntitySubtree(spawn.ObjectId);
                 }
 
@@ -435,6 +465,7 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
         public RuntimeReplicaBaselineStage Prepare(byte[] payload)
         {
             var decoded = _codec.Decode(payload);
+            _spawnFactory.ValidateInboundRootPatch(decoded.RootPatch);
             var resolvedAssets = new ResolvedGameAssetReference[decoded.Spawns.Count];
             var objectIds = new long[decoded.Spawns.Count];
             for (var i = 0; i < decoded.Spawns.Count; i++)

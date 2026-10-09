@@ -400,9 +400,13 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                 return Reject(connectionId, RuntimeProtocolRejectCode.InvalidStore, $"ACK references unknown store '{ack.Store}'.");
 
             var result = storeState.Replication.Acknowledge(ack.BaselineId, ack.DeliverySequence);
+            // Rebaselining can overtake an ACK already travelling from the client.
+            // The superseded baseline must not acknowledge the new queue or disconnect
+            // a valid peer; Acknowledge leaves replication state untouched in this case.
             if (result == RuntimeConnectionAckResult.Accepted
                 || result == RuntimeConnectionAckResult.Duplicate
-                || result == RuntimeConnectionAckResult.Stale)
+                || result == RuntimeConnectionAckResult.Stale
+                || result == RuntimeConnectionAckResult.StaleBaseline)
             {
                 _telemetry.ObserveConnectionStore(connectionId, storeState.Replication);
                 return RuntimeSessionHandshakeResult.Success();
@@ -698,11 +702,7 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                         "Interest delta exceeded the reliable transport budget and was replaced by a baseline.");
                 }
 
-                var enqueue = connectionStore.Replication.TryEnqueueInterestDelta(
-                    payload,
-                    enters,
-                    leaves,
-                    out var envelope);
+                var enqueue = connectionStore.Replication.TryEnqueueInterestDeltaOwned(payload, enters, leaves, out var envelope);
                 if (enqueue == RuntimeConnectionDeltaEnqueueResult.NeedsBaseline)
                 {
                     BeginBaseline(connectionId, connection, storeState, connectionStore);
@@ -863,13 +863,7 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                         continue;
                     }
 
-                    var enqueue = connectionStore.Replication.TryEnqueueDelta(
-                        delta.FromRevision,
-                        delta.ToRevision,
-                        payload,
-                        enters,
-                        leaves,
-                        out var envelope);
+                    var enqueue = connectionStore.Replication.TryEnqueueDeltaOwned(delta.FromRevision, delta.ToRevision, payload, enters, leaves, out var envelope);
                     if (enqueue != RuntimeConnectionDeltaEnqueueResult.Enqueued)
                     {
                         BeginBaseline(connectionId, connection, storeState, connectionStore);
@@ -1006,10 +1000,7 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             _telemetry.RecordEncode(
                 RuntimeNetworkStreamKey.Baseline,
                 encodeMeasure.Complete());
-            var transfer = connectionStore.Replication.BeginBaseline(
-                baseline.StoreRevision,
-                payload,
-                membership);
+            var transfer = connectionStore.Replication.BeginBaselineOwned(baseline.StoreRevision, payload, membership);
             _telemetry.RecordBaselineSize(payload.Length);
             if (transfer.BaselineId != baseline.BaselineId)
                 throw new InvalidOperationException("Connection baseline state allocated an unexpected baseline id.");
@@ -1046,7 +1037,7 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                     connection.CheckpointBoundary;
             }
 
-            var payload = transfer.CopyPayload();
+            var payload = transfer.PayloadForChunking;
             var transportHeader = new RuntimeBaselineChunk
             {
                 SessionId = connection.Handshake.SessionId,

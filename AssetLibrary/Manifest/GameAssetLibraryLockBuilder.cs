@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Security.Cryptography;
 using DingoGameObjectsCMS.AssetObjects;
+using DingoGameObjectsCMS.AssetObjects.Authoring;
 using DingoGameObjectsCMS.Modding;
 using DingoGameObjectsCMS.RuntimeObjects;
 using DingoGameObjectsCMS.RuntimeObjects.Overrides;
@@ -15,10 +17,19 @@ namespace DingoGameObjectsCMS.AssetLibrary
             GameAssetTemplateCache templateCache,
             IReadOnlyList<ModPackage> mountedModules)
         {
+            return Build(templateCache, mountedModules, null);
+        }
+
+        public static GameAssetLibraryLock Build(GameAssetTemplateCache templateCache, IReadOnlyList<ModPackage> mountedModules, PrefabGameAssetDefinitions prefabDefinitions)
+        {
             if (templateCache == null)
                 throw new ArgumentNullException(nameof(templateCache));
             if (mountedModules == null)
                 throw new ArgumentNullException(nameof(mountedModules));
+            if (prefabDefinitions?.IsDisposed == true)
+                throw new ObjectDisposedException(nameof(prefabDefinitions));
+            if (prefabDefinitions?.Assets.Count > 0 && string.IsNullOrWhiteSpace(prefabDefinitions.NativeContentHash))
+                throw new InvalidOperationException("Prefab GameAsset definitions require native content hashes. Reconcile the prefab index before building the session library.");
 
             var assetLock = new GameAssetLibraryLock();
             var latestByIdentity = new Dictionary<string, GameAsset>(
@@ -35,11 +46,13 @@ namespace DingoGameObjectsCMS.AssetLibrary
                 var module = orderedModules[moduleIndex]
                              ?? throw new InvalidOperationException(
                                  $"Mounted GameAsset module {moduleIndex} is null.");
-                if (!moduleIds.Add(module.ModuleId))
+                if (!moduleIds.Add(GameAssetIdentityKey.NormalizeMod(module.ModuleId)))
                 {
                     throw new InvalidOperationException(
                         $"Mounted GameAsset module '{module.ModuleId}' is duplicated.");
                 }
+                if (prefabDefinitions != null && string.Equals(GameAssetIdentityKey.NormalizeMod(module.ModuleId), PrefabGameAssetDefinitions.MOD, StringComparison.Ordinal))
+                    throw new InvalidOperationException($"Mounted GameAsset module '{module.ModuleId}' conflicts with the reserved prefab definition module '{PrefabGameAssetDefinitions.MOD}'.");
                 assetLock.SetMod(new GameAssetLibraryLockMod(
                     module.ModuleId,
                     module.ManifestVersion,
@@ -58,24 +71,30 @@ namespace DingoGameObjectsCMS.AssetLibrary
                             $"Mounted asset '{authored.Key}' is not a loadable {nameof(GameAsset)}.");
                     }
 
-                    AddResolvedEntry(
-                        assetLock,
-                        templateCache,
-                        gameAsset.Key,
-                        gameAsset);
                     authoredAssets.Add(gameAsset);
-                    var identity = GameAssetIdentityKey.Normalize(
-                        gameAsset.Key);
-                    if (!latestByIdentity.TryGetValue(
-                            identity,
-                            out var currentLatest)
-                        || GameAssetVersionUtils.Compare(
-                            gameAsset.Key.Version,
-                            currentLatest.Key.Version) > 0)
-                    {
-                        latestByIdentity[identity] = gameAsset;
-                    }
                 }
+            }
+
+            if (prefabDefinitions != null)
+                authoredAssets.AddRange(prefabDefinitions.Assets);
+
+            var exactKeys = new HashSet<string>(StringComparer.Ordinal);
+            var guids = new Dictionary<UnityEngine.Hash128, GameAssetKey>();
+            foreach (var gameAsset in authoredAssets)
+            {
+                if (!exactKeys.Add(GameAssetRequestKey.Normalize(gameAsset.Key)))
+                    throw new InvalidOperationException($"GameAsset '{gameAsset.Key}' is defined more than once in the session library.");
+                if (guids.TryGetValue(gameAsset.GUID, out var existingKey))
+                    throw new InvalidOperationException($"GameAsset GUID '{gameAsset.GUID}' is shared by '{existingKey}' and '{gameAsset.Key}'.");
+                guids.Add(gameAsset.GUID, gameAsset.Key);
+            }
+
+            foreach (var gameAsset in authoredAssets)
+            {
+                AddResolvedEntry(assetLock, templateCache, gameAsset.Key, gameAsset);
+                var identity = GameAssetIdentityKey.Normalize(gameAsset.Key);
+                if (!latestByIdentity.TryGetValue(identity, out var currentLatest) || GameAssetVersionUtils.Compare(gameAsset.Key.Version, currentLatest.Key.Version) > 0)
+                    latestByIdentity[identity] = gameAsset;
             }
 
             foreach (var gameAsset in latestByIdentity.Values)
@@ -87,12 +106,38 @@ namespace DingoGameObjectsCMS.AssetLibrary
                     gameAsset);
             }
 
+            if (prefabDefinitions != null)
+                authoredAssets.AddRange(prefabDefinitions.RegisterOverrides(assetLock, templateCache));
+
+            if (prefabDefinitions?.Assets.Count > 0)
+                assetLock.SetMod(new GameAssetLibraryLockMod(PrefabGameAssetDefinitions.MOD, 1, string.Empty, CalculateNativeModuleHash(templateCache, prefabDefinitions)));
+
             GameAssetDerivedAssetRegistrar.RegisterAuthoredOverrides(
                 assetLock,
                 templateCache,
                 authoredAssets);
 
             return assetLock.Seal();
+        }
+
+        private static string CalculateNativeModuleHash(GameAssetTemplateCache templateCache, PrefabGameAssetDefinitions prefabDefinitions)
+        {
+            using var writer = new CanonicalPatchBinaryWriter();
+            writer.WriteUInt32(1);
+            writer.WriteString(prefabDefinitions.NativeContentHash);
+            writer.WriteInt32(prefabDefinitions.Assets.Count);
+            foreach (var asset in prefabDefinitions.Assets.OrderBy(asset => GameAssetRequestKey.Normalize(asset.Key), StringComparer.Ordinal))
+            {
+                var blueprint = templateCache.GetOrCreate(new GameAssetReference(asset.Key), asset);
+                writer.WriteString(asset.Key.Mod);
+                writer.WriteString(asset.Key.Type);
+                writer.WriteString(asset.Key.Key);
+                writer.WriteString(asset.Key.Version);
+                writer.WriteHash128(asset.GUID);
+                writer.WriteString(blueprint.Asset.MaterializedContentHash);
+            }
+            using var hash = SHA256.Create();
+            return BitConverter.ToString(hash.ComputeHash(writer.ToArray())).Replace("-", string.Empty).ToLowerInvariant();
         }
 
         private static void AddResolvedEntry(

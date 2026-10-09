@@ -10,7 +10,7 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
 {
     public static class RuntimeProtocol
     {
-        public const ushort VERSION = 3;
+        public const ushort VERSION = 4;
         public const int BASELINE_CHUNK_BYTES = 32 * 1024;
         public const int MAX_BASELINE_BYTES = 16 * 1024 * 1024;
         public const int MAX_BASELINE_CHUNKS = ushort.MaxValue;

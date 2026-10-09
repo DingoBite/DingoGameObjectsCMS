@@ -39,6 +39,8 @@ If ownership changes, define an explicit handoff boundary.
 
 ## Factory GRO profile
 
+The factory's GA may come from a JSON module or [native prefab authoring](AssetObjects/Authoring/README.md). Prepare native definitions and mount them, including generated instance overrides, into the session lock before materializing factory GROs. Native Unity prefab identity is content identity; it does not change factory/product identity, state authority or projection lifetime. The session owner disposes the prepared definitions after stores and projections stop using them.
+
 `GameRuntimeEntityFactoryComponent` opts a GRO into factory projection. The GRO
 is a persistent authored factory, while its products are ECS-only entities.
 
@@ -393,6 +395,8 @@ GA/GAC -> immutable Factory GRO -> ECS-only Entity
 и в RuntimeStore. Смена владельца требует явной handoff-границы.
 
 ## Профиль Factory GRO
+
+GA фабрики может происходить из JSON-модуля или [нативного авторинга префабов](AssetObjects/Authoring/README.md). Подготовленные определения и сгенерированные overrides экземпляров подключаются к lock сессии до материализации Factory GRO. Идентичность Unity-префаба определяет контент; правила идентичности фабрики и продуктов, владения состоянием и жизненного цикла проекций сохраняются. Владелец сессии освобождает подготовленные определения после остановки использующих их store и проекций.
 
 `GameRuntimeEntityFactoryComponent` включает factory-проекцию для GRO. GRO
 является persistent authored-фабрикой, а её продукты — ECS-only Entity.

@@ -10,6 +10,13 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
 
         public byte[] Encode(RuntimeObjectPatch patch)
         {
+            using var writer = new CanonicalPatchBinaryWriter();
+            WriteTo(writer, patch);
+            return writer.ToArray();
+        }
+
+        public void WriteTo(CanonicalPatchBinaryWriter writer, RuntimeObjectPatch patch)
+        {
             if (patch == null)
                 throw new ArgumentNullException(nameof(patch));
             if (string.IsNullOrWhiteSpace(patch.SchemaHash))
@@ -17,7 +24,6 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
             if (patch.Representation != RuntimeObjectPatchRepresentation.RuntimeBinary)
                 throw new InvalidOperationException($"Binary patch codec cannot encode representation {patch.Representation}.");
 
-            var writer = new CanonicalPatchBinaryWriter();
             writer.WriteUInt32(FORMAT_MAGIC);
             writer.WriteUInt32(FORMAT_VERSION);
             writer.WriteString(patch.SchemaHash);
@@ -31,12 +37,15 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
             {
                 WriteComponentPatch(writer, components[i]);
             }
-            return writer.ToArray();
         }
 
         public RuntimeObjectPatch Decode(byte[] payload)
         {
-            var reader = new CanonicalPatchBinaryReader(payload);
+            return Decode(new CanonicalPatchBinaryReader(payload));
+        }
+
+        public RuntimeObjectPatch Decode(CanonicalPatchBinaryReader reader)
+        {
             var magic = reader.ReadUInt32();
             if (magic != FORMAT_MAGIC)
                 throw new FormatException($"Runtime object patch magic 0x{magic:x8} does not match 0x{FORMAT_MAGIC:x8}.");

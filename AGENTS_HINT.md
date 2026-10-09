@@ -41,3 +41,9 @@
   `SpriteVisualRef` with its source resource, optional preset id, and optional
   sparse recipe resource. Resource and atlas discovery traverses the generated
   module manifest; do not maintain a parallel content list.
+- GA lookup and validation must provide a safe, deterministic default value
+  when an asset, component, or reference is missing, unresolved, or malformed.
+  Report the problem with enough identity and context to fix the content, and
+  ensure callers can use the default. The fallback must not require authoring
+  another GA asset. An asset-content problem alone must not throw or fail a
+  player build; reserve build failure for faults outside GA content.

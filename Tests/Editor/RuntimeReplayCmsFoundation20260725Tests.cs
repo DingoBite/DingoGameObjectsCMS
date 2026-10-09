@@ -120,7 +120,7 @@ namespace DingoGameObjectsCMS.Tests.Editor
                 MigrateValueV1ToV2);
             registry.Seal();
 
-            var oldWriter = new CanonicalPatchBinaryWriter();
+            using var oldWriter = new CanonicalPatchBinaryWriter();
             oldWriter.WriteInt32(17);
             var decoded = registry.Decode(
                 new RuntimeEncodedCommand(
@@ -164,7 +164,7 @@ namespace DingoGameObjectsCMS.Tests.Editor
 
             var stableReference =
                 RuntimeReplayObjectRef.FromRuntimeInstance(source, context);
-            var writer = new CanonicalPatchBinaryWriter();
+            using var writer = new CanonicalPatchBinaryWriter();
             stableReference.Write(writer);
             var reader = new CanonicalPatchBinaryReader(writer.ToArray());
             var restoredReference = RuntimeReplayObjectRef.Read(reader);
@@ -443,7 +443,7 @@ namespace DingoGameObjectsCMS.Tests.Editor
                     "Value command component is missing.");
             }
 
-            var writer = new CanonicalPatchBinaryWriter();
+            using var writer = new CanonicalPatchBinaryWriter();
             writer.WriteInt32(value.Value);
             writer.WriteString(value.Marker);
             writer.WriteBoolean(value.ThrowAfterMutation);
@@ -474,7 +474,7 @@ namespace DingoGameObjectsCMS.Tests.Editor
             var reader = new CanonicalPatchBinaryReader(payload);
             var value = reader.ReadInt32();
             reader.RequireEnd();
-            var writer = new CanonicalPatchBinaryWriter();
+            using var writer = new CanonicalPatchBinaryWriter();
             writer.WriteInt32(value);
             writer.WriteString("migrated-v1");
             writer.WriteBoolean(false);

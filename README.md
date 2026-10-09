@@ -1,10 +1,10 @@
 # DingoGameObjectsCMS
 
-`DingoGameObjectsCMS` is a content-first runtime framework for Unity where gameplay behavior is described by versioned JSON assets, materialized into a runtime object tree, and then bridged into ECS, networking, view, and persistent data when needed. The canonical authored library is a set of external module packages on disk; Unity project assets are not a second writable source of truth.
+`DingoGameObjectsCMS` is a content-first runtime framework for Unity where gameplay definitions come from versioned JSON module packages or native Unity prefabs, are materialized into a runtime object tree, and then bridge into ECS, networking, view and persistent data when needed. Each definition has one authored source; `RuntimeStore` owns mutable runtime state.
 
 The core idea is simple:
 
-1. You describe an object with a JSON `GameAsset` document, not with scene-specific code.
+1. You describe an object with GACs in a JSON `GameAsset` document or a prefab-root `GameAssetAuthoring` component.
 2. `GameAsset` builds a `GameRuntimeObject` composed of `GameRuntimeComponent` instances.
 3. `GameRuntimeObject` lives inside a `RuntimeStore`, which can keep a tree of objects, track dirty changes, publish change streams, and link runtime objects to ECS entities.
 4. The same runtime layer can then power:
@@ -15,6 +15,8 @@ The core idea is simple:
    - persistent data.
 
 This is not just a "ScriptableObject CMS". It is a unified game model where the external content catalog, runtime model, ECS bridge, replication, and modding all speak the same data language.
+
+The [Prefab → GameAsset authoring](AssetObjects/Authoring/README.md) workflow supports native prefab definitions prepared in memory and mounted into the same immutable `LibraryLock` as JSON modules. Its generated index captures prefab identity, resource dependency hashes and saved instance value/resource overrides. The application owner disposes prepared definitions after consumers stop. Prefab definitions do not publish or maintain a separate GA document; JSON modules remain independent authored sources supported by DingoCMS.
 
 For the opt-in high-cardinality DOTS profile, see [DOTS + RuntimeStore Integration](DOTS_INTEGRATION.md).
 

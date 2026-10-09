@@ -199,7 +199,9 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
             if (patch.Representation == RuntimeObjectPatchRepresentation.RuntimeBinary)
             {
                 var binaryCodec = new RuntimeObjectPatchBinaryCodec();
-                return binaryCodec.Decode(binaryCodec.Encode(patch));
+                using var writer = new CanonicalPatchBinaryWriter();
+                binaryCodec.WriteTo(writer, patch);
+                return binaryCodec.Decode(new CanonicalPatchBinaryReader(writer.AsArray()));
             }
             if (patch.Representation != RuntimeObjectPatchRepresentation.AuthoringCanonicalJson)
                 throw new InvalidOperationException($"Unsupported patch representation {patch.Representation}.");

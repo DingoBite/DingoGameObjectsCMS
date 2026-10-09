@@ -122,7 +122,7 @@ namespace DingoGameObjectsCMS.Tests.Editor
             var expected = CreateDescriptor(RuntimeProtocol.VERSION);
             var actual = CreateDescriptor((ushort)(RuntimeProtocol.VERSION + 1));
 
-            Assert.That(RuntimeProtocol.VERSION, Is.EqualTo(3));
+            Assert.That(RuntimeProtocol.VERSION, Is.EqualTo(4));
             Assert.That(
                 RuntimeSessionDescriptorValidator.Validate(expected, actual),
                 Is.EqualTo(RuntimeProtocolRejectCode.ProtocolVersionMismatch));
@@ -405,6 +405,64 @@ namespace DingoGameObjectsCMS.Tests.Editor
                     out _),
                 Is.False,
                 "A fallible project commit preparation must run before grouped publication.");
+        }
+
+        [Test]
+        public void ServerCoordinator_RebaselineIgnoresDelayedAckWithoutAcknowledgingNewQueue()
+        {
+            var store = RegisterServerStore("map");
+            var fixture = CreateProtocolFixture(store);
+            RuntimeSessionManifestSnapshot manifest = null;
+            var rejections = new List<string>();
+            using var coordinator = new RuntimeProtocolServerCoordinator(
+                fixture.CreateServerContext(CreateBus(), null, null),
+                new RuntimeProtocolServerOutput(
+                    (_, value) => manifest = value,
+                    (_, _, detail) => rejections.Add(detail),
+                    (_, _) => { }, (_, _) => { }, (_, _) => { },
+                    (in RuntimeReliableDeltaTransportEnvelope _) => true,
+                    (in RuntimeBaselineChunk _) => RuntimeProtocol.BASELINE_CHUNK_BYTES));
+            coordinator.AddConnection(1);
+            Assert.That(coordinator.ReceiveHello(1, fixture.Manifest.Descriptor, 2).Accepted, Is.True);
+            Assert.That(coordinator.ReceiveReady(1, manifest.SessionId).Accepted, Is.True);
+            Assert.That(coordinator.TryGetConnectionStoreState(1, store, out var state), Is.True);
+
+            for (var index = 0; index < 8; index++)
+            {
+                var delayed = new RtStoreAckData(manifest.SessionId, store,
+                    state.BaselineId, state.HighestDeliverySequence);
+                coordinator.RequestBaseline(1, store);
+                var replacement = state.ActiveBaseline;
+                var pending = state.PendingReliableCount;
+                var acknowledged = state.AcknowledgedRevision;
+                Assert.That(coordinator.ReceiveAck(1, delayed).Accepted, Is.True);
+                Assert.That(coordinator.ReceiveAck(1, delayed).Accepted, Is.True, "A duplicate old ACK is harmless too.");
+                Assert.That(rejections, Is.Empty);
+                Assert.That(state.ActiveBaseline, Is.SameAs(replacement));
+                Assert.That(state.PendingReliableCount, Is.EqualTo(pending));
+                Assert.That(state.AcknowledgedRevision, Is.EqualTo(acknowledged));
+                Assert.That(coordinator.ReceiveAck(1, new RtStoreAckData(manifest.SessionId, store,
+                    state.BaselineId, state.HighestDeliverySequence)).Accepted, Is.True);
+                Assert.That(state.ActiveBaseline, Is.Null);
+                Assert.That(state.PendingReliableCount, Is.Zero);
+            }
+
+            var invalid = new[]
+            {
+                new RtStoreAckData(manifest.SessionId, store, state.BaselineId + 1, state.HighestDeliverySequence),
+                new RtStoreAckData(manifest.SessionId, store, state.BaselineId, state.HighestDeliverySequence + 1),
+                new RtStoreAckData(manifest.SessionId, store, 0, state.HighestDeliverySequence),
+                new RtStoreAckData(manifest.SessionId, store, state.BaselineId, 0),
+                new RtStoreAckData(manifest.SessionId + 1, store, state.BaselineId, state.HighestDeliverySequence),
+                new RtStoreAckData(manifest.SessionId, new NetStoreRef(store.StoreId, store.StoreGeneration + 1),
+                    state.BaselineId, state.HighestDeliverySequence),
+            };
+            foreach (var ack in invalid)
+            {
+                Assert.That(coordinator.ReceiveAck(1, ack).Accepted, Is.False,
+                    "Ignoring superseded baselines must preserve envelope authorization and forged ACK rejection.");
+            }
+            Assert.That(rejections.Count, Is.EqualTo(invalid.Length));
         }
 
         [Test]
@@ -1566,6 +1624,7 @@ namespace DingoGameObjectsCMS.Tests.Editor
                             Store = store,
                             BaselineId = baselineId,
                             StoreRevision = 0,
+                            RootPatch = new RuntimeObjectPatch(fixture.PatchCodecs.SchemaHash),
                         });
             var chunks = RuntimeBaselineChunker.Split(
                 sessionId,

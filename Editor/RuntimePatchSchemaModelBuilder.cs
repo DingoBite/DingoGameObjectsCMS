@@ -477,7 +477,7 @@ namespace DingoGameObjectsCMS.Editor
             var components = CloneComponents(manifest.Components);
             ValidateComponents(components, "hash");
             SortComponents(components);
-            var writer = new CanonicalPatchBinaryWriter();
+            using var writer = new CanonicalPatchBinaryWriter();
             writer.WriteInt32(manifest.FormatVersion);
             writer.WriteInt32(manifest.CodecVersion);
             writer.WriteString(manifest.ComponentRegistryHash);
@@ -496,7 +496,8 @@ namespace DingoGameObjectsCMS.Editor
             }
 
             using var sha = SHA256.Create();
-            var hash = sha.ComputeHash(writer.ToArray());
+            Span<byte> hash = stackalloc byte[32];
+            sha.TryComputeHash(writer.AsReadOnlySpan(), hash, out _);
             var builder = new StringBuilder(hash.Length * 2);
             for (var i = 0; i < hash.Length; i++)
             {

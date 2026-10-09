@@ -31,7 +31,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
             SourceAssetKey = sourceAssetKey;
             _componentPayloads = new Dictionary<uint, byte[]>(componentPayloads.Count);
             foreach (var pair in componentPayloads)
-                _componentPayloads.Add(pair.Key, (byte[])pair.Value.Clone());
+                _componentPayloads.Add(pair.Key, pair.Value);
             _componentTypeIds = Array.AsReadOnly(_componentPayloads.Keys.OrderBy(value => value).ToArray());
         }
 
@@ -401,7 +401,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
             GameAssetKey exactKey,
             IReadOnlyDictionary<uint, byte[]> componentPayloads)
         {
-            var writer = new CanonicalPatchBinaryWriter();
+            using var writer = new CanonicalPatchBinaryWriter();
             writer.WriteUInt32(MATERIALIZER_VERSION);
             writer.WriteString(_registry.SchemaHash);
             writer.WriteString(exactKey.Mod);
@@ -416,7 +416,9 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
             }
 
             using var sha = SHA256.Create();
-            return ToHex(sha.ComputeHash(writer.ToArray()));
+            Span<byte> digest = stackalloc byte[32];
+            sha.TryComputeHash(writer.AsReadOnlySpan(), digest, out _);
+            return ToHex(digest);
         }
 
         private static void ValidateResolvedAsset(GameAssetReference request, GameAsset asset)
@@ -445,7 +447,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
             return SameIdentity(left, right) && string.Equals(left.Version, right.Version, StringComparison.Ordinal);
         }
 
-        private static string ToHex(byte[] hash)
+        private static string ToHex(ReadOnlySpan<byte> hash)
         {
             var builder = new StringBuilder(hash.Length * 2);
             for (var i = 0; i < hash.Length; i++)
