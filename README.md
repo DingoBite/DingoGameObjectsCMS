@@ -447,6 +447,14 @@ Parent-first binary baselines and ordered reliable deltas are staged and
 published atomically. Delivery sequence, baseline id, store revision, ACK,
 bounded pending queues, and resync are independent protocol concepts.
 
+Replica publication commits the complete store cohort before notifying binding
+observers. A notification failure still retires replaced stores and publishes
+lifecycle changes, then reports the original failure or collected failures.
+Committed baseline stages remain `Published`; abort and failure cleanup cannot
+retire the active cohort. Protocol coordinators log a committed notification
+failure and finish checkpoint commit, receiver acknowledgement and readiness.
+Failures before publication retain the staging rejection/resync path.
+
 Gameplay composition owns a `DingoNetworkManager.BindRuntimeProtocol` binding.
 Its returned `DingoRuntimeProtocolBinding` is disposed before the checkpoint
 owners, stores and ECS World it borrows. Retirement clears the factory, command

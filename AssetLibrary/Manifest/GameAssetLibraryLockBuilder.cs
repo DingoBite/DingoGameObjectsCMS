@@ -195,16 +195,27 @@ namespace DingoGameObjectsCMS.AssetLibrary
             return true;
         }
 
-        public static GameAssetLibraryLockReport CompareWithCurrentLibrary(GameAssetLibraryLock assetLock)
+        public static GameAssetLibraryLockReport CompareWithCurrentLibrary(GameAssetLibraryLock assetLock, GameAssetLibraryLock currentLibrary)
         {
+            if (currentLibrary == null)
+                throw new ArgumentNullException(nameof(currentLibrary));
+            if (!currentLibrary.IsReadOnly)
+                throw new InvalidOperationException("Current GameAsset library comparison requires a sealed session snapshot.");
+
             var report = new GameAssetLibraryLockReport();
             if (assetLock == null)
                 return report;
 
-            CompareMods(assetLock, report);
+            CompareMods(assetLock, currentLibrary, report);
 
             if (assetLock.Entries == null || assetLock.Entries.Count == 0)
                 return report;
+
+            var currentByGuid = new Dictionary<UnityEngine.Hash128, GameAssetLibraryLockEntry>();
+            foreach (var currentEntry in currentLibrary.Entries.Values)
+            {
+                currentByGuid.TryAdd(currentEntry.ResolvedGuid, currentEntry);
+            }
 
             foreach (var kv in assetLock.Entries)
             {
@@ -227,10 +238,10 @@ namespace DingoGameObjectsCMS.AssetLibrary
                     });
                 }
 
-                var hasCurrentIdentity = GameAssetLibraryManifest.TryResolveImmutable(request, out var currentIdentityAsset);
-                GameAssetScriptableObject currentGuidAsset = null;
-                var hasCurrentGuid = entry.ResolvedGuid.isValid && GameAssetLibraryManifest.TryResolveImmutableGuid(entry.ResolvedGuid, out currentGuidAsset);
-                var hasCurrentResolvedKey = GameAssetLibraryManifest.TryResolveImmutable(entry.ResolvedKey, out var currentResolvedKeyAsset);
+                var hasCurrentIdentity = currentLibrary.TryGet(request, out var currentIdentityAsset);
+                GameAssetLibraryLockEntry currentGuidAsset = null;
+                var hasCurrentGuid = entry.ResolvedGuid.isValid && currentByGuid.TryGetValue(entry.ResolvedGuid, out currentGuidAsset);
+                var hasCurrentResolvedKey = currentLibrary.TryGet(entry.ResolvedKey, out var currentResolvedKeyAsset);
 
                 if (!hasCurrentIdentity)
                 {
@@ -251,8 +262,8 @@ namespace DingoGameObjectsCMS.AssetLibrary
                         Identity = identity,
                         LockedResolvedKey = entry.ResolvedKey,
                         LockedResolvedGuid = entry.ResolvedGuid,
-                        CurrentResolvedKey = hasCurrentIdentity ? currentIdentityAsset.Key : default,
-                        CurrentResolvedGuid = hasCurrentIdentity ? currentIdentityAsset.GUID : default,
+                        CurrentResolvedKey = hasCurrentIdentity ? currentIdentityAsset.ResolvedKey : default,
+                        CurrentResolvedGuid = hasCurrentIdentity ? currentIdentityAsset.ResolvedGuid : default,
                     });
                 }
 
@@ -264,8 +275,8 @@ namespace DingoGameObjectsCMS.AssetLibrary
                         Identity = identity,
                         LockedResolvedKey = entry.ResolvedKey,
                         LockedResolvedGuid = entry.ResolvedGuid,
-                        CurrentResolvedKey = hasCurrentIdentity ? currentIdentityAsset.Key : default,
-                        CurrentResolvedGuid = hasCurrentIdentity ? currentIdentityAsset.GUID : default,
+                        CurrentResolvedKey = hasCurrentIdentity ? currentIdentityAsset.ResolvedKey : default,
+                        CurrentResolvedGuid = hasCurrentIdentity ? currentIdentityAsset.ResolvedGuid : default,
                     });
                 }
 
@@ -278,8 +289,24 @@ namespace DingoGameObjectsCMS.AssetLibrary
                         Identity = identity,
                         LockedResolvedKey = entry.ResolvedKey,
                         LockedResolvedGuid = entry.ResolvedGuid,
-                        CurrentResolvedKey = currentAsset != null ? currentAsset.Key : default,
-                        CurrentResolvedGuid = currentAsset != null ? currentAsset.GUID : default,
+                        CurrentResolvedKey = currentAsset != null ? currentAsset.ResolvedKey : default,
+                        CurrentResolvedGuid = currentAsset != null ? currentAsset.ResolvedGuid : default,
+                    });
+                }
+
+                if (hasCurrentResolvedKey && !string.IsNullOrWhiteSpace(entry.MaterializedContentHash)
+                    && !string.Equals(entry.MaterializedContentHash, currentResolvedKeyAsset.MaterializedContentHash, StringComparison.Ordinal))
+                {
+                    report.Issues.Add(new GameAssetLibraryLockIssue
+                    {
+                        Kind = GameAssetLibraryLockIssueKinds.CONTENT_CHANGED,
+                        Identity = identity,
+                        LockedResolvedKey = entry.ResolvedKey,
+                        LockedResolvedGuid = entry.ResolvedGuid,
+                        CurrentResolvedKey = currentResolvedKeyAsset.ResolvedKey,
+                        CurrentResolvedGuid = currentResolvedKeyAsset.ResolvedGuid,
+                        LockedMaterializedContentHash = entry.MaterializedContentHash,
+                        CurrentMaterializedContentHash = currentResolvedKeyAsset.MaterializedContentHash,
                     });
                 }
             }
@@ -287,19 +314,18 @@ namespace DingoGameObjectsCMS.AssetLibrary
             return report;
         }
 
-        private static void CompareMods(GameAssetLibraryLock assetLock, GameAssetLibraryLockReport report)
+        private static void CompareMods(GameAssetLibraryLock assetLock, GameAssetLibraryLock currentLibrary, GameAssetLibraryLockReport report)
         {
             if (assetLock.Mods == null || assetLock.Mods.Count == 0)
                 return;
 
-            var currentMods = BuildCurrentModIndex();
             foreach (var kv in assetLock.Mods)
             {
                 var lockedMod = kv.Value;
                 if (lockedMod == null)
                     continue;
 
-                if (!currentMods.TryGetValue(kv.Key, out var currentMod))
+                if (!currentLibrary.Mods.TryGetValue(kv.Key, out var currentMod))
                 {
                     report.Issues.Add(new GameAssetLibraryLockIssue
                     {
@@ -328,25 +354,6 @@ namespace DingoGameObjectsCMS.AssetLibrary
             }
         }
 
-        private static Dictionary<string, GameAssetLibraryLockMod> BuildCurrentModIndex()
-        {
-            var mods = new Dictionary<string, GameAssetLibraryLockMod>(StringComparer.Ordinal);
-            foreach (var module in GameAssetLibraryManifest.CollectImmutableModPackages())
-            {
-                if (module == null)
-                    continue;
-
-                mods[GameAssetIdentityKey.NormalizeMod(module.ModuleId)] =
-                    new GameAssetLibraryLockMod(
-                        module.ModuleId,
-                        module.ManifestVersion,
-                        module.GeneratedUtc,
-                        module.ContentHash);
-            }
-
-            return mods;
-        }
-
         private static bool IsLatestVersionRequest(GameAssetKey key)
         {
             return string.IsNullOrWhiteSpace(key.Version);
@@ -360,20 +367,20 @@ namespace DingoGameObjectsCMS.AssetLibrary
         private static bool HasGuidKeyMismatch(
             GameAssetLibraryLockEntry entry,
             bool hasCurrentGuid,
-            GameAssetScriptableObject currentGuidAsset,
+            GameAssetLibraryLockEntry currentGuidAsset,
             bool hasCurrentResolvedKey,
-            GameAssetScriptableObject currentResolvedKeyAsset)
+            GameAssetLibraryLockEntry currentResolvedKeyAsset)
         {
             if (!hasCurrentGuid && !hasCurrentResolvedKey)
                 return false;
 
-            if (hasCurrentGuid && currentGuidAsset != null && !KeysEqual(currentGuidAsset.Key, entry.ResolvedKey))
+            if (hasCurrentGuid && currentGuidAsset != null && !KeysEqual(currentGuidAsset.ResolvedKey, entry.ResolvedKey))
                 return true;
 
-            if (hasCurrentResolvedKey && currentResolvedKeyAsset != null && entry.ResolvedGuid.isValid && currentResolvedKeyAsset.GUID != entry.ResolvedGuid)
+            if (hasCurrentResolvedKey && currentResolvedKeyAsset != null && entry.ResolvedGuid.isValid && currentResolvedKeyAsset.ResolvedGuid != entry.ResolvedGuid)
                 return true;
 
-            if (hasCurrentGuid && hasCurrentResolvedKey && currentGuidAsset != null && currentResolvedKeyAsset != null && currentGuidAsset.GUID != currentResolvedKeyAsset.GUID)
+            if (hasCurrentGuid && hasCurrentResolvedKey && currentGuidAsset != null && currentResolvedKeyAsset != null && currentGuidAsset.ResolvedGuid != currentResolvedKeyAsset.ResolvedGuid)
                 return true;
 
             return false;

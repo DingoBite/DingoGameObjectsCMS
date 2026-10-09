@@ -21,8 +21,7 @@ namespace DingoGameObjectsCMS.Editor.Authoring
             IndexAssetPath = indexAssetPath?.Replace('\\', '/');
             IncludeAssetPath = includeAssetPath;
             ResourceDependencies = resourceDependencies;
-            if (IsConfigured)
-                PrefabGameAssetIndexEditorUtility.RequestReconcile();
+            PrefabGameAssetIndexEditorUtility.OnConfigurationChanged();
         }
 
         public static bool Includes(string assetPath)
@@ -37,6 +36,7 @@ namespace DingoGameObjectsCMS.Editor.Authoring
     {
         private static bool _scheduled;
         private static bool _reconciling;
+        private static HashSet<string> _contentDependencyPaths = new(StringComparer.Ordinal);
 
         static PrefabGameAssetIndexEditorUtility()
         {
@@ -68,6 +68,7 @@ namespace DingoGameObjectsCMS.Editor.Authoring
         {
             if (!PrefabGameAssetIndexConfiguration.IsConfigured || _reconciling)
                 return null;
+            CancelScheduledReconcile();
             _reconciling = true;
             try
             {
@@ -100,6 +101,9 @@ namespace DingoGameObjectsCMS.Editor.Authoring
                     EditorUtility.SetDirty(index);
                     AssetDatabase.SaveAssetIfDirty(index);
                 }
+                // Use the same roots and effective override dependencies that contributed to the hashes.
+                // Keep old paths until reconciliation succeeds so moves and deletions still invalidate them.
+                _contentDependencyPaths = new HashSet<string>(hashCache.DependencyPaths, StringComparer.Ordinal);
                 return index;
             }
             finally
@@ -116,18 +120,41 @@ namespace DingoGameObjectsCMS.Editor.Authoring
             EditorApplication.update += ReconcileDeferred;
         }
 
+        public static void OnConfigurationChanged()
+        {
+            _contentDependencyPaths.Clear();
+            CancelScheduledReconcile();
+            if (PrefabGameAssetIndexConfiguration.IsConfigured)
+                RequestReconcile();
+        }
+
+        public static bool IsRelevantAssetChange(string assetPath)
+        {
+            var path = assetPath?.Replace('\\', '/');
+            if (!PrefabGameAssetIndexConfiguration.IsConfigured || string.IsNullOrEmpty(path) || string.Equals(path, PrefabGameAssetIndexConfiguration.IndexAssetPath, StringComparison.Ordinal))
+                return false;
+            if (_contentDependencyPaths.Contains(path))
+                return true;
+            // New authored hierarchies need discovery; unrelated resources need no index work.
+            return PrefabGameAssetIndexConfiguration.Includes(path) && (path.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase) || path.EndsWith(".unity", StringComparison.OrdinalIgnoreCase));
+        }
+
+        private static void CancelScheduledReconcile()
+        {
+            EditorApplication.update -= ReconcileDeferred;
+            _scheduled = false;
+        }
+
         private static void ReconcileDeferred()
         {
             if (!PrefabGameAssetIndexConfiguration.IsConfigured || EditorApplication.isPlayingOrWillChangePlaymode)
             {
-                EditorApplication.update -= ReconcileDeferred;
-                _scheduled = false;
+                CancelScheduledReconcile();
                 return;
             }
             if (EditorApplication.isCompiling || EditorApplication.isUpdating || PrefabGameAssetOverrideEditorUtility.IsBakingSavedAssets)
                 return;
-            EditorApplication.update -= ReconcileDeferred;
-            _scheduled = false;
+            CancelScheduledReconcile();
             try
             {
                 Reconcile();
@@ -142,8 +169,7 @@ namespace DingoGameObjectsCMS.Editor.Authoring
         {
             if (state == PlayModeStateChange.ExitingEditMode)
             {
-                EditorApplication.update -= ReconcileDeferred;
-                _scheduled = false;
+                CancelScheduledReconcile();
                 try
                 {
                     Reconcile();
@@ -175,11 +201,9 @@ namespace DingoGameObjectsCMS.Editor.Authoring
     {
         private static void OnPostprocessAllAssets(string[] importedAssets, string[] deletedAssets, string[] movedAssets, string[] movedFromAssetPaths)
         {
-            if (importedAssets.Concat(deletedAssets).Concat(movedAssets).Concat(movedFromAssetPaths).Any(IsRelevant))
+            if (importedAssets.Concat(deletedAssets).Concat(movedAssets).Concat(movedFromAssetPaths).Any(PrefabGameAssetIndexEditorUtility.IsRelevantAssetChange))
                 PrefabGameAssetIndexEditorUtility.RequestReconcile();
         }
-
-        private static bool IsRelevant(string path) => PrefabGameAssetIndexConfiguration.Includes(path) || (!string.IsNullOrEmpty(path) && path.StartsWith("Packages/", StringComparison.Ordinal));
     }
 
     public class PrefabGameAssetIndexSaveHook : AssetModificationProcessor
@@ -188,7 +212,7 @@ namespace DingoGameObjectsCMS.Editor.Authoring
         {
             if (!EditorApplication.isPlayingOrWillChangePlaymode)
                 PrefabGameAssetOverrideEditorUtility.BakeSavedAssets(paths, false);
-            if (paths.Any(path => PrefabGameAssetIndexConfiguration.Includes(path) || path.StartsWith("Packages/", StringComparison.Ordinal)))
+            if (paths.Any(PrefabGameAssetIndexEditorUtility.IsRelevantAssetChange))
                 PrefabGameAssetIndexEditorUtility.RequestReconcile();
             return paths;
         }

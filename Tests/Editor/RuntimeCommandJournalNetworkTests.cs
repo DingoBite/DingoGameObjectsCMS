@@ -330,6 +330,141 @@ namespace DingoGameObjectsCMS.Tests.Editor
             Assert.That(coordinator.IsReplicaReady, Is.True);
         }
 
+        [TestCase(1)]
+        [TestCase(2)]
+        public void ClientCoordinator_PublicationObserverFailureCommitsCheckpointAndCompletesReadiness(int storeCount)
+        {
+            var stores = storeCount == 1
+                ? new[] { new NetStoreRef(new FixedString32Bytes("map"), 1) }
+                : new[] { new NetStoreRef(new FixedString32Bytes("map"), 1), new NetStoreRef(new FixedString32Bytes("units"), 1) };
+            var scope = storeCount == 1 ? new RuntimeCommandJournalScope("map") : new RuntimeCommandJournalScope("map", "units");
+            var fixture = CreateProtocolFixture(stores);
+            var recovery = CreateRecoveryCheckpoint("world", 5, 0, new byte[] { 1, 2, 3 });
+            var transaction = new RecordingRestoreTransaction();
+            var restoreCalls = 0;
+            var acknowledgements = new List<RtStoreAckData>();
+            var resyncs = new List<RtStoreResyncData>();
+            var rejects = new List<string>();
+            using var coordinator = new RuntimeProtocolClientCoordinator(
+                fixture.CreateClientContext(CreateBus(), scope, _ => { }, (_, _, stagedStores) =>
+                {
+                    restoreCalls++;
+                    Assert.That(stagedStores, Has.Count.EqualTo(storeCount));
+                    return transaction;
+                }),
+                new RuntimeProtocolClientOutput((_, _) => { }, _ => { }, (_, detail) => rejects.Add(detail),
+                    acknowledgements.Add, resyncs.Add, _ => { }, _ => { }),
+                clientNonce: 24);
+            var session = BeginClientSession(coordinator, fixture, sessionId: 36);
+            for (var i = 0; i < stores.Length; i++)
+            {
+                Assert.That(SendBaseline(coordinator, fixture, session.SessionId, stores[i], 1, 1, recovery.Boundary).Kind,
+                    Is.EqualTo(RuntimeClientReceiveResultKind.Buffered));
+            }
+
+            var notifications = 0;
+            Action<IReadOnlyDictionary<FixedString32Bytes, RuntimeStore>> failObserver = _ =>
+            {
+                notifications++;
+                throw new InvalidOperationException("Expected committed checkpoint replica observer failure.");
+            };
+            RuntimeStores.ClientStores.OnValueChange += failObserver;
+            try
+            {
+                UnityEngine.TestTools.LogAssert.Expect(LogType.Exception,
+                    "InvalidOperationException: Expected committed checkpoint replica observer failure.");
+                var chunks = RuntimeCheckpointChunker.Split(session.SessionId, recovery);
+                RuntimeClientReceiveResult result = default;
+                for (var i = 0; i < chunks.Count; i++)
+                {
+                    result = coordinator.ReceiveCheckpointChunk(chunks[i], i + 1);
+                }
+                Assert.That(result.Kind, Is.EqualTo(RuntimeClientReceiveResultKind.Buffered));
+                Assert.That(transaction.IsPrepared, Is.True);
+                Assert.That(transaction.IsCommitted, Is.True);
+                Assert.That(transaction.IsDisposed, Is.True);
+                Assert.That(restoreCalls, Is.EqualTo(1));
+                Assert.That(notifications, Is.EqualTo(1));
+                Assert.That(acknowledgements, Has.Count.EqualTo(storeCount));
+                Assert.That(resyncs, Is.Empty);
+                Assert.That(rejects, Is.Empty);
+                var committed = new RuntimeStore[stores.Length];
+                for (var i = 0; i < stores.Length; i++)
+                {
+                    committed[i] = RuntimeStores.GetRuntimeStore(stores[i].StoreId, StoreRealm.Client);
+                    Assert.That(committed[i], Is.Not.Null);
+                    Assert.That(committed[i].Retired, Is.False);
+                }
+                var duplicate = coordinator.ReceiveCheckpointChunk(chunks[0], 4);
+                Assert.That(duplicate.Kind, Is.EqualTo(RuntimeClientReceiveResultKind.Duplicate));
+                Assert.That(restoreCalls, Is.EqualTo(1), "An already committed cohort cannot restore its checkpoint twice.");
+                var journalResult = coordinator.ReceiveJournalBatch(new RuntimeCommandJournalBatch(
+                    session.SessionId, recovery.Boundary.GroupId, recovery.Boundary.CheckpointHash,
+                    0, 0, Array.Empty<RuntimeCommandJournalEntry>(), completesCatchup: true));
+                Assert.That(journalResult.Succeeded, Is.True);
+                Assert.That(coordinator.IsReplicaReady, Is.True);
+                Assert.That(notifications, Is.EqualTo(1));
+                Assert.That(resyncs, Is.Empty);
+                for (var i = 0; i < stores.Length; i++)
+                {
+                    Assert.That(RuntimeStores.GetRuntimeStore(stores[i].StoreId, StoreRealm.Client), Is.SameAs(committed[i]));
+                    Assert.That(committed[i].Retired, Is.False);
+                }
+            }
+            finally
+            {
+                RuntimeStores.ClientStores.OnValueChange -= failObserver;
+            }
+        }
+
+        [Test]
+        public void ClientCoordinator_RebaselineObserverFailureAcknowledgesCommittedReplacement()
+        {
+            var store = new NetStoreRef(new FixedString32Bytes("map"), 1);
+            var fixture = CreateProtocolFixture(store);
+            var acknowledgements = new List<RtStoreAckData>();
+            var resyncs = new List<RtStoreResyncData>();
+            using var coordinator = new RuntimeProtocolClientCoordinator(
+                fixture.CreateClientContext(CreateBus(), null, null),
+                new RuntimeProtocolClientOutput((_, _) => { }, _ => { }, (_, _) => { },
+                    acknowledgements.Add, resyncs.Add, _ => { }),
+                clientNonce: 25);
+            var session = BeginClientSession(coordinator, fixture, sessionId: 37);
+            Assert.That(SendBaseline(coordinator, fixture, session.SessionId, store, 1, 1, null).Kind,
+                Is.EqualTo(RuntimeClientReceiveResultKind.BaselineApplied));
+            var previous = RuntimeStores.GetRuntimeStore(store.StoreId, StoreRealm.Client);
+            var notifications = 0;
+            Action<IReadOnlyDictionary<FixedString32Bytes, RuntimeStore>> failObserver = _ =>
+            {
+                notifications++;
+                throw new InvalidOperationException("Expected committed rebaseline observer failure.");
+            };
+            RuntimeStores.ClientStores.OnValueChange += failObserver;
+            try
+            {
+                UnityEngine.TestTools.LogAssert.Expect(LogType.Exception,
+                    "InvalidOperationException: Expected committed rebaseline observer failure.");
+                Assert.That(SendBaseline(coordinator, fixture, session.SessionId, store, 2, 2, null).Kind,
+                    Is.EqualTo(RuntimeClientReceiveResultKind.BaselineApplied));
+                var current = RuntimeStores.GetRuntimeStore(store.StoreId, StoreRealm.Client);
+                Assert.That(current, Is.Not.SameAs(previous));
+                Assert.That(current.Retired, Is.False);
+                Assert.That(previous.Retired, Is.True);
+                Assert.That(coordinator.IsReplicaReady, Is.True);
+                Assert.That(acknowledgements[acknowledgements.Count - 1].BaselineId, Is.EqualTo(2));
+                Assert.That(resyncs, Is.Empty);
+                Assert.That(notifications, Is.EqualTo(1));
+                Assert.That(SendBaseline(coordinator, fixture, session.SessionId, store, 2, 2, null).Kind,
+                    Is.EqualTo(RuntimeClientReceiveResultKind.Duplicate));
+                Assert.That(notifications, Is.EqualTo(1));
+                Assert.That(RuntimeStores.GetRuntimeStore(store.StoreId, StoreRealm.Client), Is.SameAs(current));
+            }
+            finally
+            {
+                RuntimeStores.ClientStores.OnValueChange -= failObserver;
+            }
+        }
+
         [Test]
         public void ClientCoordinator_ProjectCommitPreparationFailureDoesNotPublishOrBecomeReady()
         {

@@ -38,6 +38,8 @@ namespace DingoGameObjectsCMS.Editor.Authoring
         private readonly Dictionary<string, KeyValuePair<string, string>> _dependencyHashes = new(StringComparer.Ordinal);
         private readonly Dictionary<string, string> _contentHashes = new(StringComparer.Ordinal);
 
+        public IEnumerable<string> DependencyPaths => _dependencyPaths.Values.SelectMany(paths => paths).Distinct(StringComparer.Ordinal);
+
         public string Compute(string assetPath, IEnumerable<string> resourcePaths)
         {
             var roots = resourcePaths.Append(assetPath).Where(path => !string.IsNullOrEmpty(path)).Select(path => path.Replace('\\', '/')).Distinct(StringComparer.Ordinal).OrderBy(path => path, StringComparer.Ordinal).ToArray();

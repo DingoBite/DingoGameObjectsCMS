@@ -690,7 +690,21 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                     restoreTransaction.PrepareCommit();
                 }
 
-                _baselineApplier.PublishGroup(stages, StoreNetDir.S2C);
+                try
+                {
+                    _baselineApplier.PublishGroup(stages, StoreNetDir.S2C);
+                }
+                catch (Exception exception)
+                {
+                    for (var i = 0; i < stages.Count; i++)
+                    {
+                        if (stages[i].State != RuntimeReplicaBaselineStageState.Published)
+                            throw;
+                    }
+                    // Observer failure follows the registry commit. Complete the
+                    // checkpoint transaction and receiver boundary for this cohort.
+                    Debug.LogException(exception);
+                }
                 RuntimeCheckpointProjectionBarrier.Playback(_context.World);
                 restoreTransaction?.Commit();
                 Trace(
@@ -841,8 +855,13 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                 _baselineApplier.Apply(stage, StoreNetDir.S2C);
                 return true;
             }
-            catch
+            catch (Exception exception)
             {
+                if (stage?.State == RuntimeReplicaBaselineStageState.Published)
+                {
+                    Debug.LogException(exception);
+                    return true;
+                }
                 if (stage != null
                     && stage.State != RuntimeReplicaBaselineStageState.Published
                     && stage.State != RuntimeReplicaBaselineStageState.Aborted

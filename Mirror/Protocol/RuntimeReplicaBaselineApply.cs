@@ -408,7 +408,8 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             }
             catch
             {
-                Fail();
+                if (!CompletePublishedStore())
+                    Fail();
                 throw;
             }
         }
@@ -417,13 +418,22 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
         {
             if (State != RuntimeReplicaBaselineStageState.Built)
                 throw new InvalidOperationException($"Replica baseline stage '{StoreReference}' cannot complete grouped publication from state {State}.");
+            if (!CompletePublishedStore())
+                throw new InvalidOperationException($"Replica baseline stage '{StoreReference}' has not been committed to the client registry.");
+        }
+
+        private bool CompletePublishedStore()
+        {
+            if (!ReferenceEquals(RuntimeStores.GetRuntimeStore(Store.Id, Store.Realm), Store))
+                return false;
             _stagingRealms.RemovePreparedStore(Store);
             State = RuntimeReplicaBaselineStageState.Published;
+            return true;
         }
 
         public void Abort()
         {
-            if (State == RuntimeReplicaBaselineStageState.Published)
+            if (State == RuntimeReplicaBaselineStageState.Published || CompletePublishedStore())
                 throw new InvalidOperationException($"Published replica baseline '{StoreReference}' cannot be aborted.");
             if (State == RuntimeReplicaBaselineStageState.Aborted || State == RuntimeReplicaBaselineStageState.Failed)
                 return;
@@ -546,10 +556,17 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                 stores[i] = stage.Store;
             }
 
-            RuntimeStores.PublishPreparedReplicaStores(stores, direction);
-            for (var i = 0; i < stages.Count; i++)
+            try
             {
-                stages[i].CompleteGroupedPublish();
+                RuntimeStores.PublishPreparedReplicaStores(stores, direction);
+            }
+            finally
+            {
+                for (var i = 0; i < stages.Count; i++)
+                {
+                    if (ReferenceEquals(RuntimeStores.GetRuntimeStore(stores[i].Id, StoreRealm.Client), stores[i]))
+                        stages[i].CompleteGroupedPublish();
+                }
             }
         }
     }

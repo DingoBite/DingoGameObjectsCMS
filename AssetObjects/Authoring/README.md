@@ -28,6 +28,21 @@ The Editor reconciles synchronously before entering Play. Scene processing for P
 
 A product may pass `ResourceDependencies` as the third `PrefabGameAssetIndexConfiguration.Configure(...)` argument to resolve additional resource paths from collected GACs, for example Addressables references serialized only as GUIDs. These paths participate in hashing root definitions and effective instance snapshots even when Unity's dependency graph omits them. The two-argument configuration clears this optional callback; temporary Editor configurations must restore all three values.
 
+The successful reconciliation retains the union of paths used by that same hash
+calculation. Import, save, move and deletion events invalidate the index for
+those dependencies even outside the authoring inclusion filter. Configuration
+changes rebuild the dependency set. Unrelated resources and imports of the
+generated index do not schedule another hierarchy scan or rewrite the index.
+
+`GameAssetLibraryLockBuilder.CompareWithCurrentLibrary(locked, currentSnapshot)`
+compares captured module, key, GUID and materialized-hash metadata from two
+library snapshots. Obtain the current sealed snapshot through the same `Build`
+or environment path used for the session, including its JSON modules and native
+definitions. Comparison does not consult a separate filesystem catalog or live
+definition SOs. Resource-only changes report `MOD_CHANGED`; changed runtime
+content reports `CONTENT_CHANGED` with both captured hashes. Derived instance
+snapshots remain covered by their native module fingerprint.
+
 The application/session owner may use `GameAssetRuntimeEnvironment(codecs, context, index)` to own preparation, mounting and temporary definitions. Stop consumers before calling its idempotent `Dispose()`: it clears templates and disposes native definition SOs, while source prefabs, the index and Unity resources remain owned by Unity. With direct preparation, the caller owns `PrefabGameAssetDefinitions.Dispose()` and template lifetime. A new preparation/session is required to observe authoring changes. Authoring and reference resolution do not create or own a live GRO or GameObject lifecycle; feature owners continue to create objects through `RuntimeStore`.
 
 Editor converter discovery caches its runtime type catalog and source matches until domain reload. Native save callbacks prepare and mark metadata without saving the same prefab recursively; the caller owns that save. Explicit reconciliation may save prepared prefabs outside the callback. Deferred preparation and reconciliation wait while metadata baking is active.

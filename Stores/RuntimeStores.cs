@@ -632,44 +632,7 @@ namespace DingoGameObjectsCMS.Stores
         {
             if (store == null)
                 throw new ArgumentNullException(nameof(store));
-            if (store.Realm != StoreRealm.Client || store.StoreGeneration == 0 || store.Epoch == 0)
-                throw new InvalidOperationException($"Replica store '{store.Id}' has not been prepared.");
-            if (store.Retired)
-                throw new InvalidOperationException($"Cannot publish retired replica store '{store.Id}'.");
-
-            var generations = GetGenerationDict(StoreRealm.Client);
-            var reservedGeneration = generations.GetValueOrDefault(store.Id);
-            var reservedEpoch = GetEpochDict(StoreRealm.Client).GetValueOrDefault(store.Id);
-            if (reservedGeneration != store.StoreGeneration || reservedEpoch != store.Epoch)
-            {
-                throw new InvalidOperationException(
-                    $"Replica store '{store.Id}' prepared generation/epoch {store.StoreGeneration}/{store.Epoch}, but registry reservation is {reservedGeneration}/{reservedEpoch}.");
-            }
-
-            var dict = GetDict(StoreRealm.Client);
-            var bind = GetBind(StoreRealm.Client);
-            dict.TryGetValue(store.Id, out var previous);
-            if (ReferenceEquals(previous, store))
-                return store;
-            if (previous != null && previous.StoreGeneration > store.StoreGeneration)
-                throw new InvalidOperationException($"Cannot replace newer replica store '{store.Id}' generation {previous.StoreGeneration} with {store.StoreGeneration}.");
-
-            var effectiveDirection = dir != StoreNetDir.None ? dir : GetNetDir(store.Id);
-            ValidateAuthoritativeS2CStore(store.Id, effectiveDirection);
-
-            dict[store.Id] = store;
-            bind.V[store.Id] = store;
-            bind.V = bind.V;
-            if (dir != StoreNetDir.None)
-                _netDirById[store.Id] = dir;
-
-            previous?.Retire();
-            PublishStoreLifecycleChange(
-                previous == null
-                    ? RuntimeStoreLifecycleChange.Registered(store)
-                    : RuntimeStoreLifecycleChange.Replaced(
-                        store,
-                        previous));
+            PublishPreparedReplicaStores(new[] { store }, dir);
             return store;
         }
 
@@ -687,6 +650,7 @@ namespace DingoGameObjectsCMS.Stores
             var bind = GetBind(StoreRealm.Client);
             var seen = new HashSet<FixedString32Bytes>();
             var previous = new RuntimeStore[stores.Count];
+            var changed = false;
             for (var i = 0; i < stores.Count; i++)
             {
                 var store = stores[i] ?? throw new InvalidOperationException($"Replica publication group contains a null store at index {i}.");
@@ -707,6 +671,7 @@ namespace DingoGameObjectsCMS.Stores
 
                 dict.TryGetValue(store.Id, out var previousStore);
                 previous[i] = previousStore;
+                changed |= !ReferenceEquals(previousStore, store);
                 if (previous[i] != null && previous[i].StoreGeneration > store.StoreGeneration)
                 {
                     throw new InvalidOperationException(
@@ -717,6 +682,9 @@ namespace DingoGameObjectsCMS.Stores
                 ValidateAuthoritativeS2CStore(store.Id, effectiveDirection);
             }
 
+            if (!changed)
+                return;
+
             for (var i = 0; i < stores.Count; i++)
             {
                 var store = stores[i];
@@ -725,24 +693,56 @@ namespace DingoGameObjectsCMS.Stores
                 if (dir != StoreNetDir.None)
                     _netDirById[store.Id] = dir;
             }
-            bind.V = bind.V;
-
-            for (var i = 0; i < stores.Count; i++)
+            List<Exception> publicationFailures = null;
+            try
             {
-                if (!ReferenceEquals(previous[i], stores[i]))
-                    previous[i]?.Retire();
+                bind.V = bind.V;
+            }
+            catch (Exception exception)
+            {
+                // The complete cohort is committed before binding observers run.
+                // Finish all retirement and lifecycle work without rolling it back.
+                publicationFailures = new List<Exception> { exception };
             }
 
             for (var i = 0; i < stores.Count; i++)
             {
                 if (ReferenceEquals(previous[i], stores[i]))
                     continue;
-                PublishStoreLifecycleChange(
-                    previous[i] == null
-                        ? RuntimeStoreLifecycleChange.Registered(stores[i])
-                        : RuntimeStoreLifecycleChange.Replaced(
-                            stores[i],
-                            previous[i]));
+                try
+                {
+                    previous[i]?.Retire();
+                }
+                catch (Exception exception)
+                {
+                    (publicationFailures ??= new List<Exception>()).Add(exception);
+                }
+            }
+
+            for (var i = 0; i < stores.Count; i++)
+            {
+                if (ReferenceEquals(previous[i], stores[i]))
+                    continue;
+                try
+                {
+                    PublishStoreLifecycleChange(
+                        previous[i] == null
+                            ? RuntimeStoreLifecycleChange.Registered(stores[i])
+                            : RuntimeStoreLifecycleChange.Replaced(stores[i], previous[i]));
+                }
+                catch (Exception exception)
+                {
+                    (publicationFailures ??= new List<Exception>()).Add(exception);
+                }
+            }
+            if (publicationFailures?.Count == 1)
+            {
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo
+                    .Capture(publicationFailures[0]).Throw();
+            }
+            if (publicationFailures?.Count > 1)
+            {
+                throw new AggregateException("Replica publication committed, but notification or retirement failed.", publicationFailures);
             }
         }
 
