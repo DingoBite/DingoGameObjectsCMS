@@ -127,6 +127,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
         public RuntimeStoreEntries Entries => new(_all.V);
         public IReadonlyBind<IReadOnlyDictionary<long, GameRuntimeObject>> Parents => _parents;
         public bool ReplicationSuppressed => _suppressReplicationThisFlush;
+        public bool IsFlushInProgress => _flushInProgress;
         public World World => _world;
         public uint Epoch { get; private set; }
         public uint StoreGeneration { get; private set; }

@@ -200,8 +200,14 @@ namespace DingoGameObjectsCMS.Mirror
         {
             _runtimeSuspended = true;
             DisposeClientEndpoint();
+            if (!_runtimeSuspended)
+                return;
             DisposeServerEndpoint();
+            if (!_runtimeSuspended)
+                return;
             RuntimeExecutionContext.SetReplicaReady(false);
+            if (!_runtimeSuspended)
+                return;
             // Reliable packets already sent by the retiring runtime may still arrive.
             // Consume them without admitting commands into the replacement runtime.
             if (NetworkServer.active)
@@ -277,10 +283,16 @@ namespace DingoGameObjectsCMS.Mirror
                 return;
 
             Trace("Disposing RuntimeStore server endpoint.");
-            server.Dispose();
-            server.ConnectionReady -= OnProtocolConnectionReady;
-            server.ConnectionRemoved -= OnProtocolConnectionRemoved;
             RtServer = null;
+            try
+            {
+                server.Dispose();
+            }
+            finally
+            {
+                server.ConnectionReady -= OnProtocolConnectionReady;
+                server.ConnectionRemoved -= OnProtocolConnectionRemoved;
+            }
         }
 
         private void ReplaceClientEndpoint()
@@ -296,12 +308,13 @@ namespace DingoGameObjectsCMS.Mirror
 
         private void DisposeClientEndpoint()
         {
-            if (RtClient == null)
+            var client = RtClient;
+            if (client == null)
                 return;
 
-            RtClient.ReplicaReadyChanged -= RuntimeExecutionContext.SetReplicaReady;
-            RtClient.Dispose();
             RtClient = null;
+            client.ReplicaReadyChanged -= RuntimeExecutionContext.SetReplicaReady;
+            client.Dispose();
         }
 
         private RuntimeNetRole ResolveRuntimeRole()

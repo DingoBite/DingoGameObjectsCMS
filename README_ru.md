@@ -176,6 +176,8 @@ base/characters/player/player@1.2.0.json
   - `ComponentStructureChanges`
   - `ComponentChanges`
 
+`IsFlushInProgress` — вычисляемое свойство только для чтения: оно равно `true` во время фактического flush живого store, включая callbacks `StructureChanges`, `ComponentStructureChanges`, `ComponentChanges`, `CommittedBatch` и `DirtyPublishCompleted`, и `false` вне flush. Retirement сбрасывает его в `false`, в том числе внутри callback до возврата из стека flush. Это синхронное наблюдение позволяет владельцу отложить вложенный синхронный вызов `FlushToQuiescence(...)` до завершения текущего flush; владелец также должен учитывать `Retired`. Свойство не обеспечивает потокобезопасность и не планирует повторные попытки.
+
 Поддерживаемые структурные операции:
 
 - `Create`

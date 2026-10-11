@@ -176,6 +176,8 @@ In the current design the ECS-facing contract is built around `EntityCommandBuff
   - `ComponentStructureChanges`
   - `ComponentChanges`
 
+`IsFlushInProgress` is a readonly computed property: it is `true` during an actual flush of a live store, including `StructureChanges`, `ComponentStructureChanges`, `ComponentChanges`, `CommittedBatch`, and `DirtyPublishCompleted` callbacks, and `false` outside the flush. Retirement resets it to `false`, including retirement inside a callback before the flush stack returns. It provides a synchronous observation so the owner can defer a nested synchronous `FlushToQuiescence(...)` call until the active flush has ended; the owner must also respect `Retired`. It does not provide thread safety or schedule retries.
+
 Supported structural operations:
 
 - `Create`
