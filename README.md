@@ -321,6 +321,14 @@ This is intentionally not a generic always-live two-way sync. Runtime data can s
 
 The view layer can subscribe to runtime objects through `GameRuntimeObjectView` and `GameRuntimeObjectsCollection` without breaking separation between data and presentation.
 
+`GameRuntimeObjectsDirtyCollection.RefreshInclusion(IEnumerable<long> keys)`
+reevaluates selected keys when an external membership filter changes. It adds
+newly included rows and releases excluded rows through the normal collection
+lifecycle. Rows that remain included keep their containers and prepared resources;
+their operations and reveal effects are not replayed. This refresh does not write
+Store data or mark objects dirty. It snapshots the supplied keys and aborts if a
+callback invalidates the current binding, including a rebind to the same Store.
+
 ### Asset -> Runtime -> Network
 
 ### Runtime -> Persistence

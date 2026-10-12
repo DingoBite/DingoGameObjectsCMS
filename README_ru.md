@@ -313,6 +313,14 @@ GameAsset
 
 View-слой может подписываться на runtime-объекты через `GameRuntimeObjectView` и `GameRuntimeObjectsCollection`, не ломая separation между данными и отображением.
 
+`GameRuntimeObjectsDirtyCollection.RefreshInclusion(IEnumerable<long> keys)`
+повторно проверяет выбранные ключи при изменении внешнего фильтра включения.
+Метод добавляет новые подходящие строки и освобождает исключённые через обычный
+lifecycle коллекции. Оставшиеся строки сохраняют контейнеры и подготовленные
+ресурсы; их операции и reveal-эффекты не повторяются. Refresh не изменяет данные
+Store и не ставит dirty. Перечень ключей фиксируется до обработки; если callback
+заменяет текущую привязку, обработка прекращается, включая rebind того же Store.
+
 ### Asset -> Runtime -> Network
 
 Сеть синхронизирует не ECS напрямую, а `RuntimeStore`. Это даёт:
