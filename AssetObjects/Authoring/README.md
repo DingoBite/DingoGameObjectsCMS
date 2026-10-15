@@ -32,6 +32,10 @@ The application/session owner may use `GameAssetRuntimeEnvironment(codecs, conte
 
 Editor converter discovery caches its runtime type catalog and source matches until domain reload. Native save callbacks prepare and mark metadata without saving the same prefab recursively; the caller owns that save. Explicit reconciliation may save prepared prefabs outside the callback. Deferred preparation and reconciliation wait while metadata baking is active.
 
+Each reconciliation owns one synchronous `GameAssetAuthoringPreparation`. It prepares and collects each source definition and effective instance once while assets are stable. Validation and override snapshot creation share one hierarchy pass, and root dependency hashing reuses the collected components. Saved prefabs invalidate the preparation; asset imports, moves and deletions also invalidate it through the Editor import version, including resources outside the index inclusion filter. Preview-scene results are released before closing their scene. No mutable authoring results are cached between reconciliations. Standalone Inspector collection and validation create their own preparation scopes.
+
+`GameAssetLibraryLockBuilder.CompareWithCurrentLibrary(locked, current)` requires the explicit sealed current library. It compares packaged and native module fingerprints, exact keys, GUIDs and materialized hashes, including derived snapshots without latest aliases. It reads captured catalog metadata rather than global package registration or live authoring, so the result belongs to the supplied preparation.
+
 ## JSON module definitions
 
 Definitions may also be authored directly as JSON documents through DingoCMS. Its transactional writer, filesystem module packages and generic EditorServer remain available independently of native prefab authoring. Both sources mount into the same immutable library and use the existing runtime template, save and replication contracts.

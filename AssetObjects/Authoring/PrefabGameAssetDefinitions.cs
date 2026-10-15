@@ -22,7 +22,6 @@ namespace DingoGameObjectsCMS.AssetObjects.Authoring
         public const string VERSION = "0.0.0";
 
         private readonly Dictionary<GameAssetAuthoring, GameAsset> _assets = new();
-        private readonly Dictionary<GameAssetAuthoring, GameAssetReference> _references = new();
         private readonly Dictionary<string, GameAssetAuthoring> _sourcesByGuid = new(StringComparer.Ordinal);
         private readonly List<PrefabPreparedGameAssetOverride> _overrides = new();
         private readonly Dictionary<string, GameAsset> _overrideAssets = new(StringComparer.Ordinal);
@@ -84,7 +83,6 @@ namespace DingoGameObjectsCMS.AssetObjects.Authoring
                     var key = new GameAssetKey(MOD, TYPE, entry.GUID, VERSION);
                     var asset = CloneDefinition(entry.Authoring, collection?.Components ?? Array.Empty<GameAssetComponent>(), key, guid);
                     prepared._assets.Add(entry.Authoring, asset);
-                    prepared._references.Add(entry.Authoring, new GameAssetReference(key));
                     prepared._sourcesByGuid.Add(entry.GUID, entry.Authoring);
                 }
                 var overrideIds = new HashSet<string>(StringComparer.Ordinal);
@@ -192,7 +190,6 @@ namespace DingoGameObjectsCMS.AssetObjects.Authoring
                 DestroyDefinition(asset);
             }
             _assets.Clear();
-            _references.Clear();
             _sourcesByGuid.Clear();
             foreach (var entry in _overrides)
             {

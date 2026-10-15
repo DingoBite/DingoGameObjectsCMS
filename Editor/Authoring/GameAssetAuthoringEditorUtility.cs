@@ -66,32 +66,44 @@ namespace DingoGameObjectsCMS.Editor.Authoring
             return true;
         }
 
-        public static bool TryCollect(GameAssetAuthoring authoring, out GameAssetAuthoringCollection collection, out string error)
+        public static bool TryCollect(GameAssetAuthoring authoring, out GameAssetAuthoringCollection collection, out string error, GameAssetAuthoringPreparation preparation = null)
+        {
+            collection = null;
+            if (authoring == null)
+            {
+                error = "A GameAsset authoring component is required.";
+                return false;
+            }
+            preparation ??= new GameAssetAuthoringPreparation();
+            if (preparation.TryGetCollection(authoring, out collection, out error))
+                return collection != null;
+            var success = TryCollectComponents(authoring, out collection, out error, preparation);
+            preparation.StoreCollection(authoring, collection, error);
+            return success;
+        }
+
+        private static bool TryCollectComponents(GameAssetAuthoring authoring, out GameAssetAuthoringCollection collection, out string error, GameAssetAuthoringPreparation preparation)
         {
             collection = null;
             if (!TryGetDefinition(authoring, out var definition, out _, out var isDefinition, out error))
                 return false;
-            if (!isDefinition && !TryPrepareConverters(definition, out _, out error))
-                return false;
-            if (!isDefinition && !TryValidateInstanceStructure(authoring, definition, out error))
-                return false;
-            if (!TryPrepareConverters(authoring, out _, out error))
-                return false;
-            if (!GameAssetAuthoringCollector.TryCollect(authoring, out var effective, out error))
-                return false;
+            GameAssetAuthoringCollection original = null;
             if (!isDefinition)
             {
-                if (!GameAssetAuthoringCollector.TryCollect(definition, out var original, out error))
+                if (!TryCollect(definition, out original, out error, preparation))
                 {
                     error = "The source prefab definition is invalid: " + error;
                     return false;
                 }
-                var originalTypes = new HashSet<Type>(original.Components.Select(value => value.GetType()));
-                if (!originalTypes.SetEquals(effective.Components.Select(value => value.GetType())))
-                {
-                    error = "Prefab instances may override values only; the resulting GAC type set differs from the source prefab.";
+                if (!TryValidateInstanceStructure(authoring, definition, out error))
                     return false;
-                }
+            }
+            if (!TryPrepareConverters(authoring, out _, out error, preparation) || !GameAssetAuthoringCollector.TryCollect(authoring, out var effective, out error))
+                return false;
+            if (!isDefinition && !original.Components.Select(value => value.GetType()).ToHashSet().SetEquals(effective.Components.Select(value => value.GetType())))
+            {
+                error = "Prefab instances may override values only; the resulting GAC type set differs from the source prefab.";
+                return false;
             }
             collection = effective;
             return true;
@@ -104,12 +116,14 @@ namespace DingoGameObjectsCMS.Editor.Authoring
             return changed;
         }
 
-        public static bool TryPrepareConverters(GameAssetAuthoring authoring, out bool changed, out string error)
+        public static bool TryPrepareConverters(GameAssetAuthoring authoring, out bool changed, out string error, GameAssetAuthoringPreparation preparation = null)
         {
             changed = false;
             error = null;
             if (authoring == null || authoring.Converters == null)
                 return true;
+            if (preparation != null && preparation.TryGetConverterPreparation(authoring, out error))
+                return error == null;
             try
             {
                 changed = SynchronizeConverters(authoring);
@@ -118,6 +132,7 @@ namespace DingoGameObjectsCMS.Editor.Authoring
             {
                 Debug.LogException(exception, authoring);
                 error = $"GameAsset authoring '{authoring.name}' automatic converter setup failed: {exception.Message}";
+                preparation?.StoreConverterPreparation(authoring, error);
                 return false;
             }
             for (var index = 0; index < authoring.Converters.Count; index++)
@@ -143,6 +158,7 @@ namespace DingoGameObjectsCMS.Editor.Authoring
                 if (PrefabUtility.IsPartOfPrefabInstance(authoring))
                     PrefabUtility.RecordPrefabInstancePropertyModifications(authoring);
             }
+            preparation?.StoreConverterPreparation(authoring, error);
             return error == null;
         }
 

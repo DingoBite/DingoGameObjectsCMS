@@ -18,6 +18,8 @@ This is not just a "ScriptableObject CMS". It is a unified game model where the 
 
 The [Prefab → GameAsset authoring](AssetObjects/Authoring/README.md) workflow supports native prefab definitions prepared in memory and mounted into the same immutable `LibraryLock` as JSON modules. Its generated index captures prefab identity, resource dependency hashes and saved instance value/resource overrides. The application owner disposes prepared definitions after consumers stop. Prefab definitions do not publish or maintain a separate GA document; JSON modules remain independent authored sources supported by DingoCMS.
 
+Compare a captured catalog with a newly prepared one through `GameAssetLibraryLockBuilder.CompareWithCurrentLibrary(locked, current)`. The current library must be sealed. Comparison uses the supplied packaged and native module metadata, exact and derived identities, GUIDs and materialized hashes; it does not discover a current native catalog through global registration.
+
 For the opt-in high-cardinality DOTS profile, see [DOTS + RuntimeStore Integration](DOTS_INTEGRATION.md).
 
 ## Why this solution is valuable
@@ -396,6 +398,8 @@ string component identity, CLR/assembly names, value signatures, or
 removed-entry records. `SchemaHash`, direct codecs, and static `CreateManifest`
 live in one compiled C# authority. Patch generation does not read or publish a
 mutable `runtime_patch_schema.json` file.
+
+`SchemaHash` fingerprints the current complete generated wire layout and `FieldId`-to-member mapping at generation time, including primitive kinds, recursive struct/list layouts, enum underlying types and named numeric values. This Editor-only fingerprint contributes only the final digest to the compiled artifact; no CLR-name identities, field-name ledgers or value signatures are added to runtime manifests. Reordering discovery or declarations without changing the canonical layout does not change the digest.
 
 ## Network synchronization
 

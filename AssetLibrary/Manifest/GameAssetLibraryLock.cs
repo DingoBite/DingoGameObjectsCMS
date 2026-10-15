@@ -236,6 +236,7 @@ namespace DingoGameObjectsCMS.AssetLibrary
         public const string MISSING_MOD = "missing_mod";
         public const string MOD_CHANGED = "mod_changed";
         public const string MISSING_CONTENT_HASH = "missing_content_hash";
+        public const string CONTENT_HASH_MISMATCH = "content_hash_mismatch";
     }
 
     [Serializable, Preserve]
@@ -258,5 +259,7 @@ namespace DingoGameObjectsCMS.AssetLibrary
         public string LockedGeneratedUtc;
         public int CurrentManifestVersion;
         public string CurrentGeneratedUtc;
+        public string LockedContentHash;
+        public string CurrentContentHash;
     }
 }
