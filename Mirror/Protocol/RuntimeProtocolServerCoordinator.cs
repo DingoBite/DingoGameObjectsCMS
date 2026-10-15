@@ -4,6 +4,7 @@ using DingoGameObjectsCMS.RuntimeObjects.Commands;
 using DingoGameObjectsCMS.RuntimeObjects.Replay;
 using DingoGameObjectsCMS.RuntimeObjects.Stores;
 using DingoGameObjectsCMS.Stores;
+using UnityEngine;
 
 namespace DingoGameObjectsCMS.Mirror.Protocol
 {
@@ -19,6 +20,7 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
         public readonly Action<int, RuntimeCheckpointChunk> CheckpointChunk;
         public readonly RuntimeReliableDeltaTransportBudgetCheck ReliableDeltaFitsTransport;
         public readonly RuntimeBaselineChunkPayloadBudget BaselineChunkPayloadBytes;
+        public readonly Func<int, RuntimeSessionManifestSnapshot, RuntimeSessionHandshakeResult> ValidateManifest;
 
         public RuntimeProtocolServerOutput(
             Action<int, RuntimeSessionManifestSnapshot> manifest,
@@ -30,7 +32,8 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             RuntimeBaselineChunkPayloadBudget baselineChunkPayloadBytes,
             Action<int, RtStateStreamFrameData> stateStream = null,
             Action<int, RuntimeCommandJournalBatch> journalBatch = null,
-            Action<int, RuntimeCheckpointChunk> checkpointChunk = null)
+            Action<int, RuntimeCheckpointChunk> checkpointChunk = null,
+            Func<int, RuntimeSessionManifestSnapshot, RuntimeSessionHandshakeResult> validateManifest = null)
         {
             Manifest = manifest ?? throw new ArgumentNullException(nameof(manifest));
             Reject = reject ?? throw new ArgumentNullException(nameof(reject));
@@ -42,6 +45,7 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             StateStream = stateStream ?? ((connectionId, value) => { });
             JournalBatch = journalBatch;
             CheckpointChunk = checkpointChunk;
+            ValidateManifest = validateManifest;
             BaselineChunkPayloadBytes = baselineChunkPayloadBytes
                                         ?? throw new ArgumentNullException(
                                             nameof(baselineChunkPayloadBytes));
@@ -196,7 +200,9 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
 
             var sessionId = TakeSessionId();
             connection.Handshake = new RuntimeSessionServerHandshake(sessionId, _context.ManifestTemplate);
-            var result = connection.Handshake.ReceiveHello(descriptor, clientNonce);
+            var result = connection.Handshake.ReceiveHello(descriptor, clientNonce, _output.ValidateManifest == null ? null : manifest => _output.ValidateManifest(connectionId, manifest));
+            if (_disposed || _sessionInvalidated || !IsCurrentConnection(connectionId, connection))
+                return RuntimeSessionHandshakeResult.Reject(RuntimeProtocolRejectCode.SessionNotReady, "Connection ended while preparing its session manifest.");
             if (!result.Accepted)
             {
                 _output.Reject(connectionId, result.RejectCode, result.Detail);
@@ -262,13 +268,17 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             connection.JournalSendCursor =
                 checkpointBoundary?.JournalCursor ?? 0;
 
-            foreach (var pair in _stores)
+            foreach (var pair in new List<KeyValuePair<NetStoreRef, StoreState>>(_stores))
             {
+                if (_disposed || _sessionInvalidated || !IsCurrentConnection(connectionId, connection))
+                    return RuntimeSessionHandshakeResult.Reject(RuntimeProtocolRejectCode.SessionNotReady, "Connection ended while preparing its baseline.");
                 var storeState = new ConnectionStoreState(
                     new RuntimeConnectionStoreReplicationState(pair.Key, pair.Value.Store.StoreRevision));
                 connection.Stores.Add(pair.Key, storeState);
                 BeginBaseline(connectionId, connection, pair.Value, storeState);
             }
+            if (_disposed || _sessionInvalidated || !IsCurrentConnection(connectionId, connection))
+                return RuntimeSessionHandshakeResult.Reject(RuntimeProtocolRejectCode.SessionNotReady, "Connection ended while preparing its baseline.");
             if (checkpointBoundary.HasValue)
             {
                 if (recoveryCheckpoint != null)
@@ -284,6 +294,8 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                     forceMarker: true);
             }
 
+            if (_disposed || _sessionInvalidated || !IsCurrentConnection(connectionId, connection))
+                return RuntimeSessionHandshakeResult.Reject(RuntimeProtocolRejectCode.SessionNotReady, "Connection ended while publishing its baseline.");
             ConnectionReady?.Invoke(connectionId, sessionId);
 
             return result;
@@ -559,8 +571,10 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             connection.RecoveryCheckpoint = recoveryCheckpoint;
             connection.JournalSendCursor =
                 boundary.JournalCursor;
-            foreach (var pair in _stores)
+            foreach (var pair in new List<KeyValuePair<NetStoreRef, StoreState>>(_stores))
             {
+                if (_disposed || _sessionInvalidated || !IsCurrentConnection(connectionId, connection))
+                    return;
                 if (!connection.Stores.TryGetValue(
                         pair.Key,
                         out var connectionStore))
@@ -672,6 +686,8 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                     nextSequence,
                     out var enters,
                     out var leaves);
+                if (_disposed || _sessionInvalidated || !IsCurrentConnection(connectionId, connection))
+                    return new RuntimeInterestRefreshResult(RuntimeInterestRefreshStatus.NotReady, detail: "Connection ended while projecting its interest.");
                 if (delta == null)
                 {
                     return new RuntimeInterestRefreshResult(
@@ -681,6 +697,8 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
 
                 var encodeMeasure = RuntimeNetworkEncodeMeasure.Begin();
                 var payload = _deltaCodec.Encode(delta);
+                if (_disposed || _sessionInvalidated || !IsCurrentConnection(connectionId, connection))
+                    return new RuntimeInterestRefreshResult(RuntimeInterestRefreshStatus.NotReady, detail: "Connection ended while encoding its interest.");
                 _telemetry.RecordEncode(
                     RuntimeNetworkStreamKey.ReliableStore,
                     encodeMeasure.Complete());
@@ -693,7 +711,10 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                     delta.ToRevision,
                     payload,
                     delta.Kind);
-                if (!_output.ReliableDeltaFitsTransport(transportEnvelope))
+                var fitsTransport = _output.ReliableDeltaFitsTransport(transportEnvelope);
+                if (_disposed || _sessionInvalidated || !IsCurrentConnection(connectionId, connection))
+                    return new RuntimeInterestRefreshResult(RuntimeInterestRefreshStatus.NotReady, detail: "Connection ended while preparing interest delivery.");
+                if (!fitsTransport)
                 {
                     BeginBaseline(connectionId, connection, storeState, connectionStore);
                     return new RuntimeInterestRefreshResult(
@@ -734,6 +755,8 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                                                || exception is ArgumentException
                                                || exception is FormatException)
             {
+                if (_disposed || _sessionInvalidated || !IsCurrentConnection(connectionId, connection))
+                    return new RuntimeInterestRefreshResult(RuntimeInterestRefreshStatus.NotReady, detail: "Connection ended during interest refresh.");
                 if (projectionCommitted)
                     throw;
                 return new RuntimeInterestRefreshResult(
@@ -745,9 +768,13 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
         public int RefreshInterest(int connectionId)
         {
             ThrowIfDisposed();
+            if (!_connections.TryGetValue(connectionId, out var connection))
+                return 0;
             var enqueued = 0;
-            foreach (var storeReference in _stores.Keys)
+            foreach (var storeReference in new List<NetStoreRef>(_stores.Keys))
             {
+                if (_disposed || _sessionInvalidated || !IsCurrentConnection(connectionId, connection))
+                    break;
                 var result = RefreshInterest(connectionId, storeReference);
                 if (result.Status == RuntimeInterestRefreshStatus.Enqueued)
                     enqueued++;
@@ -760,10 +787,13 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
         {
             ThrowIfDisposed();
             var enqueued = 0;
-            var connectionIds = new List<int>(_connections.Keys);
-            for (var i = 0; i < connectionIds.Count; i++)
+            var connections = new List<KeyValuePair<int, ConnectionState>>(_connections);
+            foreach (var pair in connections)
             {
-                enqueued += RefreshInterest(connectionIds[i]);
+                if (_disposed || _sessionInvalidated)
+                    break;
+                if (IsCurrentConnection(pair.Key, pair.Value))
+                    enqueued += RefreshInterest(pair.Key);
             }
 
             return enqueued;
@@ -784,11 +814,22 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                 pair.Value.Store.CommittedBatch -= pair.Value.BatchHandler;
             }
 
+            List<Exception> failures = null;
             foreach (var connectionId in new List<int>(_connections.Keys))
             {
-                RemoveConnection(connectionId);
+                try
+                {
+                    RemoveConnection(connectionId);
+                }
+                catch (Exception error)
+                {
+                    failures ??= new List<Exception>();
+                    failures.Add(error);
+                }
             }
             _stores.Clear();
+            if (failures != null)
+                throw new AggregateException("Protocol server cleanup failed after all connections were retired.", failures);
         }
 
         private void OnCommittedBatch(StoreState storeState, RuntimeStoreCommittedBatch batch)
@@ -809,10 +850,14 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                 return;
             }
 
-            foreach (var pair in _connections)
+            foreach (var pair in new List<KeyValuePair<int, ConnectionState>>(_connections))
             {
                 var connectionId = pair.Key;
                 var connection = pair.Value;
+                if (_disposed || _sessionInvalidated)
+                    return;
+                if (!IsCurrentConnection(connectionId, connection))
+                    continue;
                 if (connection.Handshake?.CanCreateReplica != true
                     || !connection.Stores.TryGetValue(storeState.Reference, out var connectionStore))
                 {
@@ -837,6 +882,8 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                         nextSequence,
                         out var enters,
                         out var leaves);
+                    if (_disposed || _sessionInvalidated || !IsCurrentConnection(connectionId, connection))
+                        continue;
                     if (delta == null)
                     {
                         connectionStore.Replication.ObserveFilteredRevision(revision.StoreRevision);
@@ -845,6 +892,8 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
 
                     var encodeMeasure = RuntimeNetworkEncodeMeasure.Begin();
                     var payload = _deltaCodec.Encode(delta);
+                    if (_disposed || _sessionInvalidated || !IsCurrentConnection(connectionId, connection))
+                        continue;
                     _telemetry.RecordEncode(
                         RuntimeNetworkStreamKey.ReliableStore,
                         encodeMeasure.Complete());
@@ -857,7 +906,10 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                         delta.ToRevision,
                         payload,
                         delta.Kind);
-                    if (!_output.ReliableDeltaFitsTransport(transportEnvelope))
+                    var fitsTransport = _output.ReliableDeltaFitsTransport(transportEnvelope);
+                    if (_disposed || _sessionInvalidated || !IsCurrentConnection(connectionId, connection))
+                        continue;
+                    if (!fitsTransport)
                     {
                         BeginBaseline(connectionId, connection, storeState, connectionStore);
                         continue;
@@ -877,17 +929,21 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                 }
                 catch (Exception exception)
                 {
+                    if (_disposed || _sessionInvalidated || !IsCurrentConnection(connectionId, connection))
+                        continue;
                     try
                     {
                         BeginBaseline(connectionId, connection, storeState, connectionStore);
                     }
                     catch (Exception baselineException)
                     {
-                        _output.Reject(
+                        if (_disposed || _sessionInvalidated || !IsCurrentConnection(connectionId, connection))
+                            continue;
+                        RejectConnection(
                             connectionId,
+                            connection,
                             RuntimeProtocolRejectCode.InvalidEnvelope,
                             $"Delta projection failed: {exception.Message}; rebaseline failed: {baselineException.Message}");
-                        ConnectionInvalidated?.Invoke(connectionId);
                     }
                 }
             }
@@ -900,9 +956,13 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                 return;
             }
 
-            foreach (var pair in _connections)
+            foreach (var pair in new List<KeyValuePair<int, ConnectionState>>(_connections))
             {
                 var connection = pair.Value;
+                if (_disposed || _sessionInvalidated)
+                    return;
+                if (!IsCurrentConnection(pair.Key, connection))
+                    continue;
                 if (connection.Handshake?.CanCreateReplica != true
                     || !connection.CheckpointBoundary.HasValue)
                 {
@@ -941,11 +1001,13 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                 }
                 catch (Exception exception)
                 {
-                    _output.Reject(
+                    if (_disposed || _sessionInvalidated || !IsCurrentConnection(pair.Key, connection))
+                        continue;
+                    RejectConnection(
                         pair.Key,
+                        connection,
                         RuntimeProtocolRejectCode.InvalidEnvelope,
                         $"Journal catch-up failed: {exception.Message}");
-                    ConnectionInvalidated?.Invoke(pair.Key);
                 }
             }
         }
@@ -968,15 +1030,18 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                 return;
 
             _sessionInvalidated = true;
-            var connectionIds = new List<int>(_connections.Keys);
-            for (var i = 0; i < connectionIds.Count; i++)
+            foreach (var pair in new List<KeyValuePair<int, ConnectionState>>(_connections))
             {
-                var connectionId = connectionIds[i];
-                _output.Reject(
+                if (_disposed)
+                    return;
+                var connectionId = pair.Key;
+                if (!IsCurrentConnection(connectionId, pair.Value))
+                    continue;
+                RejectConnection(
                     connectionId,
+                    pair.Value,
                     RuntimeProtocolRejectCode.InvalidStore,
                     $"Required store '{change.StoreId}' changed lifecycle after the immutable session manifest was frozen.");
-                ConnectionInvalidated?.Invoke(connectionId);
             }
         }
 
@@ -986,6 +1051,8 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             StoreState storeState,
             ConnectionStoreState connectionStore)
         {
+            if (_disposed || _sessionInvalidated || !IsCurrentConnection(connectionId, connection))
+                return;
             SynchronizeObservedRevision(storeState, connectionStore);
             var nextBaselineId = checked(connectionStore.Replication.BaselineId + 1);
             var stagedShadow = new RuntimeConnectionStoreShadow();
@@ -995,8 +1062,12 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                 nextBaselineId,
                 stagedShadow,
                 out var membership);
+            if (_disposed || _sessionInvalidated || !IsCurrentConnection(connectionId, connection))
+                return;
             var encodeMeasure = RuntimeNetworkEncodeMeasure.Begin();
             var payload = _baselineCodec.Encode(baseline);
+            if (_disposed || _sessionInvalidated || !IsCurrentConnection(connectionId, connection))
+                return;
             _telemetry.RecordEncode(
                 RuntimeNetworkStreamKey.Baseline,
                 encodeMeasure.Complete());
@@ -1007,6 +1078,8 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             connectionStore.Shadow.ReplaceWith(stagedShadow);
             _telemetry.ObserveConnectionStore(connectionId, connectionStore.Replication);
             BaselineStarted?.Invoke(connectionId, storeState.Reference, connectionStore.Replication);
+            if (_disposed || _sessionInvalidated || !IsCurrentConnection(connectionId, connection))
+                return;
             SendBaselineChunks(connectionId, connection, transfer);
         }
 
@@ -1068,6 +1141,8 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                 chunkPayloadBytes);
             for (var i = 0; i < chunks.Count; i++)
             {
+                if (_disposed || _sessionInvalidated || !IsCurrentConnection(connectionId, connection))
+                    return;
                 _output.BaselineChunk(connectionId, chunks[i]);
                 _telemetry.RecordSent(
                     RuntimeNetworkStreamKey.Baseline,
@@ -1098,6 +1173,8 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                 checkpoint);
             for (var i = 0; i < chunks.Count; i++)
             {
+                if (_disposed || _sessionInvalidated || !IsCurrentConnection(connectionId, connection))
+                    return;
                 _output.CheckpointChunk(connectionId, chunks[i]);
             }
         }
@@ -1174,6 +1251,8 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             bool force = false,
             bool completesCatchup = false)
         {
+            if (_disposed || _sessionInvalidated || !IsCurrentConnection(connectionId, connection))
+                return;
             if (!force
                 && scannedThroughCursor == fromCursor
                 && entries.Count == 0)
@@ -1190,7 +1269,8 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
                 entries,
                 completesCatchup);
             _output.JournalBatch(connectionId, batch);
-            connection.JournalSendCursor = scannedThroughCursor;
+            if (!_disposed && !_sessionInvalidated && IsCurrentConnection(connectionId, connection))
+                connection.JournalSendCursor = scannedThroughCursor;
         }
 
         private void SendDelta(
@@ -1388,11 +1468,38 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
 
         private void RejectAll(RuntimeProtocolRejectCode code, string detail)
         {
-            foreach (var connectionId in _connections.Keys)
+            foreach (var pair in new List<KeyValuePair<int, ConnectionState>>(_connections))
+            {
+                if (_disposed)
+                    return;
+                if (IsCurrentConnection(pair.Key, pair.Value))
+                    RejectConnection(pair.Key, pair.Value, code, detail);
+            }
+        }
+
+        private void RejectConnection(int connectionId, ConnectionState connection, RuntimeProtocolRejectCode code, string detail)
+        {
+            try
             {
                 _output.Reject(connectionId, code, detail);
             }
+            catch (Exception error)
+            {
+                Debug.LogException(error);
+            }
+            if (_disposed || !IsCurrentConnection(connectionId, connection))
+                return;
+            try
+            {
+                ConnectionInvalidated?.Invoke(connectionId);
+            }
+            catch (Exception error)
+            {
+                Debug.LogException(error);
+            }
         }
+
+        private bool IsCurrentConnection(int connectionId, ConnectionState connection) => _connections.TryGetValue(connectionId, out var current) && ReferenceEquals(current, connection);
 
         private ConnectionState GetConnection(int connectionId)
         {

@@ -404,6 +404,11 @@ authoritative `RuntimeStore` generations through the `RuntimeProtocol*` stack.
 A strict session manifest validates the protocol version, build, runtime schema,
 and exact GA catalog before a replica store is created. There is one current
 protocol implementation and no compatibility adapter for older wire contracts.
+The complete session manifest must fit one reliable Mirror message. The endpoint
+measures its packed wire size, including its message identity, against the active
+transport budget before the handshake reaches `ManifestSent`. An oversized or
+unencodable manifest is rejected immediately with `InvalidManifest`; it cannot
+start replica creation or wait silently for a baseline.
 Parent-first binary baselines and ordered reliable deltas are staged and
 published atomically. Delivery sequence, baseline id, store revision, ACK,
 bounded pending queues, and resync are independent protocol concepts.

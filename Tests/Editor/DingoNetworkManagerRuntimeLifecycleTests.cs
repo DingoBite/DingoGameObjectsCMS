@@ -10,6 +10,7 @@ using DingoGameObjectsCMS.Stores;
 using DingoUnityExtensions;
 using Mirror;
 using NUnit.Framework;
+using Unity.Collections;
 using Unity.Entities;
 using UnityEngine;
 using Object = UnityEngine.Object;
@@ -31,6 +32,7 @@ namespace DingoGameObjectsCMS.Tests.Editor
         private World _world;
         private GameAssetTemplateCache _templates;
         private RuntimeSessionDescriptor _descriptor;
+        private RuntimeStoreCatalogEntry[] _stores;
 
         [SetUp]
         public void SetUp()
@@ -54,6 +56,8 @@ namespace DingoGameObjectsCMS.Tests.Editor
 
             _world = new World(nameof(DingoNetworkManagerRuntimeLifecycleTests));
             RuntimeStores.SetupWorld(_world);
+            var store = RuntimeStores.GetOrAddRuntimeStore(new FixedString32Bytes("manager-lifecycle-test"));
+            _stores = new[] { new RuntimeStoreCatalogEntry { StoreId = store.Id, StoreGeneration = store.StoreGeneration } };
             _networkRoot = new GameObject(nameof(DingoNetworkManagerRuntimeLifecycleTests));
             _networkRoot.SetActive(false);
             _transport = _networkRoot.AddComponent<DingoNetworkManagerLifecycleTestTransport>();
@@ -70,7 +74,7 @@ namespace DingoGameObjectsCMS.Tests.Editor
             policies.Seal(Array.Empty<uint>());
             var streams = RuntimeStateStreamProfileRegistry.CreateEmptySealed();
             _descriptor = new RuntimeSessionDescriptor { ProtocolVersion = RuntimeProtocol.VERSION, BuildId = "manager-lifecycle-tests", RuntimeSchemaHash = codecs.SchemaHash, AssetCatalogHash = RuntimeSessionCatalogHasher.CalculateAssets(catalog.ManifestEntries), ResourceCatalogHash = "resources", StateStreamCatalogHash = streams.CatalogHash };
-            var manifest = new RuntimeSessionManifestTemplate(_descriptor, catalog.ManifestEntries, Array.Empty<RuntimeStoreCatalogEntry>());
+            var manifest = new RuntimeSessionManifestTemplate(_descriptor, catalog.ManifestEntries, _stores);
             var context = new RuntimeProtocolContext(manifest, catalog, assets, _templates, codecs, policies, _world, streams);
             _manager.SetProtocolContextFactory(_ => context);
         }
@@ -359,6 +363,21 @@ namespace DingoGameObjectsCMS.Tests.Editor
             Assert.That(manifests[0].SessionId, Is.Not.Zero);
             Assert.That(manifests[0].AssignedConnectionId, Is.EqualTo(connection.connectionId));
             ReceiveServer(connection, new RtSessionReady { SessionId = manifests[0].SessionId });
+            var baselines = connection.DrainMessages<RtBaselineChunk>();
+            Assert.That(baselines, Is.Not.Empty, "A ready peer must receive the actual owned test store baseline.");
+            var first = baselines[0].Value;
+            for (var index = 0; index < baselines.Count; index++)
+            {
+                var chunk = baselines[index].Value;
+                Assert.That(chunk.SessionId, Is.EqualTo(manifests[0].SessionId));
+                Assert.That(chunk.Store.StoreId, Is.EqualTo(_stores[0].StoreId));
+                Assert.That(chunk.Store.StoreGeneration, Is.EqualTo(_stores[0].StoreGeneration));
+                Assert.That(chunk.BaselineId, Is.EqualTo(first.BaselineId));
+                Assert.That(chunk.DeliverySequence, Is.EqualTo(first.DeliverySequence));
+                Assert.That(chunk.ChunkIndex, Is.EqualTo(index));
+                Assert.That(chunk.ChunkCount, Is.EqualTo(baselines.Count));
+            }
+            ReceiveServer(connection, new RtStoreAck { SessionId = first.SessionId, Store = first.Store, BaselineId = first.BaselineId, DeliverySequence = first.DeliverySequence });
         }
 
         private void ReceiveServer<T>(NetworkConnectionToClient connection, T value) where T : struct, NetworkMessage
@@ -385,7 +404,7 @@ namespace DingoGameObjectsCMS.Tests.Editor
             _transport.OnClientDataReceived(batch.ToArraySegment(), Channels.Reliable);
         }
 
-        private RtSessionManifest Manifest(ulong sessionId, int connectionId) => new() { SessionId = sessionId, AssignedConnectionId = connectionId, Descriptor = _descriptor, Assets = Array.Empty<RuntimeAssetCatalogEntry>(), Stores = Array.Empty<RuntimeStoreCatalogEntry>() };
+        private RtSessionManifest Manifest(ulong sessionId, int connectionId) => new() { SessionId = sessionId, AssignedConnectionId = connectionId, Descriptor = _descriptor, Assets = Array.Empty<RuntimeAssetCatalogEntry>(), Stores = _stores };
     }
 
     public class DingoNetworkManagerLifecycleTestConnection : NetworkConnectionToClient
@@ -395,9 +414,11 @@ namespace DingoGameObjectsCMS.Tests.Editor
         public DingoNetworkManagerLifecycleTestConnection(int id) : base(id) { isAuthenticated = true; }
         public override void Disconnect() => DisconnectCount++;
 
-        public List<RtSessionManifest> DrainManifests()
+        public List<RtSessionManifest> DrainManifests() => DrainMessages<RtSessionManifest>();
+
+        public List<T> DrainMessages<T>() where T : struct, NetworkMessage
         {
-            var messages = new List<RtSessionManifest>();
+            var messages = new List<T>();
             var unbatcher = new Unbatcher();
             foreach (var batch in batches.Values)
             {
@@ -412,8 +433,8 @@ namespace DingoGameObjectsCMS.Tests.Editor
             {
                 using var reader = NetworkReaderPool.Get(bytes);
                 Assert.That(NetworkMessages.UnpackId(reader, out var id), Is.True);
-                Assert.That(id, Is.EqualTo(NetworkMessageId<RtSessionManifest>.Id), "The server handshake must not reject or emit an unrelated packet.");
-                messages.Add(reader.Read<RtSessionManifest>());
+                Assert.That(id, Is.EqualTo(NetworkMessageId<T>.Id), "The server handshake must not reject or emit an unrelated packet.");
+                messages.Add(reader.Read<T>());
             }
             return messages;
         }

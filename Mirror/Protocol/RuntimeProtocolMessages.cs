@@ -73,6 +73,23 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
         }
     }
 
+    public static class RuntimeSessionManifestTransportBudget
+    {
+        public static RuntimeSessionHandshakeResult Validate(int connectionId, RuntimeSessionManifestSnapshot manifest)
+        {
+            var message = manifest.ToWireManifest();
+            message.AssignedConnectionId = connectionId;
+            return Validate(message, NetworkMessages.MaxMessageSize(Channels.Reliable));
+        }
+
+        public static RuntimeSessionHandshakeResult Validate(in RtSessionManifest message, int maxPackedBytes)
+        {
+            using var writer = NetworkWriterPool.Get();
+            NetworkMessages.Pack(message, writer);
+            return writer.Position <= maxPackedBytes ? RuntimeSessionHandshakeResult.Success() : RuntimeSessionHandshakeResult.Reject(RuntimeProtocolRejectCode.InvalidManifest, $"Session manifest is {writer.Position} bytes; reliable message limit is {maxPackedBytes} bytes.");
+        }
+    }
+
     public static class RuntimeBaselineChunkTransportBudget
     {
         public static int GetPayloadCapacity(

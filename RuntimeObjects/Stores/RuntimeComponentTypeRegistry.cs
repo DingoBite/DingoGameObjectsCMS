@@ -31,6 +31,9 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
         private static readonly List<Type> _typesById = new();
         private static readonly Dictionary<Type, uint> _idByType = new();
         private static readonly Dictionary<uint, Type> _typeById = new();
+#if UNITY_EDITOR
+        private static InitializationScope _initializationScope;
+#endif
 
         public static bool IsInitialized { get; private set; }
         public static ulong InitializationVersion { get; private set; }
@@ -143,6 +146,38 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
 
         public static void InitializeFromManifest(Manifest manifest)
         {
+#if UNITY_EDITOR
+            // An independent initialization owns the registry from this point on.
+            _initializationScope = null;
+#endif
+            InitializeManifest(manifest);
+        }
+
+#if UNITY_EDITOR
+        /// <summary>
+        /// Installs an isolated Editor schema until disposal. Retire its stores first,
+        /// then dispose scopes in reverse order. Exact tables, hash and initialized state
+        /// are restored with a fresh epoch; independent initialization invalidates the owner.
+        /// </summary>
+        public static IDisposable InitializeScoped(Manifest manifest)
+        {
+            var scope = new InitializationScope();
+            _initializationScope = scope;
+            try
+            {
+                InitializeManifest(manifest);
+                return scope;
+            }
+            catch
+            {
+                scope.Dispose();
+                throw;
+            }
+        }
+#endif
+
+        private static void InitializeManifest(Manifest manifest)
+        {
             if (manifest?.Types == null)
             {
                 throw new ArgumentException("A compiled runtime component manifest with a type table is required.", nameof(manifest));
@@ -211,6 +246,41 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Stores
             IsInitialized = true;
             InitializationVersion++;
         }
+
+#if UNITY_EDITOR
+        private sealed class InitializationScope : IDisposable
+        {
+            private readonly Type[] _types = _typesById.ToArray();
+            private readonly Dictionary<Type, uint> _ids = new(_idByType);
+            private readonly Dictionary<uint, Type> _registeredTypes = new(_typeById);
+            private readonly bool _wasInitialized = IsInitialized;
+            private readonly string _registryHash = RegistryHash;
+            private readonly InitializationScope _previousScope = _initializationScope;
+            private bool _disposed;
+
+            public void Dispose()
+            {
+                if (_disposed)
+                    return;
+                if (!ReferenceEquals(_initializationScope, this))
+                    throw new InvalidOperationException("Runtime component registry scopes must be disposed in reverse order and cannot restore across an independent initialization.");
+
+                _typesById.Clear();
+                _typesById.AddRange(_types);
+                _idByType.Clear();
+                foreach (var pair in _ids)
+                    _idByType.Add(pair.Key, pair.Value);
+                _typeById.Clear();
+                foreach (var pair in _registeredTypes)
+                    _typeById.Add(pair.Key, pair.Value);
+                IsInitialized = _wasInitialized;
+                RegistryHash = _registryHash;
+                InitializationVersion++;
+                _initializationScope = _previousScope;
+                _disposed = true;
+            }
+        }
+#endif
 
         private static HashSet<int> ValidateReservedIds(IReadOnlyList<int> reservedIds)
         {

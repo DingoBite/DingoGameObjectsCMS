@@ -414,6 +414,112 @@ namespace DingoGameObjectsCMS.Tests.Editor
         }
 
         [Test]
+        public void ServerCoordinator_ManifestPreflightRejectsAndDisconnectsWithoutSendingManifestOrBaseline()
+        {
+            var store = RegisterServerStore("map");
+            var fixture = CreateProtocolFixture(store);
+            var manifests = 0;
+            var baselines = 0;
+            var rejects = new List<RuntimeProtocolRejectCode>();
+            RuntimeProtocolServerCoordinator coordinator = null;
+            coordinator = new RuntimeProtocolServerCoordinator(fixture.CreateServerContext(CreateBus(), null, null), new RuntimeProtocolServerOutput((_, _) => manifests++, (id, code, _) => { rejects.Add(code); coordinator.RemoveConnection(id); }, (_, _) => baselines++, (_, _) => { }, (_, _) => { }, (in RuntimeReliableDeltaTransportEnvelope _) => true, (in RuntimeBaselineChunk _) => RuntimeProtocol.BASELINE_CHUNK_BYTES, validateManifest: (_, _) => RuntimeSessionHandshakeResult.Reject(RuntimeProtocolRejectCode.InvalidManifest, "Manifest exceeds the configured transport budget.")));
+            using (coordinator)
+            {
+                coordinator.AddConnection(1);
+
+                var result = coordinator.ReceiveHello(1, fixture.Manifest.Descriptor, 2);
+
+                Assert.That(result.RejectCode, Is.EqualTo(RuntimeProtocolRejectCode.InvalidManifest));
+                Assert.That(rejects, Is.EqualTo(new[] { RuntimeProtocolRejectCode.InvalidManifest }));
+                Assert.That(manifests, Is.Zero);
+                Assert.That(baselines, Is.Zero);
+                Assert.That(coordinator.ConnectionCount, Is.Zero);
+                Assert.That(coordinator.GetReadyConnections(), Is.Empty);
+            }
+        }
+
+
+        [Test]
+        public void ServerCoordinator_DisposalRetiresEveryConnectionEvenWhenOneRemovalObserverFails()
+        {
+            var store = RegisterServerStore("map");
+            var fixture = CreateProtocolFixture(store);
+            var coordinator = new RuntimeProtocolServerCoordinator(fixture.CreateServerContext(CreateBus(), null, null), new RuntimeProtocolServerOutput((_, _) => { }, (_, _, _) => { }, (_, _) => { }, (_, _) => { }, (_, _) => { }, (in RuntimeReliableDeltaTransportEnvelope _) => true, (in RuntimeBaselineChunk _) => RuntimeProtocol.BASELINE_CHUNK_BYTES));
+            var removed = new List<int>();
+            coordinator.ConnectionRemoved += id =>
+            {
+                removed.Add(id);
+                if (id == 1)
+                    throw new InvalidOperationException("scripted removal observer failure");
+            };
+            coordinator.AddConnection(1);
+            coordinator.AddConnection(2);
+
+            var error = Assert.Throws<AggregateException>(coordinator.Dispose);
+
+            Assert.That(error.InnerExceptions.Count, Is.EqualTo(1));
+            Assert.That(error.InnerExceptions[0].Message, Is.EqualTo("scripted removal observer failure"));
+            Assert.That(removed, Is.EquivalentTo(new[] { 1, 2 }));
+            Assert.That(coordinator.ConnectionCount, Is.Zero);
+            Assert.DoesNotThrow(coordinator.Dispose);
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public void ServerCoordinator_LiveJournalFailureKeepsHealthyDeliveryAndSkipsTheOldReplacementSession(bool replace)
+        {
+            var store = RegisterServerStore("map");
+            var fixture = CreateProtocolFixture(store);
+            var journal = new RuntimeCommandJournal(() => 0d);
+            var scope = new RuntimeCommandJournalScope("map");
+            journal.ConfigureWindow("world", scope, new RuntimeCommandJournalRetentionPolicy(32, 1024, 60d));
+            var bus = CreateBus(journal);
+            var boundary = new RuntimeCheckpointBoundary("world", 0, 0, CHECKPOINT_HASH);
+            var manifests = new Dictionary<int, RuntimeSessionManifestSnapshot>();
+            var deliveries = new List<RuntimeCommandJournalBatch>();
+            var failures = new List<string>();
+            var failDelivery = false;
+            RuntimeProtocolServerCoordinator coordinator = null;
+            coordinator = new RuntimeProtocolServerCoordinator(fixture.CreateServerContext(bus, scope, () => boundary), new RuntimeProtocolServerOutput((id, manifest) => manifests[id] = manifest, (id, _, detail) =>
+            {
+                failures.Add(detail);
+                coordinator.RemoveConnection(id);
+                if (!replace)
+                    return;
+                coordinator.RemoveConnection(2);
+                coordinator.AddConnection(2);
+                Assert.That(coordinator.ReceiveHello(2, fixture.Manifest.Descriptor, 22).Accepted, Is.True);
+                Assert.That(coordinator.ReceiveReady(2, manifests[2].SessionId).Accepted, Is.True);
+            }, (_, _) => { }, (_, _) => { }, (_, _) => { }, (in RuntimeReliableDeltaTransportEnvelope _) => true, (in RuntimeBaselineChunk _) => RuntimeProtocol.BASELINE_CHUNK_BYTES, journalBatch: (id, batch) =>
+            {
+                if (!failDelivery)
+                    return;
+                if (id == 1)
+                    throw new InvalidOperationException("scripted live journal delivery failure");
+                deliveries.Add(batch);
+            }));
+            using (coordinator)
+            {
+                for (var id = 1; id <= 2; id++)
+                {
+                    coordinator.AddConnection(id);
+                    Assert.That(coordinator.ReceiveHello(id, fixture.Manifest.Descriptor, (ulong)id + 1).Accepted, Is.True);
+                    Assert.That(coordinator.ReceiveReady(id, manifests[id].SessionId).Accepted, Is.True);
+                }
+                failDelivery = true;
+
+                journal.AppendInput(1, Encode(9), scope);
+
+                Assert.That(failures, Has.Count.EqualTo(1));
+                Assert.That(failures[0], Does.Contain("scripted live journal delivery failure"));
+                Assert.That(deliveries, Has.Count.EqualTo(1));
+                Assert.That(deliveries[0].SessionId, Is.EqualTo(manifests[2].SessionId));
+                Assert.That(deliveries[0].Entries, Has.Count.EqualTo(1));
+                Assert.That(deliveries[0].Entries[0].Sequence, Is.EqualTo(1));
+            }
+        }
+
+        [Test]
         public void ServerCoordinator_SendsBaselineThenCheckpointThenJournal()
         {
             var store = RegisterServerStore("map");
