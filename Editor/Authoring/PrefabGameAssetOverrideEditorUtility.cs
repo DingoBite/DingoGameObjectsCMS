@@ -22,25 +22,21 @@ namespace DingoGameObjectsCMS.Editor.Authoring
 
         public static bool IsBakingSavedAssets => _savingMetadata;
 
-        public static IReadOnlyList<PrefabGameAssetOverrideEntry> CollectOverrides(IReadOnlyList<PrefabGameAssetIndexEntry> entries, PrefabGameAssetContentHashCache hashCache = null)
+        public static IReadOnlyList<PrefabGameAssetOverrideEntry> CollectOverrides(IReadOnlyList<PrefabGameAssetIndexEntry> entries, PrefabGameAssetContentHashCache hashCache = null, GameAssetAuthoringPreparation preparation = null)
         {
-            var result = new List<PrefabGameAssetOverrideEntry>();
             hashCache ??= new PrefabGameAssetContentHashCache();
+            preparation ??= new GameAssetAuthoringPreparation();
             var paths = CollectHierarchyAssetPaths(entries);
-            foreach (var path in paths.Where(path => path.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase)))
-            {
-                var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(path);
-                if (prefab != null && BakeHierarchy(prefab, path))
-                    PrefabUtility.SavePrefabAsset(prefab);
-            }
+            BakeSavedAssets(paths.Where(path => path.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase)), true, preparation);
             hashCache.Clear();
+            var overrides = new List<PrefabGameAssetOverrideEntry>();
             foreach (var path in paths)
             {
                 if (path.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase))
                 {
                     var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(path);
                     if (prefab != null)
-                        CollectHierarchy(prefab, path, result, false, hashCache);
+                        CollectHierarchyOverrides(prefab, path, preparation, hashCache, overrides);
                     continue;
                 }
                 var scene = default(Scene);
@@ -49,16 +45,31 @@ namespace DingoGameObjectsCMS.Editor.Authoring
                     scene = EditorSceneManager.OpenPreviewScene(path);
                     foreach (var root in scene.GetRootGameObjects())
                     {
-                        CollectHierarchy(root, path, result, false, hashCache);
+                        CollectHierarchyOverrides(root, path, preparation, hashCache, overrides);
                     }
                 }
                 finally
                 {
                     if (scene.IsValid())
+                    {
+                        foreach (var root in scene.GetRootGameObjects())
+                        {
+                            preparation.ReleaseHierarchy(root);
+                        }
                         EditorSceneManager.ClosePreviewScene(scene);
+                    }
                 }
             }
-            return result;
+            return overrides;
+        }
+
+        private static void CollectHierarchyOverrides(GameObject root, string path, GameAssetAuthoringPreparation preparation, PrefabGameAssetContentHashCache hashCache, ICollection<PrefabGameAssetOverrideEntry> overrides)
+        {
+            foreach (var authoring in root.GetComponentsInChildren<GameAssetAuthoring>(true))
+            {
+                if (TryCreatePreparedOverride(authoring, path, out var entry, out _, out _, preparation, hashCache) && entry != null)
+                    overrides.Add(entry);
+            }
         }
 
         public static IReadOnlyList<string> CollectHierarchyAssetPaths(IReadOnlyList<PrefabGameAssetIndexEntry> entries)
@@ -136,10 +147,10 @@ namespace DingoGameObjectsCMS.Editor.Authoring
 
         public static bool TryCreateOverride(GameAssetAuthoring authoring, string assetPath, out PrefabGameAssetOverrideEntry entry, out string sourceGuid, out string error, PrefabGameAssetContentHashCache hashCache = null)
         {
-            return TryCreateOverride(authoring, assetPath, out entry, out sourceGuid, out error, hashCache, true);
+            return TryCreatePreparedOverride(authoring, assetPath, out entry, out sourceGuid, out error, new GameAssetAuthoringPreparation(), hashCache);
         }
 
-        private static bool TryCreateOverride(GameAssetAuthoring authoring, string assetPath, out PrefabGameAssetOverrideEntry entry, out string sourceGuid, out string error, PrefabGameAssetContentHashCache hashCache, bool collectHash)
+        public static bool TryCreatePreparedOverride(GameAssetAuthoring authoring, string assetPath, out PrefabGameAssetOverrideEntry entry, out string sourceGuid, out string error, GameAssetAuthoringPreparation preparation, PrefabGameAssetContentHashCache hashCache = null, bool collectHash = true)
         {
             entry = null;
             sourceGuid = null;
@@ -147,9 +158,9 @@ namespace DingoGameObjectsCMS.Editor.Authoring
                 return false;
             if (isDefinition)
                 return true;
-            if (!GameAssetAuthoringEditorUtility.TryCollect(authoring, out var effective, out error))
+            if (!GameAssetAuthoringEditorUtility.TryCollect(authoring, out var effective, out error, preparation))
                 return false;
-            if (!GameAssetAuthoringCollector.TryCollect(source, out var original, out error))
+            if (!GameAssetAuthoringEditorUtility.TryCollect(source, out var original, out error, preparation))
                 return false;
             try
             {
@@ -183,30 +194,34 @@ namespace DingoGameObjectsCMS.Editor.Authoring
 
         public static bool BakeHierarchy(GameObject root, string path)
         {
-            return CollectHierarchy(root, path, null, true);
+            return BakeHierarchy(root, path, new GameAssetAuthoringPreparation());
         }
 
-        public static void BakeSavedAssets(IEnumerable<string> paths, bool savePrefabs = true)
+        public static void BakeSavedAssets(IEnumerable<string> paths, bool savePrefabs = true, GameAssetAuthoringPreparation preparation = null)
         {
             if (_savingMetadata)
                 return;
             _savingMetadata = true;
             try
             {
+                preparation ??= new GameAssetAuthoringPreparation();
                 var sourcePaths = paths.Where(PrefabGameAssetIndexConfiguration.Includes).Distinct(StringComparer.Ordinal).ToArray();
                 foreach (var path in sourcePaths.Where(path => path.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase)))
                 {
                     var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(path);
                     if (prefab != null && prefab.TryGetComponent<GameAssetAuthoring>(out var authoring))
                     {
-                        var changed = GameAssetAuthoringEditorUtility.PrepareConverters(authoring);
+                        GameAssetAuthoringEditorUtility.TryPrepareConverters(authoring, out var changed, out _, preparation);
                         changed |= authoring.SetRuntimeDefinitionSource(AssetDatabase.AssetPathToGUID(path));
                         changed |= EditorUtility.IsDirty(authoring);
                         if (changed)
                         {
                             EditorUtility.SetDirty(authoring);
                             if (savePrefabs)
+                            {
                                 PrefabUtility.SavePrefabAsset(prefab);
+                                preparation.Invalidate();
+                            }
                         }
                     }
                 }
@@ -215,8 +230,11 @@ namespace DingoGameObjectsCMS.Editor.Authoring
                     if (path.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase))
                     {
                         var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(path);
-                        if (prefab != null && BakeHierarchy(prefab, path) && savePrefabs)
+                        if (prefab != null && BakeHierarchy(prefab, path, preparation) && savePrefabs)
+                        {
                             PrefabUtility.SavePrefabAsset(prefab);
+                            preparation.Invalidate();
+                        }
                     }
                     else if (path.EndsWith(".unity", StringComparison.OrdinalIgnoreCase))
                     {
@@ -225,7 +243,7 @@ namespace DingoGameObjectsCMS.Editor.Authoring
                             continue;
                         foreach (var root in scene.GetRootGameObjects())
                         {
-                            BakeHierarchy(root, path);
+                            BakeHierarchy(root, path, preparation);
                         }
                     }
                 }
@@ -236,26 +254,21 @@ namespace DingoGameObjectsCMS.Editor.Authoring
             }
         }
 
-        private static bool CollectHierarchy(GameObject root, string path, ICollection<PrefabGameAssetOverrideEntry> entries, bool bake, PrefabGameAssetContentHashCache hashCache = null)
+        private static bool BakeHierarchy(GameObject root, string path, GameAssetAuthoringPreparation preparation)
         {
             var changed = false;
             foreach (var authoring in root.GetComponentsInChildren<GameAssetAuthoring>(true))
             {
-                if (bake)
-                {
-                    changed |= GameAssetAuthoringEditorUtility.PrepareConverters(authoring);
-                    changed |= EditorUtility.IsDirty(authoring);
-                }
-                if (!TryCreateOverride(authoring, path, out var entry, out var sourceGuid, out _, hashCache, entries != null))
+                GameAssetAuthoringEditorUtility.TryPrepareConverters(authoring, out var prepared, out _, preparation);
+                changed |= prepared || EditorUtility.IsDirty(authoring);
+                if (!TryCreatePreparedOverride(authoring, path, out var entry, out var sourceGuid, out _, preparation, null, false))
                 {
                     // Validation reports the rejected content once. Do not retain an older valid override's identity.
                     if (!GameAssetAuthoringEditorUtility.TryGetDefinition(authoring, out _, out sourceGuid, out _))
                         sourceGuid = null;
                     entry = null;
                 }
-                if (entry != null)
-                    entries?.Add(entry);
-                if (bake && authoring.SetRuntimeDefinitionSource(sourceGuid, entry?.Id))
+                if (authoring.SetRuntimeDefinitionSource(sourceGuid, entry?.Id))
                 {
                     EditorUtility.SetDirty(authoring);
                     if (PrefabUtility.IsPartOfPrefabInstance(authoring))

@@ -11,6 +11,8 @@ namespace DingoGameObjectsCMS.Editor.Authoring
 {
     public static class PrefabGameAssetIndexConfiguration
     {
+        public static event Action Changed;
+
         public static string IndexAssetPath { get; private set; }
         public static Func<string, bool> IncludeAssetPath { get; private set; }
         public static Func<IReadOnlyList<GameAssetComponent>, IEnumerable<string>> ResourceDependencies { get; private set; }
@@ -21,7 +23,7 @@ namespace DingoGameObjectsCMS.Editor.Authoring
             IndexAssetPath = indexAssetPath?.Replace('\\', '/');
             IncludeAssetPath = includeAssetPath;
             ResourceDependencies = resourceDependencies;
-            PrefabGameAssetIndexEditorUtility.OnConfigurationChanged();
+            Changed?.Invoke();
         }
 
         public static bool Includes(string assetPath)
@@ -40,6 +42,7 @@ namespace DingoGameObjectsCMS.Editor.Authoring
 
         static PrefabGameAssetIndexEditorUtility()
         {
+            PrefabGameAssetIndexConfiguration.Changed += OnConfigurationChanged;
             EditorApplication.playModeStateChanged += OnPlayModeStateChanged;
             RequestReconcile();
         }
@@ -49,8 +52,9 @@ namespace DingoGameObjectsCMS.Editor.Authoring
             return CollectEntries(true, new PrefabGameAssetContentHashCache());
         }
 
-        private static IReadOnlyList<PrefabGameAssetIndexEntry> CollectEntries(bool collectHashes, PrefabGameAssetContentHashCache cache)
+        private static IReadOnlyList<PrefabGameAssetIndexEntry> CollectEntries(bool collectHashes, PrefabGameAssetContentHashCache cache, GameAssetAuthoringPreparation preparation = null)
         {
+            preparation ??= new GameAssetAuthoringPreparation();
             var entries = new List<PrefabGameAssetIndexEntry>();
             foreach (var guid in AssetDatabase.FindAssets("t:Prefab", new[] { "Assets" }).OrderBy(value => value, StringComparer.Ordinal))
             {
@@ -59,7 +63,15 @@ namespace DingoGameObjectsCMS.Editor.Authoring
                     continue;
                 var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(path);
                 if (prefab != null && prefab.TryGetComponent<GameAssetAuthoring>(out var authoring))
-                    entries.Add(new PrefabGameAssetIndexEntry(guid, authoring, collectHashes ? PrefabGameAssetContentHashUtility.Compute(path, cache) : null));
+                {
+                    var hash = default(string);
+                    if (collectHashes)
+                    {
+                        GameAssetAuthoringEditorUtility.TryCollect(authoring, out var collection, out _, preparation);
+                        hash = PrefabGameAssetContentHashUtility.Compute(path, collection?.Components, cache);
+                    }
+                    entries.Add(new PrefabGameAssetIndexEntry(guid, authoring, hash));
+                }
             }
             return entries;
         }
@@ -85,13 +97,12 @@ namespace DingoGameObjectsCMS.Editor.Authoring
                     AssetDatabase.CreateAsset(index, path);
                 }
                 var roots = CollectEntries(false, null);
-                PrefabGameAssetOverrideEditorUtility.BakeSavedAssets(roots.Select(entry => AssetDatabase.GetAssetPath(entry.Authoring)));
-                roots = CollectEntries(false, null);
-                // Play, ordinary reconciliation and builds use the same content diagnostics and fallback policy.
-                PrefabGameAssetBuildValidation.Validate();
+                var preparation = new GameAssetAuthoringPreparation();
+                var paths = PrefabGameAssetOverrideEditorUtility.CollectHierarchyAssetPaths(roots);
+                PrefabGameAssetOverrideEditorUtility.BakeSavedAssets(paths.Where(assetPath => assetPath.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase)), true, preparation);
                 var hashCache = new PrefabGameAssetContentHashCache();
-                var overrides = PrefabGameAssetOverrideEditorUtility.CollectOverrides(roots, hashCache);
-                var refreshedRoots = CollectEntries(true, hashCache);
+                var overrides = PrefabGameAssetBuildValidation.ValidateAndCollectOverrides(paths, preparation, hashCache);
+                var refreshedRoots = CollectEntries(true, hashCache, preparation);
                 // Prefab saves can reimport dependent assets, including this index.
                 index = AssetDatabase.LoadAssetAtPath<PrefabGameAssetIndex>(path);
                 var changed = index.ReplaceEntries(refreshedRoots);
@@ -201,6 +212,8 @@ namespace DingoGameObjectsCMS.Editor.Authoring
     {
         private static void OnPostprocessAllAssets(string[] importedAssets, string[] deletedAssets, string[] movedAssets, string[] movedFromAssetPaths)
         {
+            if (importedAssets.Length + deletedAssets.Length + movedAssets.Length + movedFromAssetPaths.Length > 0)
+                GameAssetAuthoringPreparation.NotifyAssetsChanged();
             if (importedAssets.Concat(deletedAssets).Concat(movedAssets).Concat(movedFromAssetPaths).Any(PrefabGameAssetIndexEditorUtility.IsRelevantAssetChange))
                 PrefabGameAssetIndexEditorUtility.RequestReconcile();
         }

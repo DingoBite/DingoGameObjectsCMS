@@ -25,7 +25,9 @@ namespace DingoGameObjectsCMS.AssetObjects.Authoring
 
         public bool SetRuntimeDefinitionSource(string guid, string overrideId = null)
         {
-            if (_sourceDefinitionGuid == guid && _runtimeOverrideId == overrideId)
+            guid ??= string.Empty;
+            overrideId ??= string.Empty;
+            if ((_sourceDefinitionGuid ?? string.Empty) == guid && (_runtimeOverrideId ?? string.Empty) == overrideId)
                 return false;
             _sourceDefinitionGuid = guid;
             _runtimeOverrideId = overrideId;

@@ -176,6 +176,8 @@ base/characters/player/player@1.2.0.json
   - `ComponentStructureChanges`
   - `ComponentChanges`
 
+`IsFlushInProgress` — вычисляемое свойство только для чтения: оно равно `true` во время фактического flush живого store, включая callbacks `StructureChanges`, `ComponentStructureChanges`, `ComponentChanges`, `CommittedBatch` и `DirtyPublishCompleted`, и `false` вне flush. Retirement сбрасывает его в `false`, в том числе внутри callback до возврата из стека flush. Это синхронное наблюдение позволяет владельцу отложить вложенный синхронный вызов `FlushToQuiescence(...)` до завершения текущего flush; владелец также должен учитывать `Retired`. Свойство не обеспечивает потокобезопасность и не планирует повторные попытки.
+
 Поддерживаемые структурные операции:
 
 - `Create`
@@ -310,6 +312,14 @@ GameAsset
 ### Asset -> Runtime -> View
 
 View-слой может подписываться на runtime-объекты через `GameRuntimeObjectView` и `GameRuntimeObjectsCollection`, не ломая separation между данными и отображением.
+
+`GameRuntimeObjectsDirtyCollection.RefreshInclusion(IEnumerable<long> keys)`
+повторно проверяет выбранные ключи при изменении внешнего фильтра включения.
+Метод добавляет новые подходящие строки и освобождает исключённые через обычный
+lifecycle коллекции. Оставшиеся строки сохраняют контейнеры и подготовленные
+ресурсы; их операции и reveal-эффекты не повторяются. Refresh не изменяет данные
+Store и не ставит dirty. Перечень ключей фиксируется до обработки; если callback
+заменяет текущую привязку, обработка прекращается, включая rebind того же Store.
 
 ### Asset -> Runtime -> Network
 

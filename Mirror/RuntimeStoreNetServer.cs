@@ -53,7 +53,8 @@ namespace DingoGameObjectsCMS.Mirror
                         .GetPayloadCapacity,
                     SendStateStreamMessage,
                     SendJournalBatch,
-                    SendCheckpointChunk));
+                    SendCheckpointChunk,
+                    RuntimeSessionManifestTransportBudget.Validate));
             _coordinator.ConnectionInvalidated += DisconnectInvalidatedConnection;
 
             NetworkServer.RegisterHandler<RtSessionHello>(OnHello, requireAuthentication: true);

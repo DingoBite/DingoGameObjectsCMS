@@ -37,8 +37,96 @@ namespace DingoGameObjectsCMS.Tests.Editor
         public float LeafValue;
     }
 
+    public struct RuntimePatchLayoutIntPair
+    {
+        public int X, Y;
+    }
+
+    public struct RuntimePatchLayoutFloatPair
+    {
+        public int X;
+        public float Y;
+    }
+
+    public struct RuntimePatchLayoutRenamedPair
+    {
+        public int X, Z;
+    }
+
+    public struct RuntimePatchLayoutEquivalentPair
+    {
+        public int Y, X;
+    }
+
+    public enum RuntimePatchLayoutByteMode : byte { Idle, Active }
+    public enum RuntimePatchLayoutWideMode : int { Idle, Active }
+    public enum RuntimePatchLayoutRemappedMode : byte { Idle, Active = 2 }
+
+    public class RuntimePatchLayoutInt_GRC : GameRuntimeComponent { public int Value; }
+    public class RuntimePatchLayoutFloat_GRC : GameRuntimeComponent { public float Value; }
+    public class RuntimePatchLayoutRenamed_GRC : GameRuntimeComponent { public int Amount; }
+    public class RuntimePatchLayoutStruct_GRC : GameRuntimeComponent { public RuntimePatchLayoutIntPair Value; }
+    public class RuntimePatchLayoutFloatStruct_GRC : GameRuntimeComponent { public RuntimePatchLayoutFloatPair Value; }
+    public class RuntimePatchLayoutRenamedStruct_GRC : GameRuntimeComponent { public RuntimePatchLayoutRenamedPair Value; }
+    public class RuntimePatchLayoutEquivalentStruct_GRC : GameRuntimeComponent { public RuntimePatchLayoutEquivalentPair Value; }
+    public class RuntimePatchLayoutIntList_GRC : GameRuntimeComponent { public List<int> Value; }
+    public class RuntimePatchLayoutFloatList_GRC : GameRuntimeComponent { public List<float> Value; }
+    public class RuntimePatchLayoutStructList_GRC : GameRuntimeComponent { public List<RuntimePatchLayoutIntPair> Value; }
+    public class RuntimePatchLayoutFloatStructList_GRC : GameRuntimeComponent { public List<RuntimePatchLayoutFloatPair> Value; }
+    public class RuntimePatchLayoutEnum_GRC : GameRuntimeComponent { public RuntimePatchLayoutByteMode Value; }
+    public class RuntimePatchLayoutWideEnum_GRC : GameRuntimeComponent { public RuntimePatchLayoutWideMode Value; }
+    public class RuntimePatchLayoutRemappedEnum_GRC : GameRuntimeComponent { public RuntimePatchLayoutRemappedMode Value; }
+
     public class RuntimePatchGeneratedValueCodecTests
     {
+        [TestCase(typeof(RuntimePatchLayoutInt_GRC), typeof(RuntimePatchLayoutFloat_GRC))]
+        [TestCase(typeof(RuntimePatchLayoutInt_GRC), typeof(RuntimePatchLayoutRenamed_GRC))]
+        [TestCase(typeof(RuntimePatchLayoutStruct_GRC), typeof(RuntimePatchLayoutFloatStruct_GRC))]
+        [TestCase(typeof(RuntimePatchLayoutStruct_GRC), typeof(RuntimePatchLayoutRenamedStruct_GRC))]
+        [TestCase(typeof(RuntimePatchLayoutIntList_GRC), typeof(RuntimePatchLayoutFloatList_GRC))]
+        [TestCase(typeof(RuntimePatchLayoutStructList_GRC), typeof(RuntimePatchLayoutFloatStructList_GRC))]
+        [TestCase(typeof(RuntimePatchLayoutEnum_GRC), typeof(RuntimePatchLayoutWideEnum_GRC))]
+        [TestCase(typeof(RuntimePatchLayoutEnum_GRC), typeof(RuntimePatchLayoutRemappedEnum_GRC))]
+        public void SchemaHashChangesWithWireLayoutOrSemanticMappingAtTheSameNumericIdentity(Type firstType, Type secondType)
+        {
+            var first = RuntimePatchSchemaDiscovery.DescribeComponent(firstType, 9904);
+            var second = RuntimePatchSchemaDiscovery.DescribeComponent(secondType, 9904);
+            Assert.That(first.Schema.Fields.Count, Is.EqualTo(second.Schema.Fields.Count));
+            Assert.That(first.Schema.Fields[0].FieldId, Is.EqualTo(second.Schema.Fields[0].FieldId));
+            Assert.That(first.Schema.Fields[0].Encoding, Is.EqualTo(second.Schema.Fields[0].Encoding));
+            var before = RuntimePatchSchemaReconciler.Reconcile(new[] { first.Schema }, "fixed-layout-registry", 1);
+            var after = RuntimePatchSchemaReconciler.Reconcile(new[] { second.Schema }, "fixed-layout-registry", 1);
+            Assert.That(after.ComponentRegistryHash, Is.EqualTo(before.ComponentRegistryHash));
+            Assert.That(after.SchemaHash, Is.Not.EqualTo(before.SchemaHash));
+        }
+
+        [Test]
+        public void SchemaHashUsesCanonicalMemberLayoutWithoutDependingOnFixtureClrNamesOrDeclarationOrder()
+        {
+            var first = RuntimePatchSchemaDiscovery.DescribeComponent(typeof(RuntimePatchLayoutStruct_GRC), 9904);
+            var equivalent = RuntimePatchSchemaDiscovery.DescribeComponent(typeof(RuntimePatchLayoutEquivalentStruct_GRC), 9904);
+            var before = RuntimePatchSchemaReconciler.Reconcile(new[] { first.Schema }, "fixed-layout-registry", 1);
+            var after = RuntimePatchSchemaReconciler.Reconcile(new[] { equivalent.Schema }, "fixed-layout-registry", 1);
+            Assert.That(after.SchemaHash, Is.EqualTo(before.SchemaHash));
+        }
+
+        [Test]
+        public void SchemaHashAndEmittedSourceRemainDeterministicAcrossRepeatedAndReorderedDiscovery()
+        {
+            var first = RuntimePatchSchemaDiscovery.DescribeComponent(typeof(RuntimePatchInheritedFixture_GRC), 9903);
+            var second = RuntimePatchSchemaDiscovery.DescribeComponent(typeof(RuntimePatchLayoutInt_GRC), 9904);
+            var manifest = RuntimePatchSchemaReconciler.Reconcile(new[] { first.Schema, second.Schema }, "fixed-layout-registry", 1);
+            RuntimePatchSchemaGenerationCore.BindReconciledSchema(new[] { first, second }, manifest);
+            var profile = new RuntimePatchCodeEmissionProfile("DingoGameObjectsCMS.Tests.Generated", "CmsLayoutPatchRegistry");
+            var source = RuntimePatchCodeEmitter.Generate(manifest, new[] { first, second }, profile);
+            first.Schema.Fields.Reverse();
+            var repeated = RuntimePatchSchemaReconciler.Reconcile(new[] { second.Schema, first.Schema }, "fixed-layout-registry", 1);
+            RuntimePatchSchemaGenerationCore.BindReconciledSchema(new[] { first, second }, repeated);
+            Assert.That(repeated.SchemaHash, Is.EqualTo(manifest.SchemaHash));
+            Assert.That(RuntimePatchSchemaReconciler.CalculateSchemaHash(repeated), Is.EqualTo(repeated.SchemaHash));
+            Assert.That(RuntimePatchCodeEmitter.Generate(repeated, new[] { first, second }, profile), Is.EqualTo(source));
+        }
+
         [Test]
         public void SchemaAndEmitter_SupportGenericValueListsHash128AndGameAssetInstance()
         {

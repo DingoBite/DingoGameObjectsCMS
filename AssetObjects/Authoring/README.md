@@ -40,12 +40,17 @@ library snapshots. Obtain the current sealed snapshot through the same `Build`
 or environment path used for the session, including its JSON modules and native
 definitions. Comparison does not consult a separate filesystem catalog or live
 definition SOs. Resource-only changes report `MOD_CHANGED`; changed runtime
-content reports `CONTENT_CHANGED` with both captured hashes. Derived instance
-snapshots remain covered by their native module fingerprint.
+content reports `CONTENT_HASH_MISMATCH` with both captured hashes. Derived instance
+snapshots are checked by their exact keys, GUIDs and materialized hashes as well
+as the native module fingerprint.
 
 The application/session owner may use `GameAssetRuntimeEnvironment(codecs, context, index)` to own preparation, mounting and temporary definitions. Stop consumers before calling its idempotent `Dispose()`: it clears templates and disposes native definition SOs, while source prefabs, the index and Unity resources remain owned by Unity. With direct preparation, the caller owns `PrefabGameAssetDefinitions.Dispose()` and template lifetime. A new preparation/session is required to observe authoring changes. Authoring and reference resolution do not create or own a live GRO or GameObject lifecycle; feature owners continue to create objects through `RuntimeStore`.
 
 Editor converter discovery caches its runtime type catalog and source matches until domain reload. Native save callbacks prepare and mark metadata without saving the same prefab recursively; the caller owns that save. Explicit reconciliation may save prepared prefabs outside the callback. Deferred preparation and reconciliation wait while metadata baking is active.
+
+Each reconciliation owns one synchronous `GameAssetAuthoringPreparation`. It prepares and collects each source definition and effective instance once while assets are stable. Validation and override snapshot creation share one hierarchy pass, and root dependency hashing reuses the collected components. Saved prefabs invalidate the preparation; asset imports, moves and deletions also invalidate it through the Editor import version, including resources outside the index inclusion filter. Preview-scene results are released before closing their scene. No mutable authoring results are cached between reconciliations. Standalone Inspector collection and validation create their own preparation scopes.
+
+`GameAssetLibraryLockBuilder.CompareWithCurrentLibrary(locked, current)` requires the explicit sealed current library. It compares packaged and native module fingerprints, exact keys, GUIDs and materialized hashes, including derived snapshots without latest aliases. It reads captured catalog metadata rather than global package registration or live authoring, so the result belongs to the supplied preparation.
 
 ## JSON module definitions
 

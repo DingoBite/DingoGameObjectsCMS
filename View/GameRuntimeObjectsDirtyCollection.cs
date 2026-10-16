@@ -31,6 +31,7 @@ namespace DingoGameObjectsCMS.View
         private RuntimeStore _store;
         private RuntimeObjectCollectionScope _scope = RuntimeObjectCollectionScope.Parents;
         private int _entryVersion;
+        private int _bindingVersion;
         private int _scheduledOrderApplyVersion;
         private bool _orderApplyScheduled;
         private bool _orderDirty;
@@ -136,6 +137,7 @@ namespace DingoGameObjectsCMS.View
 
             Unbind();
             _store = store;
+            _bindingVersion++;
             _scope = scope;
             _store.StructureChanges += ApplyStructureChanges;
             _store.ComponentStructureChanges += ApplyComponentStructureChanges;
@@ -152,8 +154,51 @@ namespace DingoGameObjectsCMS.View
             ResetFromStore(ResolveSpawnOptions(spawnOptions));
         }
 
+        // Reevaluate an external membership filter without replaying retained rows.
+        public void RefreshInclusion(IEnumerable<long> keys)
+        {
+            if (keys == null)
+                throw new ArgumentNullException(nameof(keys));
+            if (_store == null)
+                return;
+
+            var store = _store;
+            var version = _bindingVersion;
+            var selected = new List<long>(keys);
+            if (!IsBindingCurrent(store, version))
+                return;
+            var spawnOptions = ResolveSpawnOptions(CollectionViewSpawnOptions.Default);
+            var changed = false;
+            foreach (var key in selected)
+            {
+                if (!IsBindingCurrent(store, version))
+                    return;
+                var active = _activeEntries.ContainsKey(key);
+                var included = TryTakeScopedValue(key, out var value);
+                if (!IsBindingCurrent(store, version))
+                    return;
+                if (active && !included)
+                {
+                    ReleaseKey(store, key, spawnOptions);
+                    changed = true;
+                }
+                else if (!active && included && UpsertEntry(key, GameRuntimeObjectOperation.Snapshot(store, key, null, value), spawnOptions))
+                {
+                    if (!IsBindingCurrent(store, version))
+                        return;
+                    InsertOrderedKey(key);
+                    changed = true;
+                }
+            }
+            if (changed && IsBindingCurrent(store, version))
+                ReconcileActiveOrder();
+        }
+
+        private bool IsBindingCurrent(RuntimeStore store, int version) => this != null && ReferenceEquals(_store, store) && _bindingVersion == version;
+
         public void Unbind()
         {
+            _bindingVersion++;
             CancelScheduledActiveOrderApply();
             if (_store == null)
                 return;
@@ -482,16 +527,21 @@ namespace DingoGameObjectsCMS.View
 
         private bool UpsertEntry(long key, GameRuntimeObjectOperation operation, CollectionViewSpawnOptions spawnOptions)
         {
+            var bindingVersion = _bindingVersion;
             if (_activeEntries.TryGetValue(key, out var activeEntry))
             {
                 activeEntry.Value = operation.Value;
                 if (PlaceEntry(key, operation.Value, activeEntry.Container))
                     ScheduleActiveOrderApply();
+                if (!IsBindingCurrent(operation.Store, bindingVersion))
+                    return false;
                 ApplyOperation(activeEntry.Container, operation);
-                return true;
+                return IsBindingCurrent(operation.Store, bindingVersion);
             }
 
             var prefab = ResolvePrefab(key, operation.Value);
+            if (!IsBindingCurrent(operation.Store, bindingVersion))
+                return false;
             if (prefab == null)
             {
                 Debug.LogError($"{nameof(GameRuntimeObjectsDirtyCollection)} on '{name}' could not resolve a prefab for runtime object {key}.", this);
@@ -501,13 +551,12 @@ namespace DingoGameObjectsCMS.View
             if (!_poolsByPrefab.TryGetValue(prefab, out var pool))
             {
                 pool = Factory(prefab, _parent);
+                if (!IsBindingCurrent(operation.Store, bindingVersion))
+                    return false;
                 _poolsByPrefab.Add(prefab, pool);
             }
 
             var valueContainer = pool.PullElement();
-            PlaceEntry(key, operation.Value, valueContainer);
-            ApplyOperation(valueContainer, operation);
-
             var version = ++_entryVersion;
             var entry = new ActiveEntry
             {
@@ -516,6 +565,16 @@ namespace DingoGameObjectsCMS.View
                 Container = valueContainer,
                 Pool = pool,
             };
+            if (IsBindingCurrent(operation.Store, bindingVersion))
+                PlaceEntry(key, operation.Value, valueContainer);
+            if (IsBindingCurrent(operation.Store, bindingVersion))
+                ApplyOperation(valueContainer, operation);
+            if (!IsBindingCurrent(operation.Store, bindingVersion))
+            {
+                entry.PullCompleted.TrySetResult();
+                _ = ReleaseEntryAsync(operation.Store, key, entry, spawnOptions);
+                return false;
+            }
             _activeEntries[key] = entry;
 
             _ = FinalizePullAsync(key, entry, spawnOptions);
@@ -524,7 +583,11 @@ namespace DingoGameObjectsCMS.View
 
         private bool PlaceEntry(long key, GameRuntimeObject value, GameRuntimeObjectOperationView valueContainer)
         {
+            var store = _store;
+            var version = _bindingVersion;
             var parent = ResolveParent(key, value, valueContainer);
+            if (!IsBindingCurrent(store, version))
+                return false;
             if (parent == null)
                 parent = _parent.transform;
             if (valueContainer.transform.parent == parent)

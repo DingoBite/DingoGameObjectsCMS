@@ -187,7 +187,7 @@ namespace DingoGameObjectsCMS.Tests.Editor
             Assert.That(kinds.Contains(GameAssetLibraryLockIssueKinds.IDENTITY_MISSING_IN_CURRENT_LIBRARY), Is.EqualTo(changeKey));
             Assert.That(kinds.Contains(GameAssetLibraryLockIssueKinds.GUID_KEY_MISMATCH), Is.EqualTo(changeGuid != changeKey));
             Assert.That(kinds, Does.Not.Contain(GameAssetLibraryLockIssueKinds.MISSING_MOD));
-            Assert.That(kinds, Does.Not.Contain(GameAssetLibraryLockIssueKinds.CONTENT_CHANGED));
+            Assert.That(kinds, Does.Not.Contain(GameAssetLibraryLockIssueKinds.CONTENT_HASH_MISMATCH));
             if (changeGuid != changeKey)
             {
                 var mismatch = report.Issues.First(issue => issue.Kind == GameAssetLibraryLockIssueKinds.GUID_KEY_MISMATCH);
@@ -209,20 +209,20 @@ namespace DingoGameObjectsCMS.Tests.Editor
             var report = GameAssetLibraryLockBuilder.CompareWithCurrentLibrary(locked, current);
 
             Assert.That(report.Issues, Is.Not.Empty);
-            Assert.That(report.Issues.All(issue => issue.Kind == GameAssetLibraryLockIssueKinds.CONTENT_CHANGED), Is.True);
+            Assert.That(report.Issues.All(issue => issue.Kind == GameAssetLibraryLockIssueKinds.CONTENT_HASH_MISMATCH), Is.True);
             foreach (var issue in report.Issues)
             {
                 Assert.That(issue.LockedResolvedKey, Is.EqualTo(original.ResolvedKey));
                 Assert.That(issue.CurrentResolvedKey, Is.EqualTo(original.ResolvedKey));
                 Assert.That(issue.LockedResolvedGuid, Is.EqualTo(original.ResolvedGuid));
                 Assert.That(issue.CurrentResolvedGuid, Is.EqualTo(original.ResolvedGuid));
-                Assert.That(issue.LockedMaterializedContentHash, Is.EqualTo(original.MaterializedContentHash));
-                Assert.That(issue.CurrentMaterializedContentHash, Is.EqualTo(changedHash));
+                Assert.That(issue.LockedContentHash, Is.EqualTo(original.MaterializedContentHash));
+                Assert.That(issue.CurrentContentHash, Is.EqualTo(changedHash));
             }
         }
 
         [Test]
-        public void ComparisonKeepsDerivedInstanceKeysUnderNativeModuleChangeDetection()
+        public void ComparisonReportsRemovedDerivedInstanceKeysAndNativeModuleChanges()
         {
             var authoring = PrepareNative("comparison-overrides", new PrefabAuthoringAlpha_GAC { Value = 5 });
             _definitions.Dispose();
@@ -238,8 +238,17 @@ namespace DingoGameObjectsCMS.Tests.Editor
                 var current = GameAssetLibraryLockBuilder.Build(currentTemplates, Array.Empty<ModPackage>(), currentDefinitions);
                 var report = GameAssetLibraryLockBuilder.CompareWithCurrentLibrary(locked, current);
 
-                Assert.That(report.Issues.Select(issue => issue.Kind), Is.EqualTo(new[] { GameAssetLibraryLockIssueKinds.MOD_CHANGED }));
-                Assert.That(report.Issues[0].Mod, Is.EqualTo(PrefabGameAssetDefinitions.MOD));
+                Assert.That(report.Issues.Select(issue => issue.Kind), Is.EquivalentTo(new[]
+                {
+                    GameAssetLibraryLockIssueKinds.MOD_CHANGED,
+                    GameAssetLibraryLockIssueKinds.IDENTITY_MISSING_IN_CURRENT_LIBRARY,
+                    GameAssetLibraryLockIssueKinds.MISSING_GUID,
+                    GameAssetLibraryLockIssueKinds.MISSING_RESOLVED_KEY,
+                }));
+                Assert.That(report.Issues.Single(issue => issue.Kind == GameAssetLibraryLockIssueKinds.MOD_CHANGED).Mod,
+                    Is.EqualTo(PrefabGameAssetDefinitions.MOD));
+                Assert.That(report.Issues.Where(issue => issue.Kind != GameAssetLibraryLockIssueKinds.MOD_CHANGED)
+                    .All(issue => GameAssetDerivedIdentity.IsDerived(issue.LockedResolvedKey)), Is.True);
             }
             finally
             {
@@ -443,6 +452,86 @@ namespace DingoGameObjectsCMS.Tests.Editor
             Assert.That(_index != null, Is.True);
             Assert.That(owned.All(asset => asset == null), Is.True);
             Assert.Throws<ObjectDisposedException>(() => GameAssetLibraryLockBuilder.Build(_templates, Array.Empty<ModPackage>(), _definitions));
+        }
+
+        [Test]
+        public void ExplicitCatalogComparisonAcceptsNativePackagedAndDerivedEntriesWithoutGlobalRegistration()
+        {
+            var source = PrepareNative("compare-native", new PrefabAuthoringAlpha_GAC { Value = 5 });
+            var json = GameAssetDocumentComposer.CanonicalizeOverrides(new GameAssetOverrides { OverrideComponents = new List<JObject> { new() { ["$type"] = nameof(PrefabAuthoringAlpha_GAC), ["Value"] = 25 } } });
+            _index.ReplaceOverrides(new[] { new PrefabGameAssetOverrideEntry("compare-instance", source, new[] { new PrefabAuthoringAlpha_GAC { Value = 25 } }, json, "compare-override-content") });
+            _definitions.Dispose();
+            Assert.That(PrefabGameAssetDefinitions.TryPrepare(_index, out _definitions, out var error), Is.True, error);
+            var package = CreatePackage(new GameAssetKey("comparison-package", "data", "retained", "1.0.0"), Hash128.Compute("comparison-package"));
+            var locked = GameAssetLibraryLockBuilder.Build(_templates, new[] { package }, _definitions);
+            var currentTemplates = CreateTemplates();
+            try
+            {
+                var current = GameAssetLibraryLockBuilder.Build(currentTemplates, new[] { package }, _definitions);
+                Assert.That(current.Entries.Values.Any(entry => GameAssetDerivedIdentity.IsDerived(entry.ResolvedKey)), Is.True);
+                _definitions.Dispose();
+
+                Assert.That(GameAssetLibraryLockBuilder.CompareWithCurrentLibrary(locked, current).Issues, Is.Empty, "Comparison uses captured metadata, including exact derived entries, after definition resources retire.");
+            }
+            finally
+            {
+                currentTemplates.Clear();
+            }
+        }
+
+        [Test]
+        public void ExplicitCatalogComparisonReportsNativeResourceChangesAndMissingNativeDefinitions()
+        {
+            var source = PrepareNative("compare-resource");
+            var locked = GameAssetLibraryLockBuilder.Build(_templates, Array.Empty<ModPackage>(), _definitions);
+            var guid = AssetDatabase.AssetPathToGUID(AssetDatabase.GetAssetPath(source));
+            _index.ReplaceEntries(new[] { new PrefabGameAssetIndexEntry(guid, source, "changed-native-resource-content") });
+            Assert.That(PrefabGameAssetDefinitions.TryPrepare(_index, out var next, out var error), Is.True, error);
+            var currentTemplates = CreateTemplates();
+            try
+            {
+                var current = GameAssetLibraryLockBuilder.Build(currentTemplates, Array.Empty<ModPackage>(), next);
+                var changed = GameAssetLibraryLockBuilder.CompareWithCurrentLibrary(locked, current).Issues;
+                Assert.That(changed.Any(issue => issue.Kind == GameAssetLibraryLockIssueKinds.MOD_CHANGED && issue.Mod == PrefabGameAssetDefinitions.MOD), Is.True);
+                Assert.That(changed.Any(issue => issue.Kind == GameAssetLibraryLockIssueKinds.CONTENT_HASH_MISMATCH), Is.False, "A resource-only change can preserve its GRC baseline while changing native content identity.");
+
+                var missing = GameAssetLibraryLockBuilder.CompareWithCurrentLibrary(locked, new GameAssetLibraryLock().Seal()).Issues;
+                Assert.That(missing.Any(issue => issue.Kind == GameAssetLibraryLockIssueKinds.MISSING_MOD && issue.Mod == PrefabGameAssetDefinitions.MOD), Is.True);
+                Assert.That(missing.Any(issue => issue.Kind == GameAssetLibraryLockIssueKinds.MISSING_RESOLVED_KEY), Is.True);
+                Assert.That(missing.Any(issue => issue.Kind == GameAssetLibraryLockIssueKinds.MISSING_GUID), Is.True);
+            }
+            finally
+            {
+                currentTemplates.Clear();
+                next.Dispose();
+            }
+        }
+
+        [Test]
+        public void ExplicitCatalogComparisonChecksPackagedAndDerivedMaterializedHashesAndGuidChanges()
+        {
+            var rootKey = new GameAssetKey("package", "data", "root", "1.0.0");
+            var derivedKey = new GameAssetKey(PrefabGameAssetDefinitions.MOD, "prefab", "definition#snapshot", "0.0.0");
+            var rootGuid = Hash128.Compute("comparison-root");
+            var derivedGuid = Hash128.Compute("comparison-derived");
+            var locked = new GameAssetLibraryLock();
+            locked.SetMod(new GameAssetLibraryLockMod("package", 1, "same-generation", "before-package"));
+            locked.Set(rootKey, new GameAssetLibraryLockEntry(rootKey, rootGuid, "before-root"));
+            locked.Set(derivedKey, new GameAssetLibraryLockEntry(derivedKey, derivedGuid, "before-derived"));
+            locked.Seal();
+            var current = new GameAssetLibraryLock();
+            current.SetMod(new GameAssetLibraryLockMod("package", 1, "same-generation", "after-package"));
+            current.Set(rootKey, new GameAssetLibraryLockEntry(rootKey, Hash128.Compute("replacement-root"), "after-root"));
+            current.Set(derivedKey, new GameAssetLibraryLockEntry(derivedKey, derivedGuid, "after-derived"));
+            current.Seal();
+
+            var issues = GameAssetLibraryLockBuilder.CompareWithCurrentLibrary(locked, current).Issues;
+
+            Assert.That(issues.Any(issue => issue.Kind == GameAssetLibraryLockIssueKinds.MOD_CHANGED && issue.Mod == "package"), Is.True);
+            Assert.That(issues.Any(issue => issue.Kind == GameAssetLibraryLockIssueKinds.GUID_KEY_MISMATCH && issue.LockedResolvedKey == rootKey), Is.True);
+            Assert.That(issues.Count(issue => issue.Kind == GameAssetLibraryLockIssueKinds.CONTENT_HASH_MISMATCH), Is.EqualTo(2));
+            Assert.That(issues.Single(issue => issue.Kind == GameAssetLibraryLockIssueKinds.CONTENT_HASH_MISMATCH && issue.LockedResolvedKey == derivedKey).CurrentContentHash, Is.EqualTo("after-derived"));
+            Assert.Throws<InvalidOperationException>(() => GameAssetLibraryLockBuilder.CompareWithCurrentLibrary(locked, new GameAssetLibraryLock()));
         }
 
         private GameAssetAuthoring PrepareNative(string name, GameAssetComponent component = null)

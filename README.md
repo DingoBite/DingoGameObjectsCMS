@@ -18,6 +18,8 @@ This is not just a "ScriptableObject CMS". It is a unified game model where the 
 
 The [Prefab → GameAsset authoring](AssetObjects/Authoring/README.md) workflow supports native prefab definitions prepared in memory and mounted into the same immutable `LibraryLock` as JSON modules. Its generated index captures prefab identity, resource dependency hashes and saved instance value/resource overrides. The application owner disposes prepared definitions after consumers stop. Prefab definitions do not publish or maintain a separate GA document; JSON modules remain independent authored sources supported by DingoCMS.
 
+Compare a captured catalog with a newly prepared one through `GameAssetLibraryLockBuilder.CompareWithCurrentLibrary(locked, current)`. The current library must be sealed. Comparison uses the supplied packaged and native module metadata, exact and derived identities, GUIDs and materialized hashes; it does not discover a current native catalog through global registration.
+
 For the opt-in high-cardinality DOTS profile, see [DOTS + RuntimeStore Integration](DOTS_INTEGRATION.md).
 
 ## Why this solution is valuable
@@ -175,6 +177,8 @@ In the current design the ECS-facing contract is built around `EntityCommandBuff
   - `StructureChanges`
   - `ComponentStructureChanges`
   - `ComponentChanges`
+
+`IsFlushInProgress` is a readonly computed property: it is `true` during an actual flush of a live store, including `StructureChanges`, `ComponentStructureChanges`, `ComponentChanges`, `CommittedBatch`, and `DirtyPublishCompleted` callbacks, and `false` outside the flush. Retirement resets it to `false`, including retirement inside a callback before the flush stack returns. It provides a synchronous observation so the owner can defer a nested synchronous `FlushToQuiescence(...)` call until the active flush has ended; the owner must also respect `Retired`. It does not provide thread safety or schedule retries.
 
 Supported structural operations:
 
@@ -356,6 +360,14 @@ This is intentionally not a generic always-live two-way sync. Runtime data can s
 
 The view layer can subscribe to runtime objects through `GameRuntimeObjectView` and `GameRuntimeObjectsCollection` without breaking separation between data and presentation.
 
+`GameRuntimeObjectsDirtyCollection.RefreshInclusion(IEnumerable<long> keys)`
+reevaluates selected keys when an external membership filter changes. It adds
+newly included rows and releases excluded rows through the normal collection
+lifecycle. Rows that remain included keep their containers and prepared resources;
+their operations and reveal effects are not replayed. This refresh does not write
+Store data or mark objects dirty. It snapshots the supplied keys and aborts if a
+callback invalidates the current binding, including a rebind to the same Store.
+
 ### Asset -> Runtime -> Network
 
 ### Runtime -> Persistence
@@ -436,6 +448,8 @@ same callback, so products can enforce coverage without SDK dependencies on thei
 domain. Explicit additional fingerprint inputs must exist; the generated
 fingerprint source and its metadata remain excluded from its own input set.
 
+`SchemaHash` fingerprints the current complete generated wire layout and `FieldId`-to-member mapping at generation time, including primitive kinds, recursive struct/list layouts, enum underlying types and named numeric values. This Editor-only fingerprint contributes only the final digest to the compiled artifact; no CLR-name identities, field-name ledgers or value signatures are added to runtime manifests. Reordering discovery or declarations without changing the canonical layout does not change the digest.
+
 ## Network synchronization
 
 Mirror is the transport/framework; the DingoCMS runtime protocol synchronizes
@@ -443,6 +457,11 @@ authoritative `RuntimeStore` generations through the `RuntimeProtocol*` stack.
 A strict session manifest validates the protocol version, build, runtime schema,
 and exact GA catalog before a replica store is created. There is one current
 protocol implementation and no compatibility adapter for older wire contracts.
+The complete session manifest must fit one reliable Mirror message. The endpoint
+measures its packed wire size, including its message identity, against the active
+transport budget before the handshake reaches `ManifestSent`. An oversized or
+unencodable manifest is rejected immediately with `InvalidManifest`; it cannot
+start replica creation or wait silently for a baseline.
 Parent-first binary baselines and ordered reliable deltas are staged and
 published atomically. Delivery sequence, baseline id, store revision, ACK,
 bounded pending queues, and resync are independent protocol concepts.

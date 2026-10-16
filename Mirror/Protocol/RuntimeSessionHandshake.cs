@@ -1,4 +1,5 @@
 using System;
+using UnityEngine;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Linq;
@@ -438,6 +439,11 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
 
         public RuntimeSessionHandshakeResult ReceiveHello(in RuntimeSessionDescriptor descriptor, ulong clientNonce)
         {
+            return ReceiveHello(descriptor, clientNonce, null);
+        }
+
+        public RuntimeSessionHandshakeResult ReceiveHello(in RuntimeSessionDescriptor descriptor, ulong clientNonce, Func<RuntimeSessionManifestSnapshot, RuntimeSessionHandshakeResult> validateManifest)
+        {
             if (State != RuntimeSessionHandshakeState.Created)
             {
                 return Reject(RuntimeProtocolRejectCode.InvalidEnvelope, $"Hello is not valid while handshake state is {State}.");
@@ -452,6 +458,22 @@ namespace DingoGameObjectsCMS.Mirror.Protocol
             if (validation != RuntimeProtocolRejectCode.None)
             {
                 return Reject(validation, $"Hello descriptor mismatch: {validation}.");
+            }
+
+            if (validateManifest != null)
+            {
+                RuntimeSessionHandshakeResult manifestValidation;
+                try
+                {
+                    manifestValidation = validateManifest(_manifest);
+                }
+                catch (Exception error)
+                {
+                    Debug.LogException(error);
+                    return Reject(RuntimeProtocolRejectCode.InvalidManifest, "Session manifest preparation failed.");
+                }
+                if (!manifestValidation.Accepted)
+                    return Reject(manifestValidation.RejectCode, manifestValidation.Detail);
             }
 
             ClientNonce = clientNonce;

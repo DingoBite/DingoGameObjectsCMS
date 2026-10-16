@@ -1,15 +1,57 @@
 #if UNITY_EDITOR && MIRROR
 
 using System;
+using System.Text.RegularExpressions;
 using DingoGameObjectsCMS.Mirror.Protocol;
 using Mirror;
 using NUnit.Framework;
 using Unity.Collections;
+using UnityEngine;
+using UnityEngine.TestTools;
 
 namespace DingoGameObjectsCMS.Tests.Editor
 {
     public class RuntimeBaselineTransportBudgetTests
     {
+        [Test]
+        public void SessionManifest_ExactPackedBudgetRejectsBeforeTheHandshakePublishesManifestSent()
+        {
+            var descriptor = new RuntimeSessionDescriptor { ProtocolVersion = RuntimeProtocol.VERSION, BuildId = new string('b', 2048), RuntimeSchemaHash = "schema", AssetCatalogHash = RuntimeSessionCatalogHasher.CalculateAssets(Array.Empty<RuntimeAssetCatalogEntry>()), ResourceCatalogHash = "resources", StateStreamCatalogHash = "streams" };
+            var template = new RuntimeSessionManifestTemplate(descriptor, Array.Empty<RuntimeAssetCatalogEntry>(), Array.Empty<RuntimeStoreCatalogEntry>());
+            var message = template.CreateSnapshot(1).ToWireManifest();
+            message.AssignedConnectionId = 7;
+            using var writer = NetworkWriterPool.Get();
+            NetworkMessages.Pack(message, writer);
+            Assert.That(RuntimeSessionManifestTransportBudget.Validate(message, writer.Position).Accepted, Is.True);
+            var rejected = RuntimeSessionManifestTransportBudget.Validate(message, writer.Position - 1);
+            Assert.That(rejected.Accepted, Is.False);
+            Assert.That(rejected.RejectCode, Is.EqualTo(RuntimeProtocolRejectCode.InvalidManifest));
+            Assert.That(rejected.Detail, Does.Contain(writer.Position.ToString()));
+            var handshake = new RuntimeSessionServerHandshake(1, template);
+
+            var result = handshake.ReceiveHello(descriptor, 2, _ => rejected);
+
+            Assert.That(result.RejectCode, Is.EqualTo(RuntimeProtocolRejectCode.InvalidManifest));
+            Assert.That(handshake.State, Is.EqualTo(RuntimeSessionHandshakeState.Rejected));
+            Assert.That(handshake.ClientNonce, Is.Zero);
+            Assert.That(handshake.CanCreateReplica, Is.False);
+        }
+
+        [Test]
+        public void SessionManifest_PreflightExceptionIsReportedAndCannotPublishManifestSent()
+        {
+            var descriptor = new RuntimeSessionDescriptor { ProtocolVersion = RuntimeProtocol.VERSION, BuildId = "build", RuntimeSchemaHash = "schema", AssetCatalogHash = RuntimeSessionCatalogHasher.CalculateAssets(Array.Empty<RuntimeAssetCatalogEntry>()), ResourceCatalogHash = "resources", StateStreamCatalogHash = "streams" };
+            var template = new RuntimeSessionManifestTemplate(descriptor, Array.Empty<RuntimeAssetCatalogEntry>(), Array.Empty<RuntimeStoreCatalogEntry>());
+            var handshake = new RuntimeSessionServerHandshake(1, template);
+            LogAssert.Expect(LogType.Exception, new Regex("scripted manifest preparation failure"));
+
+            var result = handshake.ReceiveHello(descriptor, 2, _ => throw new InvalidOperationException("scripted manifest preparation failure"));
+
+            Assert.That(result.RejectCode, Is.EqualTo(RuntimeProtocolRejectCode.InvalidManifest));
+            Assert.That(handshake.State, Is.EqualTo(RuntimeSessionHandshakeState.Rejected));
+            Assert.That(handshake.ClientNonce, Is.Zero);
+        }
+
         [Test]
         public void Split_UsesMirrorReliablePacketBudgetAndStillReassembles()
         {

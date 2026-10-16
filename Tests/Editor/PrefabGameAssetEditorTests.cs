@@ -13,10 +13,30 @@ using UnityEditor.Build;
 using UnityEditor.SceneManagement;
 using UnityEngine;
 using UnityEngine.SceneManagement;
+using UnityEngine.Scripting;
 using UnityEngine.TestTools;
 
 namespace DingoGameObjectsCMS.Tests.Editor
 {
+    [Serializable, Preserve, HideInTypeMenu]
+    public class PrefabAuthoringCountingConverter : GameAssetAuthoringConverter
+    {
+        public static int PrepareCount, ConvertCount;
+        public override Type SourceComponentType => typeof(Transform);
+
+        public override bool Prepare(Component source, Func<UnityEngine.Object, string> resourceGuid)
+        {
+            PrepareCount++;
+            return false;
+        }
+
+        public override IReadOnlyList<GameAssetComponent> Convert(Component source)
+        {
+            ConvertCount++;
+            return new GameAssetComponent[] { new PrefabAuthoringAlpha_GAC { Value = Mathf.RoundToInt(source.transform.localPosition.x) } };
+        }
+    }
+
     public class PrefabGameAssetEditorTests
     {
         private PrefabGameAssetTestAssets _assets;
@@ -76,6 +96,101 @@ namespace DingoGameObjectsCMS.Tests.Editor
             {
                 UnityEngine.Object.DestroyImmediate(instance);
             }
+        }
+
+        [Test]
+        public void StableReconcilePreparesAndConvertsEachSourceAndSceneInstanceOnce()
+        {
+            var source = CreateCountingPrefab("stable-counts");
+            var sourcePath = AssetDatabase.GetAssetPath(source);
+            var active = SceneManager.GetActiveScene();
+            var mode = string.IsNullOrEmpty(active.path) ? NewSceneMode.Single : NewSceneMode.Additive;
+            var scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, mode);
+            try
+            {
+                for (var index = 0; index < 2; index++)
+                {
+                    var instance = (GameObject)PrefabUtility.InstantiatePrefab(source.gameObject, scene);
+                    instance.transform.localPosition = new Vector3(index + 2, 0, 0);
+                    PrefabUtility.RecordPrefabInstancePropertyModifications(instance.transform);
+                }
+                Assert.That(EditorSceneManager.SaveScene(scene, _assets.Folder + "/counted-instances.unity"), Is.True);
+            }
+            finally
+            {
+                if (SceneManager.sceneCount > 1)
+                    EditorSceneManager.CloseScene(scene, true);
+                else
+                    EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
+                if (active.IsValid() && active.isLoaded)
+                    SceneManager.SetActiveScene(active);
+            }
+            PrefabGameAssetIndexEditorUtility.Reconcile();
+            PrefabAuthoringCountingConverter.PrepareCount = PrefabAuthoringCountingConverter.ConvertCount = 0;
+
+            var prepared = PrefabGameAssetIndexEditorUtility.Reconcile();
+
+            Assert.That(prepared.Entries, Has.Count.EqualTo(1));
+            Assert.That(prepared.Overrides, Has.Count.EqualTo(2));
+            Assert.That(PrefabAuthoringCountingConverter.PrepareCount, Is.EqualTo(3), "The source and two effective instances each prepare once in the stable pass.");
+            Assert.That(PrefabAuthoringCountingConverter.ConvertCount, Is.EqualTo(3), "Validation, override creation and root hashing reuse the same collected values.");
+            Assert.That(AssetDatabase.GetAssetPath(source), Is.EqualTo(sourcePath));
+        }
+
+        [Test]
+        public void SavingPreparedPrefabInvalidatesCollectionsBeforeReusingThePreparation()
+        {
+            var source = CreateCountingPrefab("save-invalidation");
+            var path = AssetDatabase.GetAssetPath(source);
+            var preparation = new GameAssetAuthoringPreparation();
+            PrefabAuthoringCountingConverter.PrepareCount = PrefabAuthoringCountingConverter.ConvertCount = 0;
+            Assert.That(GameAssetAuthoringEditorUtility.TryCollect(source, out var first, out var error, preparation), Is.True, error);
+            Assert.That(first.Components.OfType<PrefabAuthoringAlpha_GAC>().Single().Value, Is.Zero);
+            Assert.That(GameAssetAuthoringEditorUtility.TryCollect(source, out _, out error, preparation), Is.True, error);
+            Assert.That(PrefabAuthoringCountingConverter.ConvertCount, Is.EqualTo(1));
+
+            source.transform.localPosition = new Vector3(9, 0, 0);
+            EditorUtility.SetDirty(source.transform);
+            EditorUtility.SetDirty(source);
+            PrefabGameAssetOverrideEditorUtility.BakeSavedAssets(new[] { path }, true, preparation);
+            source = AssetDatabase.LoadAssetAtPath<GameObject>(path).GetComponent<GameAssetAuthoring>();
+
+            Assert.That(GameAssetAuthoringEditorUtility.TryCollect(source, out var refreshed, out error, preparation), Is.True, error);
+            Assert.That(refreshed.Components.OfType<PrefabAuthoringAlpha_GAC>().Single().Value, Is.EqualTo(9));
+            Assert.That(PrefabAuthoringCountingConverter.PrepareCount, Is.EqualTo(2));
+            Assert.That(PrefabAuthoringCountingConverter.ConvertCount, Is.EqualTo(2));
+            Assert.That(GameAssetAuthoringEditorUtility.TryCollect(source, out var repeated, out error, preparation), Is.True, error);
+            Assert.That(repeated, Is.SameAs(refreshed));
+            Assert.That(PrefabAuthoringCountingConverter.PrepareCount, Is.EqualTo(2));
+            Assert.That(PrefabAuthoringCountingConverter.ConvertCount, Is.EqualTo(2));
+        }
+
+        [Test]
+        public void ReimportInvalidatesThePreparationEvenWhenAuthoringIdentityIsRetained()
+        {
+            var source = CreateCountingPrefab("import-invalidation");
+            var path = AssetDatabase.GetAssetPath(source);
+            var preparation = new GameAssetAuthoringPreparation();
+            PrefabAuthoringCountingConverter.PrepareCount = PrefabAuthoringCountingConverter.ConvertCount = 0;
+            Assert.That(GameAssetAuthoringEditorUtility.TryCollect(source, out _, out var error, preparation), Is.True, error);
+
+            AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceUpdate);
+            source = AssetDatabase.LoadAssetAtPath<GameObject>(path).GetComponent<GameAssetAuthoring>();
+
+            Assert.That(GameAssetAuthoringEditorUtility.TryCollect(source, out _, out error, preparation), Is.True, error);
+            Assert.That(PrefabAuthoringCountingConverter.PrepareCount, Is.EqualTo(2));
+            Assert.That(PrefabAuthoringCountingConverter.ConvertCount, Is.EqualTo(2));
+        }
+
+        private GameAssetAuthoring CreateCountingPrefab(string name)
+        {
+            var source = _assets.CreatePrefab(name, Array.Empty<GameAssetComponent>());
+            source.SetConverters(new[] { new GameAssetAuthoringConverterBinding(source.transform, new PrefabAuthoringCountingConverter()) });
+            EditorUtility.SetDirty(source);
+            PrefabUtility.SavePrefabAsset(source.gameObject);
+            var path = AssetDatabase.GetAssetPath(source);
+            PrefabGameAssetIndexEditorUtility.Reconcile();
+            return AssetDatabase.LoadAssetAtPath<GameObject>(path).GetComponent<GameAssetAuthoring>();
         }
 
         [Test]
@@ -217,6 +332,33 @@ namespace DingoGameObjectsCMS.Tests.Editor
         }
 
         [Test]
+        public void SerializedEmptyRuntimeDefinitionMetadataDoesNotChangeWhenAbsenceIsPassedAsNull()
+        {
+            var root = new GameObject("serialized-metadata-absence");
+            try
+            {
+                var authoring = root.AddComponent<GameAssetAuthoring>();
+                var guid = Hash128.Compute("serialized-metadata-absence").ToString();
+                var serialized = new SerializedObject(authoring);
+                serialized.FindProperty("_sourceDefinitionGuid").stringValue = guid;
+                serialized.FindProperty("_runtimeOverrideId").stringValue = string.Empty;
+                serialized.ApplyModifiedPropertiesWithoutUndo();
+
+                Assert.That(authoring.SetRuntimeDefinitionSource(guid), Is.False, "Serialized absence must not dirty the prefab again after saving.");
+                Assert.That(authoring.SetRuntimeDefinitionSource(guid, string.Empty), Is.False);
+                Assert.That(authoring.SetRuntimeDefinitionSource(null), Is.True);
+                Assert.That(authoring.SourceDefinitionGuid, Is.Empty);
+                Assert.That(authoring.RuntimeOverrideId, Is.Empty);
+                Assert.That(authoring.SetRuntimeDefinitionSource(null), Is.False);
+                Assert.That(authoring.SetRuntimeDefinitionSource(string.Empty, string.Empty), Is.False);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
+        [Test]
         public void NativePrefabSavePersistsPreparedMetadataAndRepeatedBakeIsIdempotent()
         {
             var authoring = _assets.CreatePrefab("native-save");
@@ -235,6 +377,7 @@ namespace DingoGameObjectsCMS.Tests.Editor
                 var saved = contents.GetComponent<GameAssetAuthoring>();
                 Assert.That(saved.SourceDefinitionGuid, Is.EqualTo(guid));
                 Assert.That(string.IsNullOrEmpty(saved.RuntimeOverrideId), Is.True);
+                Assert.That(saved.SetRuntimeDefinitionSource(guid), Is.False, "Reloaded root metadata must not request another save for its absent override.");
             }
             finally
             {

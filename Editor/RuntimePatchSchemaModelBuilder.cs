@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Reflection;
 using System.Security.Cryptography;
@@ -440,7 +441,7 @@ namespace DingoGameObjectsCMS.Editor
 
     public static class RuntimePatchSchemaReconciler
     {
-        public const int FORMAT_VERSION = 2;
+        public const int FORMAT_VERSION = 3;
 
         public static RuntimePatchSchemaManifest Reconcile(
             IReadOnlyList<RuntimePatchComponentSchema> discovered,
@@ -485,13 +486,20 @@ namespace DingoGameObjectsCMS.Editor
             for (var i = 0; i < components.Count; i++)
             {
                 var component = components[i];
+                var descriptor = RuntimePatchSchemaDiscovery.DescribeComponent(component.RuntimeType, component.ComponentTypeId);
+                if (component.Fields.Count != descriptor.Fields.Count)
+                    throw new InvalidOperationException($"Runtime patch component {component.ComponentTypeId} does not contain its current complete field layout.");
                 writer.WriteInt32(component.ComponentTypeId);
                 writer.WriteInt32(component.Fields.Count);
                 for (var fieldIndex = 0; fieldIndex < component.Fields.Count; fieldIndex++)
                 {
                     var field = component.Fields[fieldIndex];
+                    var fieldDescriptor = descriptor.Fields[fieldIndex];
+                    if (field.FieldId != fieldDescriptor.Schema.FieldId || field.Encoding != fieldDescriptor.Schema.Encoding)
+                        throw new InvalidOperationException($"Runtime patch component {component.ComponentTypeId} field {field.FieldId} does not match its current generated layout.");
                     writer.WriteInt32(field.FieldId);
                     writer.WriteByte((byte)field.Encoding);
+                    WriteMemberLayout(writer, fieldDescriptor.Field, fieldDescriptor.ValueType);
                 }
             }
 
@@ -504,6 +512,41 @@ namespace DingoGameObjectsCMS.Editor
                 builder.Append(hash[i].ToString("x2"));
             }
             return builder.ToString();
+        }
+
+        // Names and value layouts are consumed only by this Editor fingerprint, never emitted as runtime identities.
+        private static void WriteMemberLayout(CanonicalPatchBinaryWriter writer, FieldInfo field, RuntimePatchGeneratedTypeDescriptor valueType)
+        {
+            writer.WriteString(field.Name);
+            WriteValueLayout(writer, valueType);
+        }
+
+        private static void WriteValueLayout(CanonicalPatchBinaryWriter writer, RuntimePatchGeneratedTypeDescriptor valueType)
+        {
+            writer.WriteInt32((int)valueType.Kind);
+            if (valueType.Kind == RuntimePatchGeneratedValueKind.Enum)
+            {
+                WriteValueLayout(writer, RuntimePatchSchemaDiscovery.DescribeValueType(valueType.EnumUnderlyingType));
+                writer.WriteBoolean(Attribute.IsDefined(valueType.RuntimeType, typeof(FlagsAttribute)));
+                var names = Enum.GetNames(valueType.RuntimeType).OrderBy(name => name, StringComparer.Ordinal).ToArray();
+                writer.WriteInt32(names.Length);
+                foreach (var name in names)
+                {
+                    writer.WriteString(name);
+                    var value = Convert.ChangeType(Enum.Parse(valueType.RuntimeType, name), valueType.EnumUnderlyingType, CultureInfo.InvariantCulture);
+                    writer.WriteString(Convert.ToString(value, CultureInfo.InvariantCulture));
+                }
+            }
+            else if (valueType.Kind == RuntimePatchGeneratedValueKind.Struct)
+            {
+                writer.WriteInt32(valueType.Members.Count);
+                foreach (var member in valueType.Members)
+                {
+                    WriteMemberLayout(writer, member.Field, member.ValueType);
+                }
+            }
+            else if (valueType.Kind == RuntimePatchGeneratedValueKind.List)
+                WriteValueLayout(writer, valueType.ElementType);
         }
 
         private static void ValidateComponents(

@@ -17,16 +17,25 @@ namespace DingoGameObjectsCMS.Editor.Authoring
         {
             var errors = new List<string>();
             var infrastructureErrors = new List<string>();
-            CollectErrors(errors, infrastructureErrors);
+            var paths = PrefabGameAssetIndexConfiguration.IsConfigured ? PrefabGameAssetOverrideEditorUtility.CollectHierarchyAssetPaths(Array.Empty<PrefabGameAssetIndexEntry>()) : Array.Empty<string>();
+            CollectErrors(paths, new GameAssetAuthoringPreparation(), new PrefabGameAssetContentHashCache(), null, errors, infrastructureErrors);
             return errors.Concat(infrastructureErrors).ToArray();
         }
 
-        private static void CollectErrors(ICollection<string> errors, ICollection<string> infrastructureErrors)
+        public static IReadOnlyList<PrefabGameAssetOverrideEntry> ValidateAndCollectOverrides(IReadOnlyList<string> paths, GameAssetAuthoringPreparation preparation, PrefabGameAssetContentHashCache hashCache)
+        {
+            var overrides = new List<PrefabGameAssetOverrideEntry>();
+            var errors = new List<string>();
+            var infrastructureErrors = new List<string>();
+            CollectErrors(paths, preparation, hashCache, overrides, errors, infrastructureErrors);
+            Report(errors, infrastructureErrors);
+            return overrides;
+        }
+
+        private static void CollectErrors(IReadOnlyList<string> paths, GameAssetAuthoringPreparation preparation, PrefabGameAssetContentHashCache hashCache, ICollection<PrefabGameAssetOverrideEntry> overrides, ICollection<string> errors, ICollection<string> infrastructureErrors)
         {
             if (!PrefabGameAssetIndexConfiguration.IsConfigured)
                 return;
-            var hashCache = new PrefabGameAssetContentHashCache();
-            var paths = PrefabGameAssetOverrideEditorUtility.CollectHierarchyAssetPaths(Array.Empty<PrefabGameAssetIndexEntry>());
             foreach (var guid in AssetDatabase.FindAssets("t:PrefabGameAssetIndex", new[] { "Assets" }))
             {
                 var path = AssetDatabase.GUIDToAssetPath(guid);
@@ -40,7 +49,7 @@ namespace DingoGameObjectsCMS.Editor.Authoring
                     // Reading the persistent prefab avoids creating a live GameObject or running its lifecycle.
                     var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(path);
                     if (prefab != null)
-                        ValidateHierarchy(prefab, path, errors, hashCache);
+                        ValidateHierarchy(prefab, path, preparation, hashCache, overrides, errors);
                 }
                 catch (Exception error)
                 {
@@ -57,7 +66,7 @@ namespace DingoGameObjectsCMS.Editor.Authoring
                     scene = EditorSceneManager.OpenPreviewScene(path);
                     foreach (var root in scene.GetRootGameObjects())
                     {
-                        ValidateHierarchy(root, path, errors, hashCache);
+                        ValidateHierarchy(root, path, preparation, hashCache, overrides, errors);
                     }
                 }
                 catch (Exception error)
@@ -68,7 +77,13 @@ namespace DingoGameObjectsCMS.Editor.Authoring
                 finally
                 {
                     if (scene.IsValid())
+                    {
+                        foreach (var root in scene.GetRootGameObjects())
+                        {
+                            preparation.ReleaseHierarchy(root);
+                        }
                         EditorSceneManager.ClosePreviewScene(scene);
+                    }
                 }
             }
         }
@@ -77,7 +92,13 @@ namespace DingoGameObjectsCMS.Editor.Authoring
         {
             var errors = new List<string>();
             var infrastructureErrors = new List<string>();
-            CollectErrors(errors, infrastructureErrors);
+            var paths = PrefabGameAssetIndexConfiguration.IsConfigured ? PrefabGameAssetOverrideEditorUtility.CollectHierarchyAssetPaths(Array.Empty<PrefabGameAssetIndexEntry>()) : Array.Empty<string>();
+            CollectErrors(paths, new GameAssetAuthoringPreparation(), new PrefabGameAssetContentHashCache(), null, errors, infrastructureErrors);
+            Report(errors, infrastructureErrors);
+        }
+
+        private static void Report(IEnumerable<string> errors, IReadOnlyCollection<string> infrastructureErrors)
+        {
             foreach (var error in errors.Distinct(StringComparer.Ordinal))
             {
                 Debug.LogError(error);
@@ -86,7 +107,7 @@ namespace DingoGameObjectsCMS.Editor.Authoring
                 throw new BuildFailedException("Prefab GameAsset infrastructure is invalid:\n" + string.Join("\n", infrastructureErrors));
         }
 
-        private static void ValidateHierarchy(GameObject root, string path, ICollection<string> errors, PrefabGameAssetContentHashCache hashCache)
+        private static void ValidateHierarchy(GameObject root, string path, GameAssetAuthoringPreparation preparation, PrefabGameAssetContentHashCache hashCache, ICollection<PrefabGameAssetOverrideEntry> overrides, ICollection<string> errors)
         {
             foreach (var authoring in root.GetComponentsInChildren<GameAssetAuthoring>(true))
             {
@@ -103,11 +124,16 @@ namespace DingoGameObjectsCMS.Editor.Authoring
                 }
                 if (isDefinition)
                 {
-                    if (!GameAssetAuthoringEditorUtility.TryCollect(authoring, out _, out error))
+                    if (!GameAssetAuthoringEditorUtility.TryCollect(authoring, out _, out error, preparation))
                         errors.Add(ContentError(identity, guid, error, "an empty inert definition retaining the prefab key and GUID"));
                 }
-                else if (!PrefabGameAssetOverrideEditorUtility.TryCreateOverride(authoring, path, out _, out _, out error, hashCache))
-                    errors.Add(ContentError(identity, guid, error, "the source prefab definition with discarded instance overrides; a malformed source uses its empty inert definition"));
+                else
+                {
+                    if (!PrefabGameAssetOverrideEditorUtility.TryCreatePreparedOverride(authoring, path, out var entry, out _, out error, preparation, hashCache, overrides != null))
+                        errors.Add(ContentError(identity, guid, error, "the source prefab definition with discarded instance overrides; a malformed source uses its empty inert definition"));
+                    else if (entry != null)
+                        overrides?.Add(entry);
+                }
             }
         }
 
