@@ -606,11 +606,11 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
                     return new JValue(Convert.ToBase64String(
                         RuntimePatchGeneratedValueCodec.EncodeRuntimeObjectPatch((RuntimeObjectPatch)value)));
                 }
-                if (IsSupportedListType(type))
+                if (IsSupportedCollectionType(type))
                 {
                     if (value == null)
                         return JValue.CreateNull();
-                    var elementType = type.GetGenericArguments()[0];
+                    var elementType = CollectionElementType(type);
                     var list = (IList)value;
                     RuntimePatchGeneratedValueCodec.RequireCollectionCountForWrite(list.Count);
                     var array = new JArray();
@@ -711,7 +711,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
                     }
                     return RuntimePatchGeneratedValueCodec.DecodeRuntimeObjectPatch(payload);
                 }
-                if (IsSupportedListType(type))
+                if (IsSupportedCollectionType(type))
                 {
                     if (token.Type == JTokenType.Null)
                         return null;
@@ -723,10 +723,16 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
                             $"Authored JSON collection '{type.FullName}' contains {array.Count} items; maximum is "
                             + $"{RuntimePatchGeneratedValueCodec.MAX_COLLECTION_ELEMENTS}.");
                     }
-                    var elementType = type.GetGenericArguments()[0];
-                    var list = (IList)Activator.CreateInstance(type, array.Count);
+                    var elementType = CollectionElementType(type);
+                    var list = type.IsArray ? (IList)Array.CreateInstance(elementType, array.Count) : (IList)Activator.CreateInstance(type, array.Count);
                     for (var i = 0; i < array.Count; i++)
-                        list.Add(Read(elementType, array[i], context));
+                    {
+                        var item = Read(elementType, array[i], context);
+                        if (type.IsArray)
+                            list[i] = item;
+                        else
+                            list.Add(item);
+                    }
                     return list;
                 }
                 if (type.IsValueType && !type.IsGenericType)
@@ -766,7 +772,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
                 {
                     return;
                 }
-                if (IsSupportedListType(type))
+                if (IsSupportedCollectionType(type))
                 {
                     if (!traversal.Add(type))
                     {
@@ -775,9 +781,9 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
                     }
                     try
                     {
-                        var elementType = type.GetGenericArguments()[0];
+                        var elementType = CollectionElementType(type);
                         if (elementType == typeof(RuntimeObjectPatch)
-                            || IsSupportedListType(elementType)
+                            || IsSupportedCollectionType(elementType)
                             || (!elementType.IsValueType && elementType != typeof(string)))
                         {
                             throw new InvalidOperationException(
@@ -920,12 +926,14 @@ namespace DingoGameObjectsCMS.RuntimeObjects.Overrides
                 return parsed;
             }
 
-            private static bool IsSupportedListType(Type type)
+            private static bool IsSupportedCollectionType(Type type)
             {
                 return type != null
-                       && type.IsGenericType
-                       && type.GetGenericTypeDefinition() == typeof(List<>);
+                       && (type.IsArray && type.GetArrayRank() == 1 && type == type.GetElementType().MakeArrayType()
+                           || type.IsGenericType && type.GetGenericTypeDefinition() == typeof(List<>));
             }
+
+            private static Type CollectionElementType(Type type) => type.IsArray ? type.GetElementType() : type.GetGenericArguments()[0];
 
             private static void RequireFinite(float value, Type type)
             {

@@ -471,13 +471,14 @@ namespace DingoGameObjectsCMS.Editor
             {
                 var index = loopIndex++;
                 var elementType = ListElementType(descriptor);
+                var count = CollectionCount(descriptor, value);
                 builder.Line($"if ({value} == null)");
                 builder.Line("    writer.WriteInt32(-1);");
                 builder.Line("else");
                 builder.Open("");
-                builder.Line($"RuntimePatchGeneratedValueCodec.RequireCollectionCountForWrite({value}.Count);");
-                builder.Line($"writer.WriteInt32({value}.Count);");
-                builder.Open($"for (var itemIndex{index} = 0; itemIndex{index} < {value}.Count; itemIndex{index}++)");
+                builder.Line($"RuntimePatchGeneratedValueCodec.RequireCollectionCountForWrite({count});");
+                builder.Line($"writer.WriteInt32({count});");
+                builder.Open($"for (var itemIndex{index} = 0; itemIndex{index} < {count}; itemIndex{index}++)");
                 EmitWriteValue(builder, elementType, $"{value}[itemIndex{index}]", ref loopIndex);
                 builder.Close();
                 builder.Close();
@@ -510,11 +511,11 @@ namespace DingoGameObjectsCMS.Editor
                 builder.Line($"    {target} = null;");
                 builder.Line("else");
                 builder.Open("");
-                builder.Line($"var list{index} = new {TypeName(descriptor.RuntimeType)}(count{index});");
+                builder.Line($"var list{index} = {CollectionAllocation(descriptor, $"count{index}")};");
                 builder.Open($"for (var itemIndex{index} = 0; itemIndex{index} < count{index}; itemIndex{index}++)");
                 builder.Line($"var item{index} = default({TypeName(elementType.RuntimeType)});");
                 EmitReadAssignments(builder, elementType, $"item{index}", ref temporaryIndex);
-                builder.Line($"list{index}.Add(item{index});");
+                builder.Line(CollectionItemAssignment(descriptor, index));
                 builder.Close();
                 builder.Line($"{target} = list{index};");
                 builder.Close();
@@ -548,12 +549,13 @@ namespace DingoGameObjectsCMS.Editor
             {
                 var index = temporaryIndex++;
                 var elementType = ListElementType(descriptor);
+                var count = CollectionCount(descriptor, source);
                 builder.Line($"if ({source} == null)");
                 builder.Line($"    {target} = null;");
                 builder.Line("else");
                 builder.Open("");
-                builder.Line($"var list{index} = new {TypeName(descriptor.RuntimeType)}({source}.Count);");
-                builder.Open($"for (var itemIndex{index} = 0; itemIndex{index} < {source}.Count; itemIndex{index}++)");
+                builder.Line($"var list{index} = {CollectionAllocation(descriptor, count)};");
+                builder.Open($"for (var itemIndex{index} = 0; itemIndex{index} < {count}; itemIndex{index}++)");
                 builder.Line($"var item{index} = default({TypeName(elementType.RuntimeType)});");
                 EmitCloneAssignments(
                     builder,
@@ -561,7 +563,7 @@ namespace DingoGameObjectsCMS.Editor
                     $"item{index}",
                     $"{source}[itemIndex{index}]",
                     ref temporaryIndex);
-                builder.Line($"list{index}.Add(item{index});");
+                builder.Line(CollectionItemAssignment(descriptor, index));
                 builder.Close();
                 builder.Line($"{target} = list{index};");
                 builder.Close();
@@ -600,10 +602,12 @@ namespace DingoGameObjectsCMS.Editor
             {
                 var index = temporaryIndex++;
                 var elementType = ListElementType(descriptor);
+                var firstCount = CollectionCount(descriptor, first);
+                var secondCount = CollectionCount(descriptor, second);
                 builder.Open($"if (!ReferenceEquals({first}, {second}))");
-                builder.Line($"if ({first} == null || {second} == null || {first}.Count != {second}.Count)");
+                builder.Line($"if ({first} == null || {second} == null || {firstCount} != {secondCount})");
                 builder.Line("    return false;");
-                builder.Open($"for (var itemIndex{index} = 0; itemIndex{index} < {first}.Count; itemIndex{index}++)");
+                builder.Open($"for (var itemIndex{index} = 0; itemIndex{index} < {firstCount}; itemIndex{index}++)");
                 EmitEqualityChecks(
                     builder,
                     elementType,
@@ -647,13 +651,20 @@ namespace DingoGameObjectsCMS.Editor
         private static bool IsList(RuntimePatchGeneratedTypeDescriptor descriptor)
         {
             return descriptor.Kind == RuntimePatchGeneratedValueKind.List
+                   || descriptor.Kind == RuntimePatchGeneratedValueKind.Array
                    || descriptor.Kind == RuntimePatchGeneratedValueKind.ListVector2Int;
         }
+
+        private static string CollectionCount(RuntimePatchGeneratedTypeDescriptor descriptor, string value) => $"{value}.{(descriptor.Kind == RuntimePatchGeneratedValueKind.Array ? "Length" : "Count")}";
+
+        private static string CollectionAllocation(RuntimePatchGeneratedTypeDescriptor descriptor, string count) => descriptor.Kind == RuntimePatchGeneratedValueKind.Array ? $"new {TypeName(descriptor.ElementType.RuntimeType)}[{count}]" : $"new {TypeName(descriptor.RuntimeType)}({count})";
+
+        private static string CollectionItemAssignment(RuntimePatchGeneratedTypeDescriptor descriptor, int index) => descriptor.Kind == RuntimePatchGeneratedValueKind.Array ? $"list{index}[itemIndex{index}] = item{index};" : $"list{index}.Add(item{index});";
 
         private static RuntimePatchGeneratedTypeDescriptor ListElementType(
             RuntimePatchGeneratedTypeDescriptor descriptor)
         {
-            if (descriptor.Kind == RuntimePatchGeneratedValueKind.List)
+            if (descriptor.Kind == RuntimePatchGeneratedValueKind.List || descriptor.Kind == RuntimePatchGeneratedValueKind.Array)
             {
                 return descriptor.ElementType
                        ?? throw new InvalidOperationException(
@@ -775,6 +786,7 @@ namespace DingoGameObjectsCMS.Editor
                     return $"RuntimePatchGeneratedValueCodec.RuntimeObjectPatchesEqual({first}, {second})";
                 case RuntimePatchGeneratedValueKind.ListVector2Int:
                 case RuntimePatchGeneratedValueKind.List:
+                case RuntimePatchGeneratedValueKind.Array:
                     throw new InvalidOperationException("List equality requires an explicit generated loop.");
                 default:
                     return $"{first} == {second}";
@@ -812,6 +824,8 @@ namespace DingoGameObjectsCMS.Editor
         {
             if (type == null)
                 throw new ArgumentNullException(nameof(type));
+            if (type.IsArray)
+                return TypeName(type.GetElementType()) + "[]";
             if (type == typeof(List<Vector2Int>))
                 return "global::System.Collections.Generic.List<global::UnityEngine.Vector2Int>";
             if (type.IsGenericType)

@@ -39,6 +39,7 @@ namespace DingoGameObjectsCMS.Editor
         Struct,
         ListVector2Int,
         List,
+        Array,
     }
 
     public class RuntimePatchGeneratedMemberDescriptor
@@ -185,6 +186,7 @@ namespace DingoGameObjectsCMS.Editor
                                 ? RuntimePatchFieldEncoding.CustomListVector2Int
                                 : ContainsKind(valueType, RuntimePatchGeneratedValueKind.List)
                                   || ContainsKind(valueType, RuntimePatchGeneratedValueKind.ListVector2Int)
+                                  || ContainsKind(valueType, RuntimePatchGeneratedValueKind.Array)
                                     ? RuntimePatchFieldEncoding.CustomList
                                     : RuntimePatchFieldEncoding.Value,
                     },
@@ -291,16 +293,19 @@ namespace DingoGameObjectsCMS.Editor
                 return CreateLeaf(type, RuntimePatchGeneratedValueKind.RuntimeObjectPatch);
             if (type == typeof(List<Vector2Int>))
                 return CreateLeaf(type, RuntimePatchGeneratedValueKind.ListVector2Int);
-            if (type.IsGenericType && type.GetGenericTypeDefinition() == typeof(List<>))
+            if (type.IsArray || type.IsGenericType && type.GetGenericTypeDefinition() == typeof(List<>))
             {
+                if (type.IsArray && (type.GetArrayRank() != 1 || type != type.GetElementType().MakeArrayType()))
+                    throw new InvalidOperationException($"Runtime patch array '{type.FullName}' must be a one-dimensional zero-based array.");
                 if (!traversal.Add(type))
                     throw new InvalidOperationException($"Runtime patch collection '{type.FullName}' contains a recursive field graph.");
                 try
                 {
-                    var elementRuntimeType = type.GetGenericArguments()[0];
+                    var elementRuntimeType = type.IsArray ? type.GetElementType() : type.GetGenericArguments()[0];
                     var elementType = DescribeValueType(elementRuntimeType, traversal);
                     if (elementType.Kind == RuntimePatchGeneratedValueKind.List
                         || elementType.Kind == RuntimePatchGeneratedValueKind.ListVector2Int
+                        || elementType.Kind == RuntimePatchGeneratedValueKind.Array
                         || elementType.Kind == RuntimePatchGeneratedValueKind.RuntimeObjectPatch)
                     {
                         throw new InvalidOperationException(
@@ -309,7 +314,7 @@ namespace DingoGameObjectsCMS.Editor
                     return new RuntimePatchGeneratedTypeDescriptor
                     {
                         RuntimeType = type,
-                        Kind = RuntimePatchGeneratedValueKind.List,
+                        Kind = type.IsArray ? RuntimePatchGeneratedValueKind.Array : RuntimePatchGeneratedValueKind.List,
                         ElementType = elementType,
                     };
                 }
@@ -545,7 +550,7 @@ namespace DingoGameObjectsCMS.Editor
                     WriteMemberLayout(writer, member.Field, member.ValueType);
                 }
             }
-            else if (valueType.Kind == RuntimePatchGeneratedValueKind.List)
+            else if (valueType.Kind == RuntimePatchGeneratedValueKind.List || valueType.Kind == RuntimePatchGeneratedValueKind.Array)
                 WriteValueLayout(writer, valueType.ElementType);
         }
 

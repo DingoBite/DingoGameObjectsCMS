@@ -448,7 +448,16 @@ same callback, so products can enforce coverage without SDK dependencies on thei
 domain. Explicit additional fingerprint inputs must exist; the generated
 fingerprint source and its metadata remain excluded from its own input set.
 
-`SchemaHash` fingerprints the current complete generated wire layout and `FieldId`-to-member mapping at generation time, including primitive kinds, recursive struct/list layouts, enum underlying types and named numeric values. This Editor-only fingerprint contributes only the final digest to the compiled artifact; no CLR-name identities, field-name ledgers or value signatures are added to runtime manifests. Reordering discovery or declarations without changing the canonical layout does not change the digest.
+`SchemaHash` fingerprints the current complete generated wire layout and `FieldId`-to-member mapping at generation time, including primitive kinds, recursive struct/list/array layouts, enum underlying types and named numeric values. This Editor-only fingerprint contributes only the final digest to the compiled artifact; no CLR-name identities, field-name ledgers or value signatures are added to runtime manifests. Reordering discovery or declarations without changing the canonical layout does not change the digest.
+
+Generated patch codecs and canonical authoring JSON support one-dimensional,
+zero-based `T[]` arrays of the same deterministic atoms, enums and value structs
+supported in `List<T>`. Arrays preserve null separately from an empty collection,
+use the existing bounded collection length encoding and `CustomList` field lane,
+and generate direct indexed serialization, structural equality and deep clones.
+Value structs may contain supported collection fields; direct jagged and
+multidimensional arrays are rejected. Existing list layouts and their schema
+identities remain unchanged; array layouts have their own fingerprint kind.
 
 ## Network synchronization
 
