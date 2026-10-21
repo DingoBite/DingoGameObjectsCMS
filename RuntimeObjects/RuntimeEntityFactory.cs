@@ -6,6 +6,7 @@ using DingoGameObjectsCMS.Stores;
 using Unity.Collections;
 using Unity.Entities;
 using UnityEngine.Scripting;
+using DingoECSUtils.DotsPrefabLibAccess;
 
 namespace DingoGameObjectsCMS.RuntimeObjects
 {
@@ -32,24 +33,39 @@ namespace DingoGameObjectsCMS.RuntimeObjects
         internal readonly ComponentTypeSet CleanupComponentTypes;
 
         public readonly Entity Entity;
+        public readonly bool RequiresGraphClone;
 
         public RuntimeOwnedEntityPrefab(Entity entity)
         {
             Entity = entity;
             CleanupComponentTypes = default;
+            RequiresGraphClone = false;
         }
 
         internal RuntimeOwnedEntityPrefab(
             Entity entity,
-            in ComponentTypeSet cleanupComponentTypes)
+            in ComponentTypeSet cleanupComponentTypes, bool requiresGraphClone = false)
         {
             Entity = entity;
             CleanupComponentTypes = cleanupComponentTypes;
+            RequiresGraphClone = requiresGraphClone;
         }
     }
 
     public static class RuntimeEntityFactoryEcbExtensions
     {
+        public static Entity CreateOwnedPrefab(this EntityCommandBuffer ownerCommands, EntityManager entityManager, RuntimeStore store, Entity factoryRoot, RuntimeInstance factoryInstance, ulong productId, GameRuntimeObject productDefinition, BakedEntityPrefabLease template)
+        {
+            return RuntimeBakedEntityFactory.CreateOwnedPrefab(ownerCommands, entityManager, store, factoryRoot, factoryInstance, productId, productDefinition, template);
+        }
+
+        public static Entity InstantiateOwnedEntity(this EntityCommandBuffer ownerCommands, EntityManager entityManager, Entity factoryRoot, RuntimeInstance factoryInstance, ulong productId, in RuntimeOwnedEntityPrefab prefab)
+        {
+            if (!prefab.RequiresGraphClone)
+                return ownerCommands.InstantiateOwnedEntity(factoryRoot, factoryInstance, productId, prefab);
+            return RuntimeBakedEntityFactory.InstantiateOwnedEntity(ownerCommands, entityManager, factoryRoot, factoryInstance, productId, prefab);
+        }
+
         public static Entity CreateOwnedPrefab(
             this EntityCommandBuffer ownerCommands,
             EntityManager entityManager,
@@ -156,6 +172,8 @@ namespace DingoGameObjectsCMS.RuntimeObjects
             in RuntimeOwnedEntityPrefab prefab)
         {
             RequireProductId(productId);
+            if (prefab.RequiresGraphClone)
+                throw new InvalidOperationException("Baked technical graphs require the EntityManager overload during prewarming.");
             var entity = ecb.Instantiate(prefab.Entity);
             if (prefab.CleanupComponentTypes.Length > 0)
             {
@@ -191,6 +209,8 @@ namespace DingoGameObjectsCMS.RuntimeObjects
             for (var index = 0; index < componentTypes.Length; index++)
             {
                 var componentType = componentTypes[index];
+                if (componentType == ComponentType.ReadWrite<RuntimeBakedEntityGraphLease>())
+                    continue;
                 if (!componentType.IsCleanupComponent
                     && !componentType.IsCleanupBufferComponent
                     && !componentType.IsCleanupSharedComponent)
@@ -212,7 +232,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects
             var cleanupSet = cleanupComponentTypes.Length > 0
                 ? new ComponentTypeSet(in cleanupComponentTypes)
                 : default;
-            return new RuntimeOwnedEntityPrefab(prefab, cleanupSet);
+            return new RuntimeOwnedEntityPrefab(prefab, cleanupSet, entityManager.HasComponent<RuntimeBakedEntityGraphLive>(prefab));
         }
 
         private static RuntimeEntityFactoryOwner CreateOwner(
@@ -355,6 +375,7 @@ namespace DingoGameObjectsCMS.RuntimeObjects
             var expectedOwner = runtimeObject.RuntimeInstance;
             var linkedProducts = new HashSet<Entity>();
             var productIds = new HashSet<ulong>();
+            var claimedGraphEntities = new HashSet<Entity> { root };
             for (var i = 1; i < linkedEntities.Length; i++)
             {
                 var product = linkedEntities[i].Value;
@@ -406,6 +427,16 @@ namespace DingoGameObjectsCMS.RuntimeObjects
                 {
                     error =
                         $"Factory GRO {runtimeObject.InstanceId} in store '{runtimeObject.StoreId}' has duplicate product id {identity.ProductId}.";
+                    return false;
+                }
+                if (entityManager.HasComponent<RuntimeBakedEntityGraphLive>(product))
+                {
+                    if (!RuntimeBakedEntityFactory.TryValidateGraph(entityManager, product, claimedGraphEntities, out error))
+                        return false;
+                }
+                else if (!claimedGraphEntities.Add(product))
+                {
+                    error = "A factory product is also owned by another technical graph.";
                     return false;
                 }
             }

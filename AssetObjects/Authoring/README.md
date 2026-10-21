@@ -1,5 +1,45 @@
 # Prefab → GameAsset authoring
 
+## Built-in baked Entity templates
+
+Add `BakedEntityPrefabAuthoring` beside `GameAssetAuthoring` on a technical prefab
+root to publish its native `EntityPrefabReference` as `BakedEntityPrefab_GAC`.
+The existing automatic converter prepares the prefab's own GUID; authors do not
+enter a GUID or maintain a second prefab-name catalog. Other Unity Bakers may
+produce collider, physics or rendering data on that prefab. Product GACs reference
+the resulting technical native GA through ordinary `GameAssetReference` and know
+the technical template contract they use. The template does not define the
+product's gameplay capabilities.
+
+The descriptor's `BakedEntityPrefab_GRC` stores the same Unity prefab GUID using
+the existing generated Hash128 codec and exposes computed `Prefab`. It never
+stores a loaded `Entity`. This avoids serializing Unity's internal weak-reference
+fields through generated direct-access runtime codecs. Native GA preparation,
+identity, variant handling, immutable definitions and dependency hashes retain
+their existing behavior.
+
+Put `BakedEntityPrefabLibraryAuthoring` in a technical library scene/subscene and
+assign the generated `PrefabGameAssetIndex`. Its Baker derives weak prefab
+references from indexed `BakedEntityPrefab_GAC` definitions; there is no manually
+maintained prefab list. Configure the production index through
+`PrefabGameAssetIndexConfiguration.Configure(...)` and register library scene
+paths through `BakedEntityPrefabLibraryBuildConfiguration.Configure(...)` in a
+product-owned Editor initializer. The SDK's `IEntitySceneBuildAdditions`
+implementation passes those scenes into Unity's normal entity-scene build
+pipeline, including prefabs used only through native GA descriptors. These
+scenes are baking/build libraries, not a runtime map-loading API.
+
+Prepare and retain the technical templates before synchronous factory projection.
+The explicit owner controls loading strategy and holds its resource leases until
+all owned consumers and Entity topology have stopped. A product projects its full
+GA/GRC composition onto a prepared template under that template's explicit
+contract; this authoring path does not merge arbitrary prefab graphs or add a
+GameObject companion presentation path.
+
+See [baked Entity product ownership](../../RuntimeObjects/BAKED_ENTITY_PREFABS.md)
+for the bridge, prewarming, graph-aware factory APIs, projection restrictions and
+the resource retirement sequence.
+
 ## Native prefab definitions
 
 `GameAssetAuthoring` defines an asset directly on a prefab asset root or variant. It contains manual GACs through `SerializeReference` and component/converter bindings. During Editor validation and preparation, unbound owned components receive the first available converter in ordinal full type-name order. Existing bindings and their configured values are retained. A binding with a source and `None` converter explicitly excludes that source, including after save, reload and variant inheritance; deleting the binding allows automatic setup again. Validation queues preparation on the main Editor thread and does not save assets itself. Automatic composition belongs to prefab definitions and Prefab Stage roots, never scene instances.
